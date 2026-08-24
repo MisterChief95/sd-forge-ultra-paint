@@ -1,0 +1,131 @@
+/**
+ * sd-forge-ultra-paint -- document / layer data model.
+ *
+ * This is the finalised serialisable shape that every later phase (layer panel
+ * UI, Python bridge, masking, ControlNet) builds on. Two rules matter:
+ *
+ *  1. Nothing in here holds a live PixiJS object. `ImageRef` is metadata only;
+ *     the actual `Texture` lives in a side-map on the store. That keeps the
+ *     document JSON-serialisable in spirit even though nothing is serialised
+ *     yet this phase.
+ *  2. `Document.layers` is a FLAT array. The tree is encoded by `parentId` plus
+ *     the ordered id lists (`Document.layerOrder` for the root, and
+ *     `GroupLayer.children` for groups). There is no nested serialisation.
+ */
+
+/** Opaque per-layer identifier. Unique within a document. */
+export type LayerId = string;
+
+/**
+ * Compositing mode for a layer.
+ *
+ * `overlay`, `color-burn`, `color-dodge` and `hard-light` are PixiJS *advanced*
+ * blend modes: they are filter-backed and require both the
+ * `pixi.js/advanced-blend-modes` import and `useBackBuffer: true` at renderer
+ * init. See `util/blendModes.ts`.
+ */
+export type BlendMode =
+    | "normal"
+    | "multiply"
+    | "screen"
+    | "overlay"
+    | "add"
+    | "erase"
+    | "min"
+    | "max"
+    | "color-burn"
+    | "color-dodge"
+    | "hard-light";
+
+/** Affine placement of a layer inside its parent's coordinate space. */
+export interface Transform {
+    x: number;
+    y: number;
+    scaleX: number;
+    scaleY: number;
+    /** Radians (PixiJS `Container.rotation` units), not degrees. */
+    rotation: number;
+}
+
+/**
+ * Layer discriminant.
+ *
+ * Deliberately a string union rather than an enum so that later phases can add
+ * `"shape"` / `"adjustment"` variants without a breaking change. Those two are
+ * reserved and intentionally NOT implemented in this phase.
+ */
+export type LayerKind = "raster" | "group" | "mask";
+
+/** Fields shared by every layer variant. */
+export interface LayerBase {
+    id: LayerId;
+    name: string;
+    kind: LayerKind;
+    visible: boolean;
+    /** Reserved: not honoured by anything this phase. */
+    locked: boolean;
+    /** 0-1, maps to PixiJS `Container.alpha`. */
+    opacity: number;
+    blendMode: BlendMode;
+    transform: Transform;
+    /** `null` means the layer sits at the document root. */
+    parentId: LayerId | null;
+    /** Reserved for a future masking phase. Not implemented. */
+    mask?: unknown;
+    /** Reserved for a future ControlNet phase. Not implemented. */
+    controlNet?: unknown;
+}
+
+/** A pixel layer backed by a texture registered in the store's texture map. */
+export interface RasterLayer extends LayerBase {
+    kind: "raster";
+    image: ImageRef;
+}
+
+/** Paintable alpha coverage exported as an inpainting mask. */
+export interface MaskLayer extends LayerBase {
+    kind: "mask";
+    image: ImageRef;
+    /** CSS six-digit hex color used only by the on-canvas hatch display. */
+    color: string;
+}
+
+/** A container layer. Draws nothing itself; composites its children. */
+export interface GroupLayer extends LayerBase {
+    kind: "group";
+    /** Ordered child ids. Index 0 is the TOP of the stack within the group. */
+    children: LayerId[];
+}
+
+export type Layer = RasterLayer | GroupLayer | MaskLayer;
+
+/** Layer variants backed by a paintable texture. */
+export type PaintLayer = RasterLayer | MaskLayer;
+
+/**
+ * Metadata about a raster layer's pixels. Deliberately does NOT carry a
+ * `RenderTexture` handle -- look the texture up via `LayerStore.getTexture(id)`.
+ */
+export interface ImageRef {
+    source: "upload" | "generated" | "paint";
+    width: number;
+    height: number;
+}
+
+/** Editable document-space operating region used by fill and generation. */
+export interface BoundaryBox {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+/** The whole editable document. */
+export interface Document {
+    id: string;
+    boundaryBox: BoundaryBox;
+    /** FLAT array -- `parentId` encodes the tree, not nested serialisation. */
+    layers: Layer[];
+    /** Root-level stacking order. Index 0 is the TOP of the stack. */
+    layerOrder: LayerId[];
+}

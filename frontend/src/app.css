@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/*
+ * Dark-theme design tokens (Phase 2.R decision, PLAN.md §6a: Tailwind
+ * unrestricted + dark theme only, no light-theme toggle planned). Tailwind
+ * utilities handle layout/spacing/positioning; these custom properties are
+ * the single source of truth for color/radius/font/transition so components
+ * don't hardcode hex values.
+ */
+:root {
+  --upaint-bg: #16181d;
+  --upaint-surface: #1e2128;
+  --upaint-surface-raised: #262a33;
+  --upaint-border: #2c3038;
+  --upaint-text: #e4e6eb;
+  --upaint-text-muted: #9aa0ab;
+  --upaint-accent: #5b8def;
+  --upaint-accent-muted: #3a5a99;
+  --upaint-danger: #e05252;
+
+  --upaint-radius-sm: 4px;
+  --upaint-radius: 6px;
+  --upaint-radius-lg: 10px;
+
+  --upaint-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --upaint-transition: 150ms ease;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--upaint-bg);
+  color: var(--upaint-text);
+  font-family: var(--upaint-font);
+}

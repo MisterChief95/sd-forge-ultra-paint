@@ -1,0 +1,6 @@
+{
+  "_comment": "Accepted E2E gap: route interception does not cover the real FastAPI handlers' base64 decoding or error paths; add a stub server if this gap becomes consequential.",
+  "images": [
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "_comment": "Accepted E2E gap: route interception does not cover the real FastAPI handlers' base64 decoding or error paths; add a stub server if this gap becomes consequential.",
+  "samplers": ["Euler a", "DPM++ 2M"],
+  "schedulers": ["Automatic", "Karras"],
+  "native_resolution": 1024,
+  "is_video_model": false,
+  "resolution_step": 64
+}

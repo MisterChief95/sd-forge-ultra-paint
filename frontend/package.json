@@ -1,0 +1,27 @@
+{
+  "name": "ultra-paint-frontend",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Svelte 5 + PixiJS v8 layer painting canvas frontend for the sd-forge-ultra-paint Forge WebUI extension. Built as a standalone SPA (Vite), served via the extension's own FastAPI route and mounted in an <iframe> (Phase 2.R).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "pixi.js": "^8.6.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "svelte": "^5.15.0",
+    "svelte-check": "^4.1.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0"
+  }
+}
