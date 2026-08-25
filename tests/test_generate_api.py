@@ -27,7 +27,9 @@ def fake_forge_modules(monkeypatch):
     fake_call_queue = types.ModuleType("modules.call_queue")
     fake_call_queue.queue_lock = Lock()
     fake_shared = types.ModuleType("modules.shared")
-    fake_shared.state = types.SimpleNamespace(begin=lambda **_kwargs: None, end=lambda: None)
+    fake_shared.state = types.SimpleNamespace(
+        begin=lambda **_kwargs: None, end=lambda: None
+    )
     fake_modules.call_queue = fake_call_queue
     fake_modules.shared = fake_shared
 
@@ -128,12 +130,16 @@ def test_control_layers_are_decoded_and_forwarded(fake_forge_modules):
 def test_omitted_control_layers_forwards_empty_list(fake_forge_modules):
     generate_api, calls, _generation_calls = fake_forge_modules
 
-    generate_api.generate(generate_api.GenerateRequest(composite_image=_data_url(generate_api)))
+    generate_api.generate(
+        generate_api.GenerateRequest(composite_image=_data_url(generate_api))
+    )
 
     assert calls[0][1]["control_layers"] == []
 
 
-def test_malformed_control_layer_image_returns_400_without_generation(fake_forge_modules):
+def test_malformed_control_layer_image_returns_400_without_generation(
+    fake_forge_modules,
+):
     generate_api, calls, generation_calls = fake_forge_modules
     request = generate_api.GenerateRequest(
         composite_image=_data_url(generate_api),
@@ -181,7 +187,9 @@ def test_control_layer_value_shape_passes_through_unchanged(fake_forge_modules):
     generate_api.generate(request)
 
     layer = calls[0][1]["control_layers"][0]
-    assert {key: value for key, value in layer.items() if key not in {"image", "mask_image"}} == {
+    assert {
+        key: value for key, value in layer.items() if key not in {"image", "mask_image"}
+    } == {
         "model": "custom-model",
         "preprocessor": "custom-preprocessor",
         "preprocessor_resolution": 768,

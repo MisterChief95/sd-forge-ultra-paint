@@ -68,7 +68,12 @@ class FastCoherencePass(scripts.Script):
             return  # not an inpaint job
 
         samples = ps.samples  # (B, C, H, W) latent, pre-decode
-        bbox = _ring_latent_bbox(mask_for_overlay, edge_size=32 // LATENT_DOWNSCALE, image_size=(p.width, p.height), latent_shape=samples.shape)
+        bbox = _ring_latent_bbox(
+            mask_for_overlay,
+            edge_size=32 // LATENT_DOWNSCALE,
+            image_size=(p.width, p.height),
+            latent_shape=samples.shape,
+        )
         if bbox is None:
             return
         x1, y1, x2, y2 = bbox
@@ -79,7 +84,9 @@ class FastCoherencePass(scripts.Script):
         model = unet.model  # KModel: has .apply_model, .predictor
         cond, uncond = _compile_cond(p)  # TODO
 
-        sigmas = p.sampler.get_sigmas(p, COHERENCE_STEPS)  # TODO: confirm this accessor on your sampler wrapper
+        sigmas = p.sampler.get_sigmas(
+            p, COHERENCE_STEPS
+        )  # TODO: confirm this accessor on your sampler wrapper
         start_idx = int(len(sigmas) * (1.0 - COHERENCE_DENOISE_STRENGTH))
         sigmas = sigmas[start_idx:]
 
@@ -89,7 +96,9 @@ class FastCoherencePass(scripts.Script):
         model_options = unet.model_options
         for i in range(len(sigmas) - 1):
             sigma = sigmas[i].expand(x.shape[0])
-            cond_pred, uncond_pred = calc_cond_uncond_batch(model, cond, uncond, x, sigma, model_options)
+            cond_pred, uncond_pred = calc_cond_uncond_batch(
+                model, cond, uncond, x, sigma, model_options
+            )
             denoised = uncond_pred + (cond_pred - uncond_pred) * p.cfg_scale
             dt = sigmas[i + 1] - sigmas[i]
             x = x + (x - denoised) / sigma.view(-1, 1, 1, 1) * dt  # Euler step

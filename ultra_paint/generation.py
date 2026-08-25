@@ -240,7 +240,9 @@ def _default_script_args(script_runner=None) -> list:
 
     Cached: script registration is fixed for the life of the process.
     """
-    runner = script_runner if script_runner is not None else modules.scripts.scripts_img2img
+    runner = (
+        script_runner if script_runner is not None else modules.scripts.scripts_img2img
+    )
     global _default_script_args_cache
     if _default_script_args_cache is None:
         _default_script_args_cache = {}

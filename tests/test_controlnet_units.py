@@ -65,7 +65,9 @@ def fake_controlnet(monkeypatch):
 def _layer(index=0, *, preprocessor="canny", mask=True):
     return {
         "image": Image.new("RGBA", (3, 2), (10 + index, 20, 30, 40)),
-        "mask_image": Image.new("RGBA", (3, 2), (0, 0, 0, 100 + index)) if mask else None,
+        "mask_image": Image.new("RGBA", (3, 2), (0, 0, 0, 100 + index))
+        if mask
+        else None,
         "model": f"control-model-{index}",
         "preprocessor": preprocessor,
         "preprocessor_resolution": 512 + index,
@@ -115,9 +117,21 @@ def test_builds_units_with_complete_field_and_image_mapping(fake_controlnet):
     first, second = p.script_args[1:3]
     assert isinstance(first, ControlNetUnit)
     assert isinstance(second, ControlNetUnit)
-    assert (first.module, first.model, first.weight) == ("canny", "control-model-0", 0.75)
-    assert (first.processor_res, first.threshold_a, first.threshold_b) == (512, 10.5, 20.5)
-    assert (first.guidance_start, first.guidance_end, first.pixel_perfect) == (0.1, 0.9, True)
+    assert (first.module, first.model, first.weight) == (
+        "canny",
+        "control-model-0",
+        0.75,
+    )
+    assert (first.processor_res, first.threshold_a, first.threshold_b) == (
+        512,
+        10.5,
+        20.5,
+    )
+    assert (first.guidance_start, first.guidance_end, first.pixel_perfect) == (
+        0.1,
+        0.9,
+        True,
+    )
     assert (first.control_mode, first.resize_mode) == ("Balanced", "Just Resize")
     assert first.save_detected_map is False
     assert first.image["image"].shape == (2, 3, 3)
@@ -141,7 +155,10 @@ def test_truncates_to_configured_slot_count(fake_controlnet, caplog):
 
     assert all(isinstance(unit, ControlNetUnit) for unit in p.script_args[1:3])
     assert p.script_args[3:] == ["default", "default"]
-    assert [unit.model for unit in p.script_args[1:3]] == ["control-model-0", "control-model-1"]
+    assert [unit.model for unit in p.script_args[1:3]] == [
+        "control-model-0",
+        "control-model-1",
+    ]
     assert "dropping 2 ControlNet layer(s)" in caplog.text
 
 

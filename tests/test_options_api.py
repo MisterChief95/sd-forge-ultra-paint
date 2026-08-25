@@ -14,7 +14,9 @@ class _FakeOpts:
     """Mirrors the shape `resolution_step_for` reads: `.data_labels`, `.data`."""
 
     def __init__(self, data_labels=None, data=None):
-        self.data_labels = data_labels if data_labels is not None else {"res_step": object()}
+        self.data_labels = (
+            data_labels if data_labels is not None else {"res_step": object()}
+        )
         self.data = data if data is not None else {}
 
 
@@ -29,7 +31,10 @@ def fake_forge_modules(monkeypatch):
         def __init__(self, name):
             self.name = name
 
-    fake_sd_samplers_module.visible_samplers = lambda: [_Sampler("Euler a"), _Sampler("DPM++ 2M")]
+    fake_sd_samplers_module.visible_samplers = lambda: [
+        _Sampler("Euler a"),
+        _Sampler("DPM++ 2M"),
+    ]
 
     fake_sd_schedulers_module = types.ModuleType("modules.sd_schedulers")
 
@@ -37,7 +42,10 @@ def fake_forge_modules(monkeypatch):
         def __init__(self, label):
             self.label = label
 
-    fake_sd_schedulers_module.schedulers = [_Scheduler("Automatic"), _Scheduler("Karras")]
+    fake_sd_schedulers_module.schedulers = [
+        _Scheduler("Automatic"),
+        _Scheduler("Karras"),
+    ]
 
     fake_shared_module = types.ModuleType("modules.shared")
     fake_shared_module.sd_model = None
@@ -88,7 +96,9 @@ def test_native_resolution_and_video_flag_for_no_model(fake_forge_modules):
 def test_native_resolution_and_video_flag_for_sdxl(fake_forge_modules):
     options_api, fake_shared = fake_forge_modules
 
-    SdxlModel = type("StableDiffusionXL", (), {"is_sd1": False, "is_sdxl": True, "is_wan": False})
+    SdxlModel = type(
+        "StableDiffusionXL", (), {"is_sd1": False, "is_sdxl": True, "is_wan": False}
+    )
     fake_shared.sd_model = SdxlModel()
 
     options = options_api.get_generation_options()

@@ -126,8 +126,12 @@ def fake_forge_modules(monkeypatch):
 
     # --- modules.processing ---
     fake_processing_module = types.ModuleType("modules.processing")
-    fake_processing_module.StableDiffusionProcessingImg2Img = _FakeStableDiffusionProcessingImg2Img
-    fake_processing_module.StableDiffusionProcessingTxt2Img = _FakeStableDiffusionProcessingTxt2Img
+    fake_processing_module.StableDiffusionProcessingImg2Img = (
+        _FakeStableDiffusionProcessingImg2Img
+    )
+    fake_processing_module.StableDiffusionProcessingTxt2Img = (
+        _FakeStableDiffusionProcessingTxt2Img
+    )
     fake_processing_module.Processed = object
 
     fake_shared.process_calls = []
@@ -137,7 +141,9 @@ def fake_forge_modules(monkeypatch):
         if p.mask is not None:
             p.mask_for_overlay = p.mask
             p.paste_to = None
-        return types.SimpleNamespace(images=[p.init_images[0].convert("RGB")], extra_images=[])
+        return types.SimpleNamespace(
+            images=[p.init_images[0].convert("RGB")], extra_images=[]
+        )
 
     fake_processing_module.process_images = _fake_process_images
 
@@ -440,14 +446,21 @@ def test_soft_inpainting_args_not_injected_without_mask(fake_forge_modules):
     assert p.script_args[script.args_from : script.args_to] == control_defaults
 
 
-def test_inpaint_controlnet_disabled_preserves_manual_layers(fake_forge_modules, monkeypatch):
+def test_inpaint_controlnet_disabled_preserves_manual_layers(
+    fake_forge_modules, monkeypatch
+):
     generation, _fake_shared = fake_forge_modules
     manual_layer = {"model": "manual"}
     calls = []
-    monkeypatch.setattr(generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers))
+    monkeypatch.setattr(
+        generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers)
+    )
 
     generation.build_img2img_processing(
-        _composite(), {}, mask_image=Image.new("L", (64, 64)), control_layers=[manual_layer]
+        _composite(),
+        {},
+        mask_image=Image.new("L", (64, 64)),
+        control_layers=[manual_layer],
     )
 
     assert calls == [[manual_layer]]
@@ -456,11 +469,16 @@ def test_inpaint_controlnet_disabled_preserves_manual_layers(fake_forge_modules,
 def test_inpaint_controlnet_not_added_without_mask(fake_forge_modules, monkeypatch):
     generation, _fake_shared = fake_forge_modules
     calls = []
-    monkeypatch.setattr(generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers))
+    monkeypatch.setattr(
+        generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers)
+    )
 
     generation.build_img2img_processing(
         _composite(),
-        {"inpaint_controlnet_enabled": True, "inpaint_controlnet_model": "inpaint-model"},
+        {
+            "inpaint_controlnet_enabled": True,
+            "inpaint_controlnet_model": "inpaint-model",
+        },
     )
 
     assert calls == [[]]
@@ -474,7 +492,11 @@ def test_inpaint_controlnet_is_prepended_with_composite_and_mask(
     mask = Image.new("RGBA", composite.size, (255, 255, 255, 128))
     manual_layer = {"model": "manual"}
     calls = []
-    monkeypatch.setattr(generation, "apply_controlnet_units", lambda p, layers: calls.append((p, layers)))
+    monkeypatch.setattr(
+        generation,
+        "apply_controlnet_units",
+        lambda p, layers: calls.append((p, layers)),
+    )
 
     p = generation.build_img2img_processing(
         composite,
@@ -521,7 +543,9 @@ def test_non_wan_model_with_is_wan_flag_does_not_abort(fake_forge_modules):
     -- QwenImage/Krea2/Anima also set is_wan=True and must keep working."""
     generation, fake_shared = fake_forge_modules
 
-    QwenModel = type("QwenImage", (), {"is_sd1": False, "is_sdxl": False, "is_wan": True})
+    QwenModel = type(
+        "QwenImage", (), {"is_sd1": False, "is_sdxl": False, "is_wan": True}
+    )
     fake_shared.sd_model = QwenModel()
 
     p = generation.build_img2img_processing(_composite(), {})
@@ -611,15 +635,23 @@ def test_script_defaults_are_cached_per_runner(fake_forge_modules):
     txt2img_script = _Script()
     img2img_runner = generation.modules.scripts.scripts_img2img
     txt2img_runner = generation.modules.scripts.scripts_txt2img
-    img2img_runner.scripts, img2img_runner.inputs = [img2img_script], [None, _Control(1)]
-    txt2img_runner.scripts, txt2img_runner.inputs = [txt2img_script], [None, _Control(2)]
+    img2img_runner.scripts, img2img_runner.inputs = (
+        [img2img_script],
+        [None, _Control(1)],
+    )
+    txt2img_runner.scripts, txt2img_runner.inputs = (
+        [txt2img_script],
+        [None, _Control(2)],
+    )
     generation._default_script_args_cache = None
 
     assert generation._default_script_args(img2img_runner) == [0, 1]
     assert generation._default_script_args(txt2img_runner) == [0, 2]
 
 
-def test_empty_composite_forces_txt2img_and_resizes_result(fake_forge_modules, monkeypatch):
+def test_empty_composite_forces_txt2img_and_resizes_result(
+    fake_forge_modules, monkeypatch
+):
     generation, _fake_shared = fake_forge_modules
     composite = Image.new("RGBA", (16, 12), (0, 0, 0, 0))
     built = []
@@ -650,7 +682,9 @@ def test_txt2img_ignores_mask_and_denoise(fake_forge_modules, monkeypatch):
     monkeypatch.setattr(
         generation,
         "process_images",
-        lambda _p: types.SimpleNamespace(images=[Image.new("RGB", (64, 64))], extra_images=[]),
+        lambda _p: types.SimpleNamespace(
+            images=[Image.new("RGB", (64, 64))], extra_images=[]
+        ),
     )
 
     result = generation.run_generation(

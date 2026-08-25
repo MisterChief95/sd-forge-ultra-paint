@@ -21,12 +21,19 @@ def test_sd1_flag_resolves_to_512():
 
 
 def test_sdxl_flag_resolves_to_1024():
-    assert native_resolution_for(ModelSignature(is_sdxl=True)) == HIGH_RES_ARCH_RESOLUTION == 1024
+    assert (
+        native_resolution_for(ModelSignature(is_sdxl=True))
+        == HIGH_RES_ARCH_RESOLUTION
+        == 1024
+    )
 
 
 def test_is_sd1_takes_precedence_over_is_sdxl():
     # Not a real-world combination, but precedence must be deterministic.
-    assert native_resolution_for(ModelSignature(is_sd1=True, is_sdxl=True)) == SD1_RESOLUTION
+    assert (
+        native_resolution_for(ModelSignature(is_sd1=True, is_sdxl=True))
+        == SD1_RESOLUTION
+    )
 
 
 @pytest.mark.parametrize(
@@ -34,7 +41,10 @@ def test_is_sd1_takes_precedence_over_is_sdxl():
     ["Flux", "Flux2", "Chroma", "Lumina2", "ErnieImage", "PiD", "ZImage", "Anima"],
 )
 def test_class_name_only_architectures_resolve_to_1024(class_name):
-    assert native_resolution_for(ModelSignature(class_name=class_name)) == HIGH_RES_ARCH_RESOLUTION
+    assert (
+        native_resolution_for(ModelSignature(class_name=class_name))
+        == HIGH_RES_ARCH_RESOLUTION
+    )
 
 
 def test_sdxl_flag_takes_precedence_over_unrelated_class_name():
@@ -49,7 +59,10 @@ def test_is_wan_flagged_architectures_resolve_to_1024(class_name):
     # Wan itself is deliberately excluded from this parametrization -- it's a
     # video model with no still-image resolution, covered separately below by
     # the is_unsupported_video_model tests, not by native_resolution_for.
-    assert native_resolution_for(ModelSignature(is_wan=True, class_name=class_name)) == HIGH_RES_ARCH_RESOLUTION
+    assert (
+        native_resolution_for(ModelSignature(is_wan=True, class_name=class_name))
+        == HIGH_RES_ARCH_RESOLUTION
+    )
 
 
 def test_class_name_match_takes_precedence_over_is_wan():
@@ -60,7 +73,11 @@ def test_class_name_match_takes_precedence_over_is_wan():
 
 
 def test_unrecognised_model_falls_back_to_512():
-    assert native_resolution_for(ModelSignature(class_name="SomeFutureArch")) == FALLBACK_RESOLUTION == 512
+    assert (
+        native_resolution_for(ModelSignature(class_name="SomeFutureArch"))
+        == FALLBACK_RESOLUTION
+        == 512
+    )
 
 
 def test_none_model_falls_back_to_512():
@@ -98,12 +115,23 @@ def test_native_resolution_for_has_no_special_wan_handling():
 
 
 def test_is_unsupported_video_model_true_for_wan():
-    assert is_unsupported_video_model(ModelSignature(is_wan=True, class_name="Wan")) is True
+    assert (
+        is_unsupported_video_model(ModelSignature(is_wan=True, class_name="Wan"))
+        is True
+    )
 
 
 @pytest.mark.parametrize(
     "class_name",
-    ["StableDiffusion", "StableDiffusionXL", "Flux", "Chroma", "QwenImage", "Anima", "Krea2"],
+    [
+        "StableDiffusion",
+        "StableDiffusionXL",
+        "Flux",
+        "Chroma",
+        "QwenImage",
+        "Anima",
+        "Krea2",
+    ],
 )
 def test_is_unsupported_video_model_false_for_image_architectures(class_name):
     assert is_unsupported_video_model(ModelSignature(class_name=class_name)) is False

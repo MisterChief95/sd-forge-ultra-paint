@@ -44,7 +44,9 @@ GENERATE_ROUTE = "/ultra_paint/api/generate"
 # newline-like byte sequence once decoded... base64 itself never contains
 # real newlines, but `.` not matching `\n` by default is a common footgun, so
 # it's set explicitly rather than relying on the default.
-_DATA_URL_RE = re.compile(r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", re.DOTALL)
+_DATA_URL_RE = re.compile(
+    r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", re.DOTALL
+)
 
 
 class ControlLayerRequest(BaseModel):
@@ -113,11 +115,15 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     """
     try:
         composite_image = _decode_data_url(request.composite_image)
-        mask_image = _decode_data_url(request.mask_image) if request.mask_image else None
+        mask_image = (
+            _decode_data_url(request.mask_image) if request.mask_image else None
+        )
         control_layers = [
             {
                 "image": _decode_data_url(layer.image),
-                "mask_image": _decode_data_url(layer.mask_image) if layer.mask_image else None,
+                "mask_image": _decode_data_url(layer.mask_image)
+                if layer.mask_image
+                else None,
                 "model": layer.model,
                 "preprocessor": layer.preprocessor,
                 "preprocessor_resolution": layer.preprocessor_resolution,
@@ -157,7 +163,9 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     if processed is None:
         # `main_thread.Task.work` swallows exceptions and leaves `result` None.
         message = main_thread.last_exception or "unknown error"
-        raise HTTPException(status_code=500, detail=f"Ultra Paint: generation failed ({message})")
+        raise HTTPException(
+            status_code=500, detail=f"Ultra Paint: generation failed ({message})"
+        )
 
     # Same extraction as modules/img2img.py:287 / the old `_on_generate`.
     # `n_iter == batch_size == 1`, so there is never a grid image to strip.

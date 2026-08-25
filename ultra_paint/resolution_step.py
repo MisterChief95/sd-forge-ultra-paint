@@ -16,7 +16,11 @@ unit-testable without a running Forge instance -- same pattern as
 
 from __future__ import annotations
 
-__all__ = ["DEFAULT_RESOLUTION_STEP", "has_resolution_step_setting", "resolution_step_for"]
+__all__ = [
+    "DEFAULT_RESOLUTION_STEP",
+    "has_resolution_step_setting",
+    "resolution_step_for",
+]
 
 # Matches `res_step`'s own OptionInfo default (modules/shared_options.py:166)
 # and is also the fallback used when the setting isn't registered at all

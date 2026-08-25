@@ -57,12 +57,16 @@ def get_loras() -> list[LoraInfo]:
             else default_weight
         )
         activation_text = metadata.get("activation text", "")
-        loras.append({
-            "name": lora.name,
-            "prompt_name": lora.get_alias(),
-            "activation_text": activation_text if isinstance(activation_text, str) else "",
-            "preferred_weight": weight,
-        })
+        loras.append(
+            {
+                "name": lora.name,
+                "prompt_name": lora.get_alias(),
+                "activation_text": activation_text
+                if isinstance(activation_text, str)
+                else "",
+                "preferred_weight": weight,
+            }
+        )
 
     return sorted(loras, key=lambda item: item["name"].casefold())
 

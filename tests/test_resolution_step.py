@@ -62,12 +62,16 @@ def test_falls_back_to_default_for_non_positive_value():
     opts = _FakeOpts(data_labels={"res_step": object()}, data={"res_step": 0})
     assert resolution_step_for(opts) == DEFAULT_RESOLUTION_STEP
 
-    opts_negative = _FakeOpts(data_labels={"res_step": object()}, data={"res_step": -64})
+    opts_negative = _FakeOpts(
+        data_labels={"res_step": object()}, data={"res_step": -64}
+    )
     assert resolution_step_for(opts_negative) == DEFAULT_RESOLUTION_STEP
 
 
 def test_falls_back_to_default_for_non_numeric_value():
-    opts = _FakeOpts(data_labels={"res_step": object()}, data={"res_step": "not-a-number"})
+    opts = _FakeOpts(
+        data_labels={"res_step": object()}, data={"res_step": "not-a-number"}
+    )
     assert resolution_step_for(opts) == DEFAULT_RESOLUTION_STEP
 
 

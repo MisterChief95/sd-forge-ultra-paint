@@ -27,7 +27,9 @@ CONTROLNET_MODULE_LIST_ROUTE = "/ultra_paint/api/controlnet/module_list"
 CONTROLNET_CONTROL_TYPES_ROUTE = "/ultra_paint/api/controlnet/control_types"
 CONTROLNET_DETECT_ROUTE = "/ultra_paint/api/controlnet/detect"
 
-_DATA_URL_RE = re.compile(r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", re.DOTALL)
+_DATA_URL_RE = re.compile(
+    r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", re.DOTALL
+)
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +68,9 @@ def get_controlnet_model_list() -> dict:
 
         return {"model_list": list(global_state.get_all_controlnet_names())}
     except (ImportError, AttributeError, TypeError):
-        logger.info("Ultra Paint: ControlNet is unavailable; returning an empty model list")
+        logger.info(
+            "Ultra Paint: ControlNet is unavailable; returning an empty model list"
+        )
         return {"model_list": []}
 
 
@@ -76,7 +80,9 @@ def get_controlnet_module_list() -> dict:
 
         return {"module_list": list(global_state.get_all_preprocessor_names())}
     except (ImportError, AttributeError, TypeError):
-        logger.info("Ultra Paint: ControlNet is unavailable; returning an empty module list")
+        logger.info(
+            "Ultra Paint: ControlNet is unavailable; returning an empty module list"
+        )
         return {"module_list": []}
 
 
@@ -85,15 +91,19 @@ def get_controlnet_control_types() -> dict:
         from lib_controlnet import global_state
 
         control_types = {
-            tag: dict(zip(
-                ("module_list", "model_list", "default_option", "default_model"),
-                global_state.select_control_type(tag),
-            ))
+            tag: dict(
+                zip(
+                    ("module_list", "model_list", "default_option", "default_model"),
+                    global_state.select_control_type(tag),
+                )
+            )
             for tag in global_state.get_all_preprocessor_tags()
         }
         return {"control_types": control_types}
     except (ImportError, AttributeError, TypeError):
-        logger.info("Ultra Paint: ControlNet is unavailable; returning empty control types")
+        logger.info(
+            "Ultra Paint: ControlNet is unavailable; returning empty control types"
+        )
         return {"control_types": {}}
 
 

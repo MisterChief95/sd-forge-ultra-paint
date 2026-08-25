@@ -18,9 +18,15 @@ from ultra_paint.controlnet_catalog_api import (
 
 
 def on_app_started(_demo: Blocks | None, app: FastAPI) -> None:
-    app.add_api_route(CONTROLNET_MODEL_LIST_ROUTE, get_controlnet_model_list, methods=["GET"])
-    app.add_api_route(CONTROLNET_MODULE_LIST_ROUTE, get_controlnet_module_list, methods=["GET"])
-    app.add_api_route(CONTROLNET_CONTROL_TYPES_ROUTE, get_controlnet_control_types, methods=["GET"])
+    app.add_api_route(
+        CONTROLNET_MODEL_LIST_ROUTE, get_controlnet_model_list, methods=["GET"]
+    )
+    app.add_api_route(
+        CONTROLNET_MODULE_LIST_ROUTE, get_controlnet_module_list, methods=["GET"]
+    )
+    app.add_api_route(
+        CONTROLNET_CONTROL_TYPES_ROUTE, get_controlnet_control_types, methods=["GET"]
+    )
     app.add_api_route(
         CONTROLNET_DETECT_ROUTE,
         detect_controlnet,
@@ -28,4 +34,6 @@ def on_app_started(_demo: Blocks | None, app: FastAPI) -> None:
     )
 
 
-script_callbacks.on_app_started(on_app_started, name="ultra_paint_controlnet_catalog_api")
+script_callbacks.on_app_started(
+    on_app_started, name="ultra_paint_controlnet_catalog_api"
+)
