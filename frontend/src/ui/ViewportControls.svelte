@@ -51,7 +51,7 @@
 >
   <button
     type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] tabular-nums hover:border-[var(--upaint-accent)]"
+    class="cursor-pointer rounded border px-2 py-1 text-[11px] tabular-nums hover:border-(--upaint-accent)"
     style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
     aria-label={`Zoom: ${Math.round(zoom * 100)}% (reset to 100%)`}
     title="Reset zoom to 100%"
@@ -61,7 +61,7 @@
   </button>
   <button
     type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-[var(--upaint-accent)]"
+    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
     style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
     aria-label="Fit boundary box to viewport"
     title="Fit boundary box to viewport"
@@ -71,7 +71,7 @@
   </button>
   <button
     type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-[var(--upaint-accent)]"
+    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
     style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
     aria-label="Scale boundary box to fit visible layers"
     title="Scale boundary box to fit visible layers (excludes masks)"
@@ -81,7 +81,7 @@
   </button>
   <button
     type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-[var(--upaint-accent)]"
+    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
     style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
     aria-label={gridVisible ? "Hide pixel grid" : "Show pixel grid"}
     title={gridVisible ? "Hide pixel grid" : "Show pixel grid"}

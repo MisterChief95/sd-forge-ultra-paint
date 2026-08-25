@@ -2,31 +2,17 @@
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
+  import Slider from "./lib/Slider.svelte";
 
   const buttonBase =
     "cursor-pointer border px-2.5 py-1.5 text-[11px] leading-tight";
   const buttonInactive =
-    "border-transparent bg-[var(--upaint-surface-raised)] text-[var(--upaint-text)] hover:border-[var(--upaint-border)]";
+    "border-transparent bg-(--upaint-surface-raised) text-(--upaint-text) hover:border-(--upaint-border)";
   const buttonActive =
-    "border-[var(--upaint-accent)] bg-[var(--upaint-accent)] text-[var(--upaint-text)]";
+    "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text)";
 
   function toolButtonClass(active: boolean): string {
     return `${buttonBase} ${active ? buttonActive : buttonInactive}`;
-  }
-
-  function handleRadiusInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    paintToolStore.setBrushSettings({ radius: Number(input.value) });
-  }
-
-  function handleHardnessInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    paintToolStore.setBrushSettings({ hardness: Number(input.value) / 100 });
-  }
-
-  function handleOpacityInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    paintToolStore.setBrushSettings({ opacity: Number(input.value) / 100 });
   }
 
   function handleColorInput(event: Event): void {
@@ -129,68 +115,65 @@
   </div>
 
   <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-[var(--upaint-text-muted)]"
+    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
   >
     Size
-    <input
-      class="m-0 h-3.5 w-[82px] cursor-pointer accent-[var(--upaint-accent)]"
-      type="range"
-      min="1"
-      max="256"
-      step="1"
+    <Slider
+      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
       value={Math.round(paintToolStore.brush.radius)}
-      aria-label="Brush size"
-      oninput={handleRadiusInput}
+      min={1}
+      max={256}
+      step={1}
+      ariaLabel="Brush size"
+      onValueInput={(value) => paintToolStore.setBrushSettings({ radius: value })}
     />
-    <output class="text-right tabular-nums text-[var(--upaint-text)]">
+    <output class="text-right tabular-nums text-(--upaint-text)">
       {Math.round(paintToolStore.brush.radius)}px
     </output>
   </label>
 
   <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-[var(--upaint-text-muted)]"
+    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
   >
     Hardness
-    <input
-      class="m-0 h-3.5 w-[82px] cursor-pointer accent-[var(--upaint-accent)]"
-      type="range"
-      min="0"
-      max="100"
-      step="1"
+    <Slider
+      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
       value={Math.round(paintToolStore.brush.hardness * 100)}
-      aria-label="Brush hardness"
-      oninput={handleHardnessInput}
+      min={0}
+      max={100}
+      step={1}
+      ariaLabel="Brush hardness"
+      onValueInput={(value) => paintToolStore.setBrushSettings({ hardness: value / 100 })}
     />
-    <output class="text-right tabular-nums text-[var(--upaint-text)]">
+    <output class="text-right tabular-nums text-(--upaint-text)">
       {Math.round(paintToolStore.brush.hardness * 100)}%
     </output>
   </label>
 
   <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-[var(--upaint-text-muted)]"
+    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
   >
     Opacity
-    <input
-      class="m-0 h-3.5 w-[82px] cursor-pointer accent-[var(--upaint-accent)]"
-      type="range"
-      min="0"
-      max="100"
-      step="1"
+    <Slider
+      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
       value={Math.round(paintToolStore.brush.opacity * 100)}
-      aria-label="Brush opacity"
-      oninput={handleOpacityInput}
+      min={0}
+      max={100}
+      step={1}
+      ariaLabel="Brush opacity"
+      onValueInput={(value) => paintToolStore.setBrushSettings({ opacity: value / 100 })}
     />
-    <output class="text-right tabular-nums text-[var(--upaint-text)]">
+    <output class="text-right tabular-nums text-(--upaint-text)">
       {Math.round(paintToolStore.brush.opacity * 100)}%
     </output>
   </label>
 
   <label
-    class="grid shrink-0 grid-cols-[auto_30px] items-center gap-1 text-[var(--upaint-text-muted)]"
+    class="grid shrink-0 grid-cols-[auto_30px] items-center gap-1 text-(--upaint-text-muted)"
   >
     Color
     <input
-      class="h-7 w-[30px] cursor-pointer border bg-[var(--upaint-surface-raised)] p-0.5"
+      class="h-7 w-[30px] cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
       style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
       type="color"
       value={paintToolStore.brush.color}
@@ -204,10 +187,10 @@
     style="border-color: var(--upaint-border);"
     onsubmit={handleDocumentResize}
   >
-    <label class="flex items-center gap-1 text-[var(--upaint-text-muted)]">
+    <label class="flex items-center gap-1 text-(--upaint-text-muted)">
       W
       <input
-        class="h-7 w-[62px] border bg-[var(--upaint-surface-raised)] px-1 text-right tabular-nums text-[var(--upaint-text)] outline-none focus:border-[var(--upaint-accent)]"
+        class="h-7 w-[62px] border bg-(--upaint-surface-raised) px-1 text-right tabular-nums text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
         style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
         type="number"
         name="document-width"
@@ -219,11 +202,11 @@
         oninput={(event) => handleBoundaryDimensionInput(event, "width")}
       />
     </label>
-    <span class="text-[var(--upaint-text-muted)]" aria-hidden="true">×</span>
-    <label class="flex items-center gap-1 text-[var(--upaint-text-muted)]">
+    <span class="text-(--upaint-text-muted)" aria-hidden="true">×</span>
+    <label class="flex items-center gap-1 text-(--upaint-text-muted)">
       H
       <input
-        class="h-7 w-[62px] border bg-[var(--upaint-surface-raised)] px-1 text-right tabular-nums text-[var(--upaint-text)] outline-none focus:border-[var(--upaint-accent)]"
+        class="h-7 w-[62px] border bg-(--upaint-surface-raised) px-1 text-right tabular-nums text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
         style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
         type="number"
         name="document-height"

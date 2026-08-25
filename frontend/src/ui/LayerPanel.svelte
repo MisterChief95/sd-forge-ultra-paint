@@ -5,8 +5,9 @@
   import { layerStore } from "../state/layerStore.svelte";
   import type { Document, Layer, LayerId } from "../state/schema";
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
-  import Accordion from "./Accordion.svelte";
-  import ContextMenu, { type ContextMenuItem } from "./ContextMenu.svelte";
+  import Accordion from "./lib/Accordion.svelte";
+  import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
+  import Slider from "./lib/Slider.svelte";
 
   const THUMB_SIZE = 34;
   const thumbnails = new Map<LayerId, { key: unknown; url: string }>();
@@ -240,11 +241,6 @@
     }
   }
 
-  function handleOpacityInput(event: Event, id: LayerId): void {
-    const input = event.currentTarget as HTMLInputElement;
-    layerStore.setOpacity(id, Number(input.value) / 100);
-  }
-
   function handleBlendChange(event: Event, id: LayerId): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
     if (isBlendMode(value)) layerStore.setBlendMode(id, value);
@@ -372,7 +368,7 @@
         {@const thumbnail = thumbnailFor(layer)}
         {@const selected = layerStore.selectedLayerId === layer.id}
         <div
-          class={`grid cursor-default grid-cols-[22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border p-1.5 ${selected ? "border-[var(--upaint-accent)] bg-[var(--upaint-accent-muted)]" : "border-[var(--upaint-border)] bg-[var(--upaint-surface-raised)]"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
+          class={`grid cursor-default grid-cols-[22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border p-1.5 ${selected ? "border-(--upaint-accent) bg-(--upaint-accent-muted)" : "border-(--upaint-border) bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
           style="border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition), background-color var(--upaint-transition), opacity var(--upaint-transition);"
           role="button"
           aria-pressed={selected}
@@ -393,7 +389,7 @@
           ondrop={(event) => handleDrop(event, layer.id)}
         >
           <input
-            class="m-0 cursor-pointer accent-[var(--upaint-accent)]"
+            class="m-0 cursor-pointer accent-(--upaint-accent)"
             type="checkbox"
             checked={layer.visible}
             title={layer.visible ? "Hide layer" : "Show layer"}
@@ -407,7 +403,7 @@
 
           {#if layer.kind === "group"}
             <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-[var(--upaint-surface)] text-base text-[var(--upaint-text-muted)]"
+              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               title="Group"
               aria-label="Group layer"
@@ -416,7 +412,7 @@
             </div>
           {:else if layer.kind === "mask"}
             <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-[var(--upaint-surface)] text-base text-[var(--upaint-text-muted)]"
+              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
               style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm); color: ${layer.color};`}
               title="Mask"
               aria-label="Mask layer"
@@ -425,7 +421,7 @@
             </div>
           {:else if thumbnail}
             <img
-              class="h-[34px] w-[34px] border bg-[var(--upaint-surface)] object-contain"
+              class="h-[34px] w-[34px] border bg-(--upaint-surface) object-contain"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               src={thumbnail}
               alt={`${layer.name} preview`}
@@ -433,7 +429,7 @@
             />
           {:else}
             <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-[var(--upaint-surface)] text-base text-[var(--upaint-text-muted)]"
+              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               title="No preview"
               aria-label="No layer preview"
@@ -446,7 +442,7 @@
             <input
               bind:this={renameInput}
               bind:value={renameDraft}
-              class="min-w-0 border bg-[var(--upaint-surface)] px-1.5 py-1 text-xs text-[var(--upaint-text)] outline-none focus:border-[var(--upaint-accent)]"
+              class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               type="text"
               aria-label={`Rename ${layer.name}`}
@@ -456,7 +452,7 @@
           {:else}
             <button
               type="button"
-              class="min-w-0 cursor-text overflow-hidden border-0 bg-transparent p-0 text-left text-xs text-ellipsis whitespace-nowrap text-[var(--upaint-text)]"
+              class="min-w-0 cursor-text overflow-hidden border-0 bg-transparent p-0 text-left text-xs text-ellipsis whitespace-nowrap text-(--upaint-text)"
               title={`${layer.name} (click to rename)`}
               onclick={() => void beginRename(layer)}
             >
@@ -467,7 +463,7 @@
           <div class="flex items-center gap-0.5">
             <button
               type="button"
-              class="h-7 w-7 cursor-pointer border bg-[var(--upaint-surface)] text-[10px] text-[var(--upaint-text)] disabled:cursor-not-allowed disabled:opacity-35"
+              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-[10px] text-(--upaint-text) disabled:cursor-not-allowed disabled:opacity-35"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               title="Move up (towards the front)"
               aria-label={`Move ${layer.name} up`}
@@ -478,7 +474,7 @@
             </button>
             <button
               type="button"
-              class="h-7 w-7 cursor-pointer border bg-[var(--upaint-surface)] text-[10px] text-[var(--upaint-text)] disabled:cursor-not-allowed disabled:opacity-35"
+              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-[10px] text-(--upaint-text) disabled:cursor-not-allowed disabled:opacity-35"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
               title="Move down (towards the back)"
               aria-label={`Move ${layer.name} down`}
@@ -489,7 +485,7 @@
             </button>
             <button
               type="button"
-              class="h-7 w-7 cursor-pointer border bg-[var(--upaint-surface)] text-base text-[var(--upaint-danger)] hover:border-[var(--upaint-danger)]"
+              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-base text-(--upaint-danger) hover:border-(--upaint-danger)"
               style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); transition: border-color var(--upaint-transition);"
               title="Delete layer"
               aria-label={`Delete ${layer.name}`}
@@ -501,7 +497,7 @@
 
           {#if layer.kind === "mask"}
             <label
-              class={`col-span-4 flex items-center gap-2 border-t pt-1.5 text-[11px] text-[var(--upaint-text-muted)] ${dropAnchorId === layer.id && dropBefore ? "border-t-[var(--upaint-accent)]" : ""}`}
+              class={`col-span-4 flex items-center gap-2 border-t pt-1.5 text-[11px] text-(--upaint-text-muted) ${dropAnchorId === layer.id && dropBefore ? "border-t-(--upaint-accent)" : ""}`}
               style={`border-color: ${dropAnchorId === layer.id && !dropBefore ? "var(--upaint-accent)" : "var(--upaint-border)"};`}
             >
               Display color
@@ -517,7 +513,7 @@
             </label>
           {:else}
             <div
-              class={`col-span-4 grid grid-cols-[minmax(0,1fr)_36px_112px] items-center gap-1.5 border-t pt-1.5 ${dropAnchorId === layer.id && dropBefore ? "border-t-[var(--upaint-accent)]" : ""}`}
+              class={`col-span-4 grid grid-cols-[minmax(0,1fr)_36px_112px] items-center gap-1.5 border-t pt-1.5 ${dropAnchorId === layer.id && dropBefore ? "border-t-(--upaint-accent)" : ""}`}
               style={`border-color: ${dropAnchorId === layer.id && !dropBefore ? "var(--upaint-accent)" : "var(--upaint-border)"};`}
             >
               <!--
@@ -525,22 +521,20 @@
                 store emissions, and this value resolves to the same integer the
                 range input just emitted, so Svelte does not interrupt the drag.
               -->
-              <input
-                class="m-0 h-4 min-w-0 cursor-pointer accent-[var(--upaint-accent)]"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
+              <Slider
                 value={Math.round(layer.opacity * 100)}
+                min={0}
+                max={100}
+                step={1}
                 title="Opacity"
-                aria-label={`Opacity of "${layer.name}"`}
-                oninput={(event) => handleOpacityInput(event, layer.id)}
+                ariaLabel={`Opacity of "${layer.name}"`}
+                onValueInput={(value) => layerStore.setOpacity(layer.id, value / 100)}
               />
-              <output class="text-right text-[11px] tabular-nums text-[var(--upaint-text-muted)]">
+              <output class="text-right text-[11px] tabular-nums text-(--upaint-text-muted)">
                 {Math.round(layer.opacity * 100)}%
               </output>
               <select
-                class="min-w-0 cursor-pointer border bg-[var(--upaint-surface)] px-1 py-1 text-[11px] text-[var(--upaint-text)] outline-none focus:border-[var(--upaint-accent)]"
+                class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-[11px] text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
                 style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
                 value={layer.blendMode}
                 title="Blend mode"
@@ -568,7 +562,7 @@
     <h2 class="m-0 mr-auto text-sm font-semibold">Layers &amp; Masks</h2>
     <button
       type="button"
-      class="cursor-pointer border border-[var(--upaint-accent)] bg-[var(--upaint-accent)] px-2.5 py-1 text-xs font-medium text-[var(--upaint-text)] hover:bg-[var(--upaint-accent-muted)]"
+      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
       style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
       title="Add image layer(s) from file"
       onclick={() => document.getElementById("upaint-layer-file-input")?.click()}
@@ -577,7 +571,7 @@
     </button>
     <button
       type="button"
-      class="cursor-pointer border border-[var(--upaint-accent)] bg-[var(--upaint-accent)] px-2.5 py-1 text-xs font-medium text-[var(--upaint-text)] hover:bg-[var(--upaint-accent-muted)]"
+      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
       style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
       title="Add a blank transparent layer"
       onclick={() => void handleAddBlankLayer()}
@@ -586,7 +580,7 @@
     </button>
     <button
       type="button"
-      class="cursor-pointer border border-[var(--upaint-accent)] bg-[var(--upaint-accent)] px-2.5 py-1 text-xs font-medium text-[var(--upaint-text)] hover:bg-[var(--upaint-accent-muted)]"
+      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
       style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
       title="Add an inpainting mask"
       onclick={handleAddMaskLayer}
@@ -606,7 +600,7 @@
   <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
     <Accordion bind:open={layersOpen} title="Layers" count={regularLayers.length} id="upaint-regular-layer-list" data-layer-section="layers">
       {#if regularLayers.length === 0}
-        <div class="px-2 py-5 text-center text-[var(--upaint-text-muted)]">
+        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
           No layers yet -- use + Add or + Blank.
         </div>
       {:else}
@@ -616,7 +610,7 @@
 
     <Accordion bind:open={masksOpen} title="Masks" count={maskLayers.length} id="upaint-mask-layer-list" data-layer-section="masks">
       {#if maskLayers.length === 0}
-        <div class="px-2 py-5 text-center text-[var(--upaint-text-muted)]">
+        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
           No masks yet -- use + Mask.
         </div>
       {:else}
