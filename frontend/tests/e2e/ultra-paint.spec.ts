@@ -36,6 +36,8 @@ interface UltraPaintTestHook {
       layers: TestLayer[];
     };
     setBoundaryBox(box: BoundaryBox): void;
+    setVisible(id: string, visible: boolean): void;
+    setTransform(id: string, transform: Partial<TestLayer["transform"]>): void;
   };
   paintToolStore: {
     setBrushSettings(settings: {
@@ -123,7 +125,7 @@ async function readMaskPixel(
   );
 }
 
-test("auto resolution follows the native-area formula and configured buckets", () => {
+test("auto resolution preserves the selected square-equivalent area", () => {
   expect(calculateAutoResolution(300, 400, 1024, 64)).toEqual({
     width: 896,
     height: 1152,
@@ -656,6 +658,7 @@ test("generate flow adds a fixture image at the boundary-box position", async ({
 }) => {
   let requestBody: {
     composite_image: string;
+    generation_mode: "txt2img" | "img2img";
     mask_image?: string;
     gen_params: {
       prompt: string;
@@ -712,9 +715,155 @@ test("generate flow adds a fixture image at the boundary-box position", async ({
     gen_params: { prompt: "fixture prompt", sampler_name: "Euler a" },
   });
   expect(requestBody?.composite_image).toMatch(/^data:image\/png;base64,/);
+  expect(requestBody?.generation_mode).toBe("img2img");
   expect(requestBody).not.toHaveProperty("mask_image");
   expect(requestBody?.gen_params).not.toHaveProperty("target_width");
   expect(requestBody?.gen_params).not.toHaveProperty("target_height");
+});
+
+test("LoRAs add activation words and only inject enabled tags into generation", async ({
+  page,
+}) => {
+  let generatedPrompt: string | null = null;
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/loras", (route) =>
+    route.fulfill({
+      json: [
+        {
+          name: "Portrait Detail",
+          prompt_name: "portrait-detail",
+          activation_text: "cinematic lighting",
+          preferred_weight: 0.8,
+        },
+        {
+          name: "Painterly Style",
+          prompt_name: "painterly-style",
+          activation_text: "",
+          preferred_weight: 1,
+        },
+      ],
+    }),
+  );
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({
+      json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 },
+    }),
+  );
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    const body = route.request().postDataJSON() as {
+      gen_params?: { prompt?: string };
+    };
+    generatedPrompt = body.gen_params?.prompt ?? null;
+    await route.fulfill({ json: { images: [] } });
+  });
+  await openApp(page);
+
+  const prompt = page.getByPlaceholder("Describe what to generate");
+  await prompt.fill("portrait");
+  await page.getByRole("button", { name: /^LoRAs/ }).click();
+  await page.getByRole("button", { name: "Add +", exact: true }).click();
+
+  const picker = page.getByRole("dialog", { name: "Add LoRA" });
+  const search = picker.getByRole("searchbox", { name: "Search LoRAs" });
+  await search.fill("Portrait");
+  await picker.getByRole("button", { name: "Add Portrait Detail" }).click();
+  await search.fill("");
+  await picker.getByRole("button", { name: "Add Painterly Style" }).click();
+  await picker.getByRole("button", { name: "Close LoRA picker" }).click();
+
+  const selected = page.getByLabel("Selected LoRAs");
+  await expect(selected).toContainText("Portrait Detail");
+  await expect(selected).toContainText("Painterly Style");
+  await page.getByLabel("Strength value for Portrait Detail").fill("3.5");
+  await page
+    .getByRole("button", { name: "Add activation words for Portrait Detail" })
+    .click();
+  await expect(prompt).toHaveValue("portrait, cinematic lighting");
+
+  await page.getByRole("button", { name: "Disable Painterly Style" }).click();
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(() => generatedPrompt).not.toBeNull();
+  expect(generatedPrompt).toBe(
+    "portrait, cinematic lighting\n<lora:portrait-detail:3.5>",
+  );
+  await expect(prompt).toHaveValue("portrait, cinematic lighting");
+  await page.getByRole("button", { name: "Remove Painterly Style" }).click();
+  await expect(selected).not.toContainText("Painterly Style");
+});
+
+test("generation mode follows effective raster overlap with the boundary box", async ({
+  page,
+}) => {
+  const generationModes: string[] = [];
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    const body = route.request().postDataJSON() as { generation_mode?: string };
+    generationModes.push(body.generation_mode ?? "missing");
+    await route.fulfill({ json: { images: [] } });
+  });
+  await openApp(page);
+
+  const generate = page.getByRole("button", { name: "Generate", exact: true });
+  const denoising = page.getByLabel("Denoising strength");
+  const modeStatus = page.getByRole("status").filter({ hasText: "Generation mode:" });
+  await expect(denoising).toHaveCount(2);
+  await expect(denoising.first()).toBeDisabled();
+  await expect(modeStatus).toContainText("Text to image");
+  await generate.click();
+  await expect.poll(() => generationModes.length).toBe(1);
+
+  await addBlankLayer(page);
+  const layerId = await page.evaluate(() => {
+    const layer = (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+      (candidate) => candidate.kind === "raster",
+    );
+    if (!layer?.id) throw new Error("Raster test layer is unavailable");
+    return layer.id;
+  });
+  await expect(denoising.first()).toBeEnabled();
+  await expect(modeStatus).toContainText("Image to image");
+  await generate.click();
+  await expect.poll(() => generationModes.length).toBe(2);
+
+  await page.evaluate((id) => {
+    const store = (window as TestWindow).__ultraPaintTest?.layerStore;
+    if (!store) throw new Error("Ultra Paint test hook is unavailable");
+    const box = store.document.boundaryBox;
+    store.setTransform(id, { x: box.x + box.width, y: box.y });
+  }, layerId);
+  await expect(denoising.first()).toBeDisabled();
+  await generate.click();
+  await expect.poll(() => generationModes.length).toBe(3);
+
+  await page.evaluate((id) => {
+    const store = (window as TestWindow).__ultraPaintTest?.layerStore;
+    if (!store) throw new Error("Ultra Paint test hook is unavailable");
+    const box = store.document.boundaryBox;
+    store.setTransform(id, { x: box.x + box.width - 1, y: box.y });
+  }, layerId);
+  await expect(denoising.first()).toBeEnabled();
+  await generate.click();
+  await expect.poll(() => generationModes.length).toBe(4);
+
+  await page.evaluate((id) => {
+    const store = (window as TestWindow).__ultraPaintTest?.layerStore;
+    if (!store) throw new Error("Ultra Paint test hook is unavailable");
+    store.setVisible(id, false);
+  }, layerId);
+  await expect(denoising.first()).toBeDisabled();
+  await generate.click();
+  await expect.poll(() => generationModes.length).toBe(5);
+
+  expect(generationModes).toEqual([
+    "txt2img",
+    "img2img",
+    "txt2img",
+    "img2img",
+    "txt2img",
+  ]);
 });
 
 test("resolution modes update targets and control generate request fields", async ({
@@ -744,6 +893,7 @@ test("resolution modes update targets and control generate request fields", asyn
     hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 300, height: 400 });
   });
 
+  await page.getByRole("button", { name: "Bounding Box", exact: true }).click();
   const mode = page.getByLabel("Resolution scale mode");
   const generate = page.getByRole("button", { name: "Generate", exact: true });
   await mode.selectOption("auto");
@@ -862,10 +1012,32 @@ test("generate includes mask_image when a visible mask is present", async ({
     if (!app) throw new Error("Ultra Paint test hook is unavailable");
     app.resizeBoundaryBox(256, 256);
   });
+  await addBlankLayer(page);
   await addMaskLayer(page);
   await paintCenteredStroke(page);
 
   await page.getByRole("button", { name: "Generate", exact: true }).click();
   await expect.poll(() => requestBody).not.toBeNull();
   expect(requestBody?.mask_image).toMatch(/^data:image\/png;base64,/);
+});
+
+test("mask-only canvas uses txt2img and omits the mask", async ({ page }) => {
+  let requestBody: { generation_mode?: string; mask_image?: string } | null = null;
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    requestBody = route.request().postDataJSON() as typeof requestBody;
+    await route.fulfill({ json: { images: [] } });
+  });
+  await openApp(page);
+  await addMaskLayer(page);
+  await paintCenteredStroke(page);
+
+  await expect(page.getByLabel("Denoising strength").first()).toBeDisabled();
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(() => requestBody).not.toBeNull();
+  expect(requestBody?.generation_mode).toBe("txt2img");
+  expect(requestBody).not.toHaveProperty("mask_image");
 });

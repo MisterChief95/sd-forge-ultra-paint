@@ -1,4 +1,4 @@
-"""`POST /ultra_paint/api/generate` -- runs one img2img pass over a composited canvas.
+"""`POST /ultra_paint/api/generate` -- runs one txt2img/img2img canvas pass.
 
 Phase 2.R replacement for the old two-button Generate handshake
 (`ultra_paint/bridge.py`'s hidden `LogicalImage` textbox + `input`-event
@@ -17,6 +17,7 @@ sequence the old `_on_generate` click handler used
 import base64
 import re
 from io import BytesIO
+from typing import Literal
 
 from fastapi import HTTPException
 from PIL import Image
@@ -43,6 +44,7 @@ _DATA_URL_RE = re.compile(r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", 
 class GenerateRequest(BaseModel):
     composite_image: str
     gen_params: dict = {}
+    generation_mode: Literal["img2img", "txt2img"] = "img2img"
     # Optional data:image/...;base64,... URL from the frontend's
     # Compositor.flattenMask() (Phase 3) -- omitted/None when no mask layer
     # has been painted, matching Phase 1/2 behavior exactly (no inpainting).
@@ -97,7 +99,11 @@ def generate(request: GenerateRequest) -> GenerateResponse:
         shared.state.begin(job="ultra_paint")
         try:
             processed = main_thread.run_and_wait_result(
-                run_generation, composite_image, request.gen_params, mask_image
+                run_generation,
+                composite_image,
+                request.gen_params,
+                mask_image,
+                request.generation_mode,
             )
         finally:
             shared.state.end()

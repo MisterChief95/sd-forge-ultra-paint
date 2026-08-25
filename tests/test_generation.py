@@ -56,6 +56,10 @@ class _FakeStableDiffusionProcessingImg2Img:
         pass
 
 
+class _FakeStableDiffusionProcessingTxt2Img(_FakeStableDiffusionProcessingImg2Img):
+    pass
+
+
 @pytest.fixture
 def fake_forge_modules(monkeypatch):
     """Install minimal fake `gradio`/`modules.*` packages, then reload
@@ -88,6 +92,7 @@ def fake_forge_modules(monkeypatch):
             return None
 
     fake_scripts_module.scripts_img2img = _FakeScriptRunner()
+    fake_scripts_module.scripts_txt2img = _FakeScriptRunner()
 
     # --- modules.shared ---
     fake_shared_module = types.ModuleType("modules.shared")
@@ -95,8 +100,10 @@ def fake_forge_modules(monkeypatch):
     class _FakeOpts:
         outdir_samples = ""
         outdir_img2img_samples = "/tmp/img2img-samples"
+        outdir_txt2img_samples = "/tmp/txt2img-samples"
         outdir_grids = ""
         outdir_img2img_grids = "/tmp/img2img-grids"
+        outdir_txt2img_grids = "/tmp/txt2img-grids"
         samples_log_stdout = False
 
     class _FakeSharedState:
@@ -120,6 +127,7 @@ def fake_forge_modules(monkeypatch):
     # --- modules.processing ---
     fake_processing_module = types.ModuleType("modules.processing")
     fake_processing_module.StableDiffusionProcessingImg2Img = _FakeStableDiffusionProcessingImg2Img
+    fake_processing_module.StableDiffusionProcessingTxt2Img = _FakeStableDiffusionProcessingTxt2Img
     fake_processing_module.Processed = object
 
     def _fake_process_images(p):
@@ -193,7 +201,7 @@ def test_no_mask_leaves_inpainting_fields_at_gen_param_defaults(fake_forge_modul
     assert p.mask_blur == generation.GEN_PARAM_DEFAULTS["mask_blur"]
 
 
-def test_mask_with_undersized_box_forces_inpaint_full_res(fake_forge_modules):
+def test_mask_with_undersized_box_respects_whole_image_choice(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
     fake_shared.sd_model = None  # -> model_profile fallback resolution (512)
 
@@ -206,10 +214,10 @@ def test_mask_with_undersized_box_forces_inpaint_full_res(fake_forge_modules):
 
     assert p.mask is not None
     assert p.mask.mode == "L"
-    assert p.inpaint_full_res is True  # forced despite explicit False, box < native res
+    assert p.inpaint_full_res is False
 
 
-def test_mask_with_adequately_sized_box_respects_caller_choice(fake_forge_modules):
+def test_masked_only_choice_is_respected(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
 
     class _Sd1Model:
@@ -223,11 +231,11 @@ def test_mask_with_adequately_sized_box_respects_caller_choice(fake_forge_module
     mask = Image.new("L", big_composite.size, 255)
 
     p = generation.build_img2img_processing(
-        big_composite, {"inpaint_full_res": False}, mask_image=mask
+        big_composite, {"inpaint_full_res": True}, mask_image=mask
     )
 
     assert p.mask is not None
-    assert p.inpaint_full_res is False  # caller's explicit choice respected, box >= native res
+    assert p.inpaint_full_res is True
 
 
 def test_mask_size_mismatch_raises(fake_forge_modules):
@@ -253,6 +261,51 @@ def test_mask_blur_and_padding_pass_through(fake_forge_modules):
 
     assert p.mask_blur == 12
     assert p.inpaint_full_res_padding == 80
+
+
+def test_inpaint_disables_forge_original_image_overlay(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite()
+    mask = Image.new("L", composite.size, 255)
+
+    p = generation.build_img2img_processing(
+        composite,
+        {"override_settings": {"overlay_inpaint": True}},
+        mask_image=mask,
+    )
+
+    assert p.override_settings["overlay_inpaint"] is False
+
+
+def test_only_masked_result_becomes_transparent_bb_patch(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    raw = Image.new("RGB", (8, 8), (0, 255, 0))
+    mask = Image.new("L", (16, 12), 0)
+    mask.paste(255, (4, 3, 12, 9))
+
+    result = generation._transparent_inpaint_patch(
+        raw,
+        (16, 12),
+        mask,
+        (4, 3, 8, 6),
+    )
+
+    assert result.size == (16, 12)
+    assert result.getpixel((0, 0))[3] == 0
+    assert result.getpixel((6, 5)) == (0, 255, 0, 255)
+
+
+def test_whole_image_result_uses_mask_as_alpha(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    raw = Image.new("RGB", (8, 8), (0, 0, 255))
+    mask = Image.new("L", (16, 12), 0)
+    mask.paste(128, (0, 0, 8, 12))
+
+    result = generation._transparent_inpaint_patch(raw, (16, 12), mask, None)
+
+    assert result.size == (16, 12)
+    assert result.getpixel((2, 2))[3] == 128
+    assert result.getpixel((12, 2))[3] == 0
 
 
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):
@@ -342,11 +395,7 @@ def test_target_size_overrides_output_dimensions(fake_forge_modules):
     assert p.init_images[0].size == (300, 400)
 
 
-def test_target_size_does_not_affect_inpaint_full_res_native_check(fake_forge_modules):
-    """target_width/height and the inpaint_full_res native-resolution
-    auto-force are independent -- scaling the whole canvas to native res via
-    target_width/height should not by itself suppress the auto-force, which
-    is about the ORIGINAL box size relative to native resolution."""
+def test_target_size_does_not_override_whole_image_choice(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
     fake_shared.sd_model = None  # fallback native resolution: 512
 
@@ -360,7 +409,7 @@ def test_target_size_does_not_affect_inpaint_full_res_native_check(fake_forge_mo
     )
 
     assert (p.width, p.height) == (512, 512)
-    assert p.inpaint_full_res is True  # still forced: box (64x64) < native res (512), regardless of target
+    assert p.inpaint_full_res is False
 
 
 def test_only_one_of_target_width_height_is_ignored(fake_forge_modules):
@@ -371,3 +420,89 @@ def test_only_one_of_target_width_height_is_ignored(fake_forge_modules):
     p = generation.build_img2img_processing(_composite(64, 64), {"target_width": 512})
 
     assert (p.width, p.height) == (64, 64)
+
+
+def test_txt2img_uses_txt2img_runner_and_ignores_img2img_fields(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+
+    p = generation.build_txt2img_processing(
+        _composite(300, 400),
+        {"denoising_strength": 0.1, "target_width": 896, "target_height": 1152},
+    )
+
+    assert isinstance(p, _FakeStableDiffusionProcessingTxt2Img)
+    assert p.scripts is generation.modules.scripts.scripts_txt2img
+    assert (p.width, p.height) == (896, 1152)
+    assert not hasattr(p, "init_images")
+    assert not hasattr(p, "denoising_strength")
+
+
+def test_script_defaults_are_cached_per_runner(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+
+    class _Control:
+        def __init__(self, value):
+            self.value = value
+
+    class _Script:
+        args_from = 1
+        args_to = 2
+        is_img2img = False
+
+        def ui(self, _is_img2img):
+            return [_Control(0)]
+
+    img2img_script = _Script()
+    txt2img_script = _Script()
+    img2img_runner = generation.modules.scripts.scripts_img2img
+    txt2img_runner = generation.modules.scripts.scripts_txt2img
+    img2img_runner.scripts, img2img_runner.inputs = [img2img_script], [None, _Control(1)]
+    txt2img_runner.scripts, txt2img_runner.inputs = [txt2img_script], [None, _Control(2)]
+    generation._default_script_args_cache = None
+
+    assert generation._default_script_args(img2img_runner) == [0, 1]
+    assert generation._default_script_args(txt2img_runner) == [0, 2]
+
+
+def test_empty_composite_forces_txt2img_and_resizes_result(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    composite = Image.new("RGBA", (16, 12), (0, 0, 0, 0))
+    built = []
+    original = generation.build_txt2img_processing
+
+    def _build(*args):
+        p = original(*args)
+        built.append(p)
+        return p
+
+    monkeypatch.setattr(generation, "build_txt2img_processing", _build)
+    monkeypatch.setattr(
+        generation,
+        "process_images",
+        lambda _p: types.SimpleNamespace(
+            images=[Image.new("RGB", (32, 24), (0, 255, 0))], extra_images=[]
+        ),
+    )
+
+    result = generation.run_generation(composite, {}, generation_mode="img2img")
+
+    assert isinstance(built[0], _FakeStableDiffusionProcessingTxt2Img)
+    assert result.images[0].size == composite.size
+
+
+def test_txt2img_ignores_mask_and_denoise(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    monkeypatch.setattr(
+        generation,
+        "process_images",
+        lambda _p: types.SimpleNamespace(images=[Image.new("RGB", (64, 64))], extra_images=[]),
+    )
+
+    result = generation.run_generation(
+        _composite(),
+        {"denoising_strength": 0.0},
+        Image.new("L", (1, 1)),
+        generation_mode="txt2img",
+    )
+
+    assert result.images[0].size == (64, 64)

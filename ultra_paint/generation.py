@@ -1,10 +1,11 @@
-"""img2img generation for the Ultra Paint tab.
+"""txt2img/img2img generation for the Ultra Paint tab.
 
-This module builds and runs a `StableDiffusionProcessingImg2Img` directly
+This module builds and runs Forge processing objects directly
 instead of going through `modules.img2img.img2img()`. The stock entry point
 takes ~40 positional arguments describing the five img2img sub-modes (sketch,
 inpaint, inpaint-sketch, inpaint-upload, batch), none of which apply: Ultra
-Paint always hands over one already-composited RGBA frame.
+Paint always hands over one boundary-box-sized RGBA frame; an empty frame
+selects txt2img, while visible raster content selects img2img/inpainting.
 
 Threading contract
 ------------------
@@ -52,12 +53,10 @@ key                          default    notes
                                         matching `StableDiffusionProcessing`'s own default
                                         (processing.py). 0 = fill, 2 = latent noise,
                                         3 = latent nothing.
-``inpaint_full_res``         ``True``   Only used when a mask is supplied. Phase 3: if the
-                                        document's boundary box is smaller than the loaded
-                                        model's native resolution (`model_profile.py`), this
-                                        is forced to ``True`` regardless of what's passed in,
-                                        so a small inpaint region is always upscaled to the
-                                        model's native resolution rather than run undersized.
+``inpaint_full_res``         ``False``  Only used when a mask is supplied. ``False`` sends
+                                        the whole boundary box to the model; ``True`` crops
+                                        again around the mask plus context padding. The
+                                        frontend exposes both modes and defaults to whole BB.
 ``inpaint_full_res_padding``  ``32``    Pixels of context kept around the masked region when
                                         ``inpaint_full_res`` is set.
 ``mask_blur``                ``4``      Pixels. Only used when a mask is supplied.
@@ -96,12 +95,9 @@ Optional. A grayscale (mode ``"L"``) `PIL.Image` the same size as
 from before Phase 3 -- `p.mask = None`, no inpainting-specific fields are
 touched beyond their defaults.
 
-Note: `inpaint_full_res`'s native-resolution auto-forcing (above) always
-compares against the boundary-box/composite's own size, never against
-`target_width`/`target_height` -- the two concerns are independent. Scaling
-the whole canvas to a target resolution and cropping tightly to just the
-masked region within that canvas are different operations that can both
-apply to the same generation.
+The boundary-box scale mode and `inpaint_full_res` are independent: the first
+sets the model's working resolution, while the second chooses whether its
+context is the whole BB or a tighter mask-and-padding crop.
 
 `batch_size` and `n_iter` are pinned to 1 in Phase 1 (one canvas in, one image
 out) and are deliberately *not* read from `gen_params`.
@@ -114,12 +110,22 @@ from PIL import Image
 
 import modules.scripts
 from modules import shared
-from modules.processing import Processed, StableDiffusionProcessingImg2Img, process_images
+from modules.processing import (
+    Processed,
+    StableDiffusionProcessingImg2Img,
+    StableDiffusionProcessingTxt2Img,
+    process_images,
+)
 from modules.shared import opts
 
-from ultra_paint.model_profile import is_unsupported_video_model, native_resolution_for
+from ultra_paint.model_profile import is_unsupported_video_model
 
-__all__ = ["build_img2img_processing", "run_generation", "GEN_PARAM_DEFAULTS"]
+__all__ = [
+    "build_img2img_processing",
+    "build_txt2img_processing",
+    "run_generation",
+    "GEN_PARAM_DEFAULTS",
+]
 
 
 GEN_PARAM_DEFAULTS: dict = {
@@ -138,7 +144,7 @@ GEN_PARAM_DEFAULTS: dict = {
     "resize_mode": 0,
     "override_settings": {},
     "inpainting_fill": 1,
-    "inpaint_full_res": True,
+    "inpaint_full_res": False,
     "inpaint_full_res_padding": 32,
     "mask_blur": 4,
     "inpainting_mask_invert": 0,
@@ -171,7 +177,7 @@ def _get(gen_params: dict, key: str):
 # --------------------------------------------------------------- script args
 
 
-_default_script_args_cache: list | None = None
+_default_script_args_cache: dict[int, list] | None = None
 
 
 def _control_default(control):
@@ -210,12 +216,13 @@ def _default_script_args(script_runner=None) -> list:
 
     Cached: script registration is fixed for the life of the process.
     """
-    global _default_script_args_cache
-
-    if _default_script_args_cache is not None:
-        return list(_default_script_args_cache)
-
     runner = script_runner if script_runner is not None else modules.scripts.scripts_img2img
+    global _default_script_args_cache
+    if _default_script_args_cache is None:
+        _default_script_args_cache = {}
+    cached = _default_script_args_cache.get(id(runner))
+    if cached is not None:
+        return list(cached)
 
     last_arg_index = 1
     for script in runner.scripts:
@@ -242,7 +249,7 @@ def _default_script_args(script_runner=None) -> list:
 
             script_args[args_from:args_to] = [_control_default(c) for c in controls]
 
-    _default_script_args_cache = list(script_args)
+    _default_script_args_cache[id(runner)] = list(script_args)
     return list(script_args)
 
 
@@ -264,8 +271,8 @@ def build_img2img_processing(
     black = keep. When `None` (no mask layer painted), this is Phase 1/2
     behavior unchanged: straight img2img over the whole canvas, `mask=None`,
     no inpainting path taken. When present, Phase 3's inpainting fields
-    (`inpainting_fill`, `mask_blur`, `inpainting_mask_invert`, and a possibly
-    auto-forced `inpaint_full_res` -- see below) come into play.
+    (`inpainting_fill`, `mask_blur`, `inpainting_mask_invert`, and the selected
+    `inpaint_full_res` area mode) come into play.
     """
     if composite_image is None:
         raise ValueError("Ultra Paint: no composite image was received from the canvas")
@@ -285,7 +292,6 @@ def build_img2img_processing(
     height = max(8, (composite_image.height // 8) * 8)
 
     mask: Image.Image | None = None
-    inpaint_full_res = bool(_get(gen_params, "inpaint_full_res"))
     if mask_image is not None:
         if mask_image.size != composite_image.size:
             raise ValueError(
@@ -294,19 +300,8 @@ def build_img2img_processing(
             )
         mask = mask_image.convert("L")
 
-        # Phase 3 auto-scale: a boundary box smaller than the loaded model's
-        # native resolution gets forced into the crop-and-upscale-to-native
-        # inpaint_full_res path regardless of what the caller passed, so a
-        # small inpaint region is never run undersized. A box already at or
-        # above native resolution respects the caller's own choice.
-        native_resolution = native_resolution_for(shared.sd_model)
-        if width < native_resolution or height < native_resolution:
-            inpaint_full_res = True
-
     # Phase 3 boundary-box scale modes: an explicit target overrides the
-    # output size Forge is asked to produce, independent of the inpaint_full_res
-    # check above (which intentionally still uses the un-overridden composite
-    # size -- see the module docstring's `mask_image` section).
+    # output size Forge is asked to produce.
     target_width = _get(gen_params, "target_width")
     target_height = _get(gen_params, "target_height")
     if target_width is not None and target_height is not None:
@@ -340,9 +335,19 @@ def build_img2img_processing(
         init_images=[composite_image],
         mask=mask,  # None unless a mask layer was painted (Phase 3).
         resize_mode=int(_get(gen_params, "resize_mode")),
-        override_settings=dict(_get(gen_params, "override_settings")),
+        override_settings={
+            **dict(_get(gen_params, "override_settings")),
+            # Ultra Paint adds the result over the existing layer stack, so
+            # keep Forge's raw denoised pixels instead of baking the original
+            # image back into them. `run_generation` restores the Only-masked
+            # crop to boundary-box coordinates and uses the mask as alpha.
+            "overlay_inpaint": False,
+        },
         inpainting_fill=int(_get(gen_params, "inpainting_fill")),
-        inpaint_full_res=inpaint_full_res,
+        # False = use the whole boundary box; True = crop again around the
+        # mask plus padding. The frontend exposes both and this must respect
+        # the user's choice regardless of BB/model size.
+        inpaint_full_res=bool(_get(gen_params, "inpaint_full_res")),
         inpaint_full_res_padding=int(_get(gen_params, "inpaint_full_res_padding")),
         mask_blur=int(_get(gen_params, "mask_blur")),
         inpainting_mask_invert=int(_get(gen_params, "inpainting_mask_invert")),
@@ -381,6 +386,55 @@ def build_img2img_processing(
     return p
 
 
+def build_txt2img_processing(
+    composite_image: Image.Image,
+    gen_params: dict,
+) -> StableDiffusionProcessingTxt2Img:
+    """Assemble a txt2img processing object sized to the boundary box."""
+    if composite_image is None:
+        raise ValueError("Ultra Paint: no composite image was received from the canvas")
+
+    if is_unsupported_video_model(shared.sd_model):
+        raise ValueError(
+            "Ultra Paint does not support video models (Wan). "
+            "Load an image model before generating."
+        )
+
+    width = max(8, (composite_image.width // 8) * 8)
+    height = max(8, (composite_image.height // 8) * 8)
+    target_width = _get(gen_params, "target_width")
+    target_height = _get(gen_params, "target_height")
+    if target_width is not None and target_height is not None:
+        width = max(8, (int(target_width) // 8) * 8)
+        height = max(8, (int(target_height) // 8) * 8)
+
+    p = StableDiffusionProcessingTxt2Img(
+        sd_model=shared.sd_model,
+        outpath_samples=opts.outdir_samples or opts.outdir_txt2img_samples,
+        outpath_grids=opts.outdir_grids or opts.outdir_txt2img_grids,
+        prompt=_get(gen_params, "prompt"),
+        negative_prompt=_get(gen_params, "negative_prompt"),
+        styles=list(_get(gen_params, "styles")),
+        batch_size=1,
+        n_iter=1,
+        steps=int(_get(gen_params, "steps")),
+        cfg_scale=float(_get(gen_params, "cfg_scale")),
+        distilled_cfg_scale=float(_get(gen_params, "distilled_cfg_scale")),
+        sampler_name=_get(gen_params, "sampler_name"),
+        scheduler=_get(gen_params, "scheduler"),
+        seed=int(_get(gen_params, "seed")),
+        subseed=int(_get(gen_params, "subseed")),
+        subseed_strength=float(_get(gen_params, "subseed_strength")),
+        width=width,
+        height=height,
+        override_settings=dict(_get(gen_params, "override_settings")),
+    )
+    p.is_api = True
+    p.scripts = modules.scripts.scripts_txt2img
+    p.script_args = _default_script_args(p.scripts)
+    return p
+
+
 # ------------------------------------------------------------------- running
 
 
@@ -388,13 +442,28 @@ def run_generation(
     composite_image: Image.Image,
     gen_params: dict,
     mask_image: Image.Image | None = None,
+    generation_mode: str = "img2img",
 ) -> Processed:
-    """Run one img2img pass over the composited canvas. GPU-thread only.
+    """Run one txt2img or img2img pass over the boundary box. GPU-thread only.
 
     Call as `main_thread.run_and_wait_result(run_generation, image, params, mask)`
     -- see the module docstring.
     """
-    p = build_img2img_processing(composite_image, gen_params, mask_image)
+    if generation_mode not in {"img2img", "txt2img"}:
+        raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
+
+    # The frontend predicts this from visible layer bounds, but only the
+    # flattened image knows whether the BB actually contains painted pixels.
+    # A transparent composite cannot be a meaningful img2img init image.
+    if composite_image.getchannel("A").getbbox() is None:
+        generation_mode = "txt2img"
+
+    is_txt2img = generation_mode == "txt2img"
+    p = (
+        build_txt2img_processing(composite_image, gen_params)
+        if is_txt2img
+        else build_img2img_processing(composite_image, gen_params, mask_image)
+    )
 
     with closing(p):
         # Index 0 of script_args is 0 ("Script: None"), so `run` returns None and
@@ -405,9 +474,58 @@ def run_generation(
         if processed is None:
             processed = process_images(p)
 
+        if is_txt2img:
+            processed.images = [
+                image.resize(composite_image.size, Image.Resampling.LANCZOS)
+                if image.size != composite_image.size
+                else image
+                for image in processed.images
+            ]
+        elif mask_image is not None:
+            mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
+            processed.images = [
+                _transparent_inpaint_patch(
+                    image,
+                    composite_image.size,
+                    mask_for_alpha,
+                    p.paste_to,
+                )
+                for image in processed.images
+            ]
+
     shared.total_tqdm.clear()
 
     if opts.samples_log_stdout:
         print(processed.js())
 
     return processed
+
+
+def _transparent_inpaint_patch(
+    image: Image.Image,
+    canvas_size: tuple[int, int],
+    mask: Image.Image,
+    paste_to: tuple[int, int, int, int] | None,
+) -> Image.Image:
+    """Restore Forge's raw result to BB coordinates, with the mask as alpha."""
+    patch = image.convert("RGBA")
+    alpha = mask.convert("L")
+
+    if paste_to is None:  # Whole image
+        if patch.size != canvas_size:
+            patch = patch.resize(canvas_size, Image.Resampling.LANCZOS)
+        if alpha.size != canvas_size:
+            alpha = alpha.resize(canvas_size, Image.Resampling.LANCZOS)
+        patch.putalpha(alpha)
+        return patch
+
+    x, y, width, height = paste_to  # Only masked
+    if patch.size != (width, height):
+        patch = patch.resize((width, height), Image.Resampling.LANCZOS)
+    if alpha.size != canvas_size:
+        alpha = alpha.resize(canvas_size, Image.Resampling.LANCZOS)
+    patch.putalpha(alpha.crop((x, y, x + width, y + height)))
+
+    result = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    result.alpha_composite(patch, (x, y))
+    return result

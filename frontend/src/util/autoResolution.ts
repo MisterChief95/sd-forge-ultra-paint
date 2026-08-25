@@ -3,30 +3,30 @@ export interface Resolution {
     height: number;
 }
 
-/** Scale an aspect ratio around the model's square native pixel area. */
+/** Fit the bounding-box aspect ratio into the selected square-equivalent area. */
 export function calculateAutoResolution(
     boxWidth: number,
     boxHeight: number,
-    nativeResolution: number,
+    baseWidth: number,
     step: number,
 ): Resolution {
     if (
         !Number.isFinite(boxWidth) ||
         !Number.isFinite(boxHeight) ||
-        !Number.isFinite(nativeResolution) ||
+        !Number.isFinite(baseWidth) ||
         !Number.isFinite(step) ||
         boxWidth <= 0 ||
         boxHeight <= 0 ||
-        nativeResolution <= 0 ||
+        baseWidth <= 0 ||
         step <= 0
     ) {
         throw new RangeError("Auto-resolution inputs must be positive numbers");
     }
 
     const ratio = boxWidth / boxHeight;
-    const baseArea = nativeResolution ** 2;
+    const baseArea = baseWidth ** 2;
     if (ratio === 1) {
-        const size = roundToStep(nativeResolution, step);
+        const size = roundToStep(baseWidth, step);
         return { width: size, height: size };
     }
 

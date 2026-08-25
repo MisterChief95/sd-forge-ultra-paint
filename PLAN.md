@@ -10,6 +10,24 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## LoRA generation controls — 2026-08-24
+
+The generation panel now has a LoRAs accordion with a lazy-loaded, searchable
+catalog sourced from Forge's installed LoRA registry. Selected LoRAs have an
+enabled toggle, -2..2 slider, -10..10 manual strength input, activation-word
+insertion, and removal. Generation appends enabled `<lora:name:weight>` tags to
+the request prompt without adding them to the visible prompt textarea. The
+catalog endpoint respects Forge's configured LoRA alias and preferred/default
+weight behavior. Backend unit coverage and focused Playwright coverage were
+added for catalog metadata and the complete selection-to-generation flow.
+
+Files added/changed: `ultra_paint/lora_api.py`,
+`scripts/ultra_paint_options_api.py`, `frontend/src/ui/GenerationPanel.svelte`,
+`frontend/src/ui/generation/generationApi.ts`,
+`frontend/src/ui/generation/lora.ts`,
+`frontend/src/ui/generation/LoraControls.svelte`, `tests/test_lora_api.py`, and
+`frontend/tests/e2e/ultra-paint.spec.ts`.
+
 ## Disabled spellcheck and browser affordances on prompt textareas — 2026-08-24
 
 The "Prompt" and "Negative prompt" textareas in GenerationPanel now disable browser

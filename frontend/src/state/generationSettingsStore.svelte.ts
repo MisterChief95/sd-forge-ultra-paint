@@ -1,20 +1,25 @@
 export type ScaleMode = "none" | "auto" | "manual";
+export type InpaintArea = "whole" | "masked";
 
 export interface GenerationSettings {
     scaleMode: ScaleMode;
+    autoBaseWidth: number;
     manualWidth: number;
     manualHeight: number;
     maskBlur: number;
     inpaintPadding: number;
+    inpaintArea: InpaintArea;
     softInpaintingEnabled: boolean;
 }
 
 const DEFAULT_SETTINGS: GenerationSettings = {
     scaleMode: "none",
+    autoBaseWidth: 1024,
     manualWidth: 1024,
     manualHeight: 1024,
     maskBlur: 4,
     inpaintPadding: 32,
+    inpaintArea: "whole",
     softInpaintingEnabled: false,
 };
 
@@ -29,6 +34,10 @@ export class GenerationSettingsStore {
         return this._state.manualWidth;
     }
 
+    public get autoBaseWidth(): number {
+        return this._state.autoBaseWidth;
+    }
+
     public get manualHeight(): number {
         return this._state.manualHeight;
     }
@@ -41,12 +50,25 @@ export class GenerationSettingsStore {
         return this._state.inpaintPadding;
     }
 
+    public get inpaintArea(): InpaintArea {
+        return this._state.inpaintArea;
+    }
+
     public get softInpaintingEnabled(): boolean {
         return this._state.softInpaintingEnabled;
     }
 
     public setScaleMode(scaleMode: ScaleMode): void {
         this._state.scaleMode = scaleMode;
+    }
+
+    public setAutoBaseWidth(width: number): void {
+        this._state.autoBaseWidth = normaliseRange(
+            width,
+            this._state.autoBaseWidth,
+            512,
+            2048,
+        );
     }
 
     public setManualWidth(width: number): void {
@@ -79,6 +101,10 @@ export class GenerationSettingsStore {
             0,
             256,
         );
+    }
+
+    public setInpaintArea(inpaintArea: InpaintArea): void {
+        this._state.inpaintArea = inpaintArea;
     }
 
     public setSoftInpaintingEnabled(enabled: boolean): void {

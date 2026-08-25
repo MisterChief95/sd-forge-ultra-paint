@@ -89,6 +89,125 @@ function normaliseHexColor(color: string, fallback: string): string {
     return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
 }
 
+type Point = { x: number; y: number };
+
+interface Matrix {
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+    tx: number;
+    ty: number;
+}
+
+const IDENTITY_MATRIX: Matrix = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+
+function matrixForTransform(transform: Transform): Matrix {
+    const cos = Math.cos(transform.rotation);
+    const sin = Math.sin(transform.rotation);
+    return {
+        a: cos * transform.scaleX,
+        b: sin * transform.scaleX,
+        c: -sin * transform.scaleY,
+        d: cos * transform.scaleY,
+        tx: transform.x,
+        ty: transform.y,
+    };
+}
+
+/** Compose `parent` then `child`, matching PixiJS container transforms. */
+function multiplyMatrices(parent: Matrix, child: Matrix): Matrix {
+    return {
+        a: parent.a * child.a + parent.c * child.b,
+        b: parent.b * child.a + parent.d * child.b,
+        c: parent.a * child.c + parent.c * child.d,
+        d: parent.b * child.c + parent.d * child.d,
+        tx: parent.a * child.tx + parent.c * child.ty + parent.tx,
+        ty: parent.b * child.tx + parent.d * child.ty + parent.ty,
+    };
+}
+
+function transformPoint(matrix: Matrix, point: Point): Point {
+    return {
+        x: matrix.a * point.x + matrix.c * point.y + matrix.tx,
+        y: matrix.b * point.x + matrix.d * point.y + matrix.ty,
+    };
+}
+
+function clipPolygon(
+    points: Point[],
+    inside: (point: Point) => boolean,
+    intersection: (from: Point, to: Point) => Point,
+): Point[] {
+    const clipped: Point[] = [];
+    for (let index = 0; index < points.length; index += 1) {
+        const from = points[index]!;
+        const to = points[(index + 1) % points.length]!;
+        const fromInside = inside(from);
+        const toInside = inside(to);
+        if (fromInside && toInside) clipped.push(to);
+        else if (fromInside) clipped.push(intersection(from, to));
+        else if (toInside) clipped.push(intersection(from, to), to);
+    }
+    return clipped;
+}
+
+/** True when the transformed rectangle shares non-zero area with `box`. */
+function intersectsBox(
+    width: number,
+    height: number,
+    matrix: Matrix,
+    box: BoundaryBox,
+): boolean {
+    if (
+        !Number.isFinite(width) ||
+        !Number.isFinite(height) ||
+        !Number.isFinite(box.width) ||
+        !Number.isFinite(box.height) ||
+        width <= 0 ||
+        height <= 0 ||
+        box.width <= 0 ||
+        box.height <= 0
+    ) {
+        return false;
+    }
+    let polygon = [
+        transformPoint(matrix, { x: 0, y: 0 }),
+        transformPoint(matrix, { x: width, y: 0 }),
+        transformPoint(matrix, { x: width, y: height }),
+        transformPoint(matrix, { x: 0, y: height }),
+    ];
+    const clipX = (x: number) => (from: Point, to: Point): Point => {
+        const ratio = (x - from.x) / (to.x - from.x);
+        return { x, y: from.y + (to.y - from.y) * ratio };
+    };
+    const clipY = (y: number) => (from: Point, to: Point): Point => {
+        const ratio = (y - from.y) / (to.y - from.y);
+        return { x: from.x + (to.x - from.x) * ratio, y };
+    };
+    polygon = clipPolygon(polygon, (point) => point.x >= box.x, clipX(box.x));
+    polygon = clipPolygon(
+        polygon,
+        (point) => point.x <= box.x + box.width,
+        clipX(box.x + box.width),
+    );
+    polygon = clipPolygon(polygon, (point) => point.y >= box.y, clipY(box.y));
+    polygon = clipPolygon(
+        polygon,
+        (point) => point.y <= box.y + box.height,
+        clipY(box.y + box.height),
+    );
+    if (polygon.length < 3) return false;
+
+    let twiceArea = 0;
+    for (let index = 0; index < polygon.length; index += 1) {
+        const from = polygon[index]!;
+        const to = polygon[(index + 1) % polygon.length]!;
+        twiceArea += from.x * to.y - to.x * from.y;
+    }
+    return Math.abs(twiceArea) > 0;
+}
+
 /**
  * `crypto.randomUUID()` where available, with a fallback for insecure LAN
  * deployments where the API is unavailable.
@@ -145,6 +264,22 @@ export class LayerStore {
     /** Reactive selection getter for Svelte consumers. */
     public get selectedLayerId(): LayerId | null {
         return this._selectedLayerId;
+    }
+
+    /** Whether an effectively visible raster layer has positive-area BB overlap. */
+    public get hasVisibleRasterContent(): boolean {
+        const layers = new Map(this._document.layers.map((layer) => [layer.id, layer]));
+        return this._document.layers.some((layer) => {
+            if (layer.kind !== "raster" || !this.isEffectivelyVisible(layer, layers)) {
+                return false;
+            }
+            return intersectsBox(
+                layer.image.width,
+                layer.image.height,
+                this.worldMatrixFor(layer, layers),
+                this._document.boundaryBox,
+            );
+        });
     }
 
     /** Legacy method form retained for PixiJS-facing and non-Svelte consumers. */
@@ -602,6 +737,49 @@ export class LayerStore {
             if (other === texture) return true;
         }
         return false;
+    }
+
+    private isEffectivelyVisible(
+        layer: Layer,
+        layers: ReadonlyMap<LayerId, Layer>,
+    ): boolean {
+        const seen = new Set<LayerId>();
+        let current: Layer | undefined = layer;
+        while (current) {
+            if (
+                seen.has(current.id) ||
+                !current.visible ||
+                !Number.isFinite(current.opacity) ||
+                current.opacity <= 0
+            ) {
+                return false;
+            }
+            seen.add(current.id);
+            if (current.parentId === null) return true;
+            const parent = layers.get(current.parentId);
+            if (!parent || parent.kind !== "group") return false;
+            current = parent;
+        }
+        return false;
+    }
+
+    private worldMatrixFor(
+        layer: Layer,
+        layers: ReadonlyMap<LayerId, Layer>,
+    ): Matrix {
+        const chain: Layer[] = [];
+        const seen = new Set<LayerId>();
+        let current: Layer | undefined = layer;
+        while (current && !seen.has(current.id)) {
+            chain.push(current);
+            seen.add(current.id);
+            current = current.parentId === null ? undefined : layers.get(current.parentId);
+        }
+        return chain.reverse().reduce(
+            (matrix, currentLayer) =>
+                multiplyMatrices(matrix, matrixForTransform(currentLayer.transform)),
+            IDENTITY_MATRIX,
+        );
     }
 
     /** Apply texture, transform, and size metadata before one synchronous emit. */
