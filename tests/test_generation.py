@@ -130,8 +130,14 @@ def fake_forge_modules(monkeypatch):
     fake_processing_module.StableDiffusionProcessingTxt2Img = _FakeStableDiffusionProcessingTxt2Img
     fake_processing_module.Processed = object
 
+    fake_shared.process_calls = []
+
     def _fake_process_images(p):
-        raise AssertionError("process_images should not run in a build_img2img_processing-only test")
+        fake_shared.process_calls.append(p)
+        if p.mask is not None:
+            p.mask_for_overlay = p.mask
+            p.paste_to = None
+        return types.SimpleNamespace(images=[p.init_images[0].convert("RGB")], extra_images=[])
 
     fake_processing_module.process_images = _fake_process_images
 
@@ -308,6 +314,96 @@ def test_whole_image_result_uses_mask_as_alpha(fake_forge_modules):
     assert result.getpixel((12, 2))[3] == 0
 
 
+def test_coherence_pass_runs_second_pass_with_expanded_alpha(fake_forge_modules):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    result = generation.run_generation(
+        composite,
+        {
+            "coherence_pass_enabled": True,
+            "coherence_edge_size": 3,
+            "denoising_strength": 0.9,
+            "mask_blur": 7,
+        },
+        mask,
+    )
+
+    assert len(fake_shared.process_calls) == 2
+    p2 = fake_shared.process_calls[1]
+    assert p2.denoising_strength == generation.COHERENCE_DENOISING_STRENGTH == 0.3
+    assert p2.mask_blur == 7
+    assert p2.scripts is None
+    assert p2.script_args is None
+    assert result.images[0].getpixel((10, 16))[3] > 0
+    assert result.images[0].getpixel((8, 16))[3] == 0
+
+
+def test_disabled_coherence_keeps_single_pass_mask_alpha(fake_forge_modules):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    result = generation.run_generation(composite, {}, mask)
+
+    assert len(fake_shared.process_calls) == 1
+    assert result.images[0].getpixel((11, 16))[3] == 0
+    assert result.images[0].getpixel((12, 16))[3] == 255
+
+
+def test_coherence_pass_zero_edge_size_has_no_expanded_alpha(fake_forge_modules):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    result = generation.run_generation(
+        composite,
+        {"coherence_pass_enabled": True, "coherence_edge_size": 0},
+        mask,
+    )
+
+    assert len(fake_shared.process_calls) == 2
+    assert result.images[0].getpixel((11, 16))[3] == 0
+    assert result.images[0].getpixel((12, 16))[3] == 255
+
+
+def test_coherence_pass_resizes_back_to_canvas_size(fake_forge_modules, monkeypatch):
+    """Regression test: Forge returns the generated image and `mask_for_overlay`
+    sized to the generation resolution (`processing.py:1757-1760`), not the
+    canvas. `_apply_coherence_pass` must resize back down/up to the canvas
+    size before returning, the same way `_transparent_inpaint_patch` already
+    does -- otherwise the result pastes back at generation resolution instead
+    of the boundary box's actual pixel size."""
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    generation_size = (64, 64)
+
+    def _fake_process_images(p):
+        fake_shared.process_calls.append(p)
+        if p.mask is not None:
+            p.mask_for_overlay = p.mask.resize(generation_size)
+            p.paste_to = None
+        image = Image.new("RGB", generation_size, (0, 255, 0))
+        return types.SimpleNamespace(images=[image], extra_images=[])
+
+    monkeypatch.setattr(generation, "process_images", _fake_process_images)
+
+    result = generation.run_generation(
+        composite,
+        {"coherence_pass_enabled": True, "coherence_edge_size": 3},
+        mask,
+    )
+
+    assert result.images[0].size == composite.size
+
+
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):
     generation, _fake_shared = fake_forge_modules
     script = _install_soft_inpainting_script(generation, [False, 9, 9, 9, 9, 9, 9])
@@ -342,6 +438,65 @@ def test_soft_inpainting_args_not_injected_without_mask(fake_forge_modules):
     )
 
     assert p.script_args[script.args_from : script.args_to] == control_defaults
+
+
+def test_inpaint_controlnet_disabled_preserves_manual_layers(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    manual_layer = {"model": "manual"}
+    calls = []
+    monkeypatch.setattr(generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers))
+
+    generation.build_img2img_processing(
+        _composite(), {}, mask_image=Image.new("L", (64, 64)), control_layers=[manual_layer]
+    )
+
+    assert calls == [[manual_layer]]
+
+
+def test_inpaint_controlnet_not_added_without_mask(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    calls = []
+    monkeypatch.setattr(generation, "apply_controlnet_units", lambda _p, layers: calls.append(layers))
+
+    generation.build_img2img_processing(
+        _composite(),
+        {"inpaint_controlnet_enabled": True, "inpaint_controlnet_model": "inpaint-model"},
+    )
+
+    assert calls == [[]]
+
+
+def test_inpaint_controlnet_is_prepended_with_composite_and_mask(
+    fake_forge_modules, monkeypatch
+):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite()
+    mask = Image.new("RGBA", composite.size, (255, 255, 255, 128))
+    manual_layer = {"model": "manual"}
+    calls = []
+    monkeypatch.setattr(generation, "apply_controlnet_units", lambda p, layers: calls.append((p, layers)))
+
+    p = generation.build_img2img_processing(
+        composite,
+        {
+            "inpaint_controlnet_enabled": True,
+            "inpaint_controlnet_model": "inpaint-model",
+            "inpaint_controlnet_weight": 1.5,
+        },
+        mask_image=mask,
+        control_layers=[manual_layer],
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is p
+    synthetic, manual = calls[0][1]
+    assert manual is manual_layer
+    assert synthetic["model"] == "inpaint-model"
+    assert synthetic["preprocessor"] == "None"
+    assert synthetic["weight"] == 1.5
+    assert synthetic["image"] is composite
+    assert synthetic["mask_image"] is p.mask
+    assert synthetic["mask_image"].mode == "L"
 
 
 def test_none_composite_image_raises(fake_forge_modules):

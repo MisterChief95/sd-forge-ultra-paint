@@ -45,6 +45,7 @@ export class LayerNode {
         switch (layer.kind) {
             case "raster":
             case "mask":
+            case "control":
                 if (!texture) {
                     throw new Error(
                         `[ultra-paint] ${layer.kind} layer "${layer.id}" created without a texture`,
@@ -104,6 +105,7 @@ export class LayerNode {
                 break;
             case "raster":
             case "group":
+            case "control":
                 if (this.maskHatchFilter) {
                     c.filters = null;
                     this.maskHatchFilter.destroy();

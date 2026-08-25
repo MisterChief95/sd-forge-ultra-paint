@@ -51,10 +51,10 @@ export interface Transform {
  * Layer discriminant.
  *
  * Deliberately a string union rather than an enum so that later phases can add
- * `"shape"` / `"adjustment"` variants without a breaking change. Those two are
+ * `"shape"` / `"adjustment"` variants without a breaking change. `"shape"` is
  * reserved and intentionally NOT implemented in this phase.
  */
-export type LayerKind = "raster" | "group" | "mask";
+export type LayerKind = "raster" | "group" | "mask" | "control";
 
 /** Fields shared by every layer variant. */
 export interface LayerBase {
@@ -72,9 +72,17 @@ export interface LayerBase {
     parentId: LayerId | null;
     /** Reserved for a future masking phase. Not implemented. */
     mask?: unknown;
-    /** Reserved for a future ControlNet phase. Not implemented. */
-    controlNet?: unknown;
 }
+
+/**
+ * `balanced` / `prompt` / `control` mirror Forge ControlNet's `ControlMode`
+ * enum (`BALANCED` / `MY_PROMPT_IS_MORE_IMPORTANT` / `CONTROL_IS_MORE_IMPORTANT`).
+ * Kept as a frontend-friendly string union; the backend maps it by name.
+ */
+export type ControlMode = "balanced" | "prompt" | "control";
+
+/** Mirrors Forge ControlNet's `ResizeMode` enum, frontend-friendly names. */
+export type ControlResizeMode = "resize" | "crop" | "fill";
 
 /** A pixel layer backed by a texture registered in the store's texture map. */
 export interface RasterLayer extends LayerBase {
@@ -97,10 +105,43 @@ export interface GroupLayer extends LayerBase {
     children: LayerId[];
 }
 
-export type Layer = RasterLayer | GroupLayer | MaskLayer;
+/**
+ * A control-guidance layer (ControlNet). Its `image` is the source pixels fed
+ * to Forge's ControlNet script; `preprocessor` names the module ("none" =
+ * pixels used as-is). Some preprocessors (the "Inpaint" tag) require a mask,
+ * supplied by `maskLayerId` pointing at a sibling `MaskLayer` -- there is no
+ * separate "no preprocessor" flag on the model, per Forge's own ControlNet
+ * implementation (`extensions-builtin/sd_forge_controlnet`).
+ */
+export interface ControlLayer extends LayerBase {
+    kind: "control";
+    image: ImageRef;
+    /** ControlNet model name, from `GET /controlnet/control_types`. */
+    model: string;
+    /** Preprocessor/module name, from `GET /controlnet/module_list`. */
+    preprocessor: string;
+    /** -1 = auto (matches `Preprocessor.__call__`'s `resolution` default). */
+    preprocessorResolution: number;
+    /** -1 = unused by this preprocessor. */
+    preprocessorThresholdA: number;
+    /** -1 = unused by this preprocessor. */
+    preprocessorThresholdB: number;
+    weight: number;
+    guidanceStart: number;
+    guidanceEnd: number;
+    controlMode: ControlMode;
+    pixelPerfect: boolean;
+    resizeMode: ControlResizeMode;
+    /** Sibling mask layer supplying the inpaint mask, for Inpaint-tagged preprocessors. */
+    maskLayerId: LayerId | null;
+    /** Cached preprocessor output for on-canvas preview only; never sent to generation. */
+    preview: ImageRef | null;
+}
+
+export type Layer = RasterLayer | GroupLayer | MaskLayer | ControlLayer;
 
 /** Layer variants backed by a paintable texture. */
-export type PaintLayer = RasterLayer | MaskLayer;
+export type PaintLayer = RasterLayer | MaskLayer | ControlLayer;
 
 /**
  * Metadata about a raster layer's pixels. Deliberately does NOT carry a

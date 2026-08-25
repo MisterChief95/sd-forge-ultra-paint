@@ -3,6 +3,7 @@
 
   import { generationSettingsStore } from "../state/generationSettingsStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
+  import { registerGenerationActions } from "../input/actionMap";
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
   import GenerationActionsAndStatus from "./generation/GenerationActionsAndStatus.svelte";
@@ -115,6 +116,11 @@
 
   onMount(() => {
     void controller.loadOptions();
+    return registerGenerationActions({
+      isGenerating: () => generating,
+      generate,
+      cancel: () => void controller.cancelGeneration(),
+    });
   });
 
   onDestroy(() => {
@@ -132,7 +138,18 @@
       maskBlur: generationSettingsStore.maskBlur,
       inpaintPadding: generationSettingsStore.inpaintPadding,
       inpaintFullRes: generationSettingsStore.inpaintArea === "masked",
-      softInpaintingEnabled: generationSettingsStore.softInpaintingEnabled,
+      // The Coherence Pass option hides the Soft Inpainting checkbox (they
+      // don't compose), but the underlying setting persists -- force it off
+      // here rather than relying on the UI never sending a stale `true`.
+      softInpaintingEnabled:
+        generationSettingsStore.inpaintArea === "coherence"
+          ? false
+          : generationSettingsStore.softInpaintingEnabled,
+      inpaintControlNetEnabled: generationSettingsStore.inpaintControlNetEnabled,
+      inpaintControlNetModel: generationSettingsStore.inpaintControlNetModel,
+      inpaintControlNetWeight: generationSettingsStore.inpaintControlNetWeight,
+      coherencePassEnabled: generationSettingsStore.inpaintArea === "coherence",
+      coherenceEdgeSize: generationSettingsStore.coherenceEdgeSize,
       samplerName,
       scheduler,
       targetResolution: selectedTargetResolution,
@@ -229,11 +246,23 @@
       inpaintPadding={generationSettingsStore.inpaintPadding}
       inpaintArea={generationSettingsStore.inpaintArea}
       softInpaintingEnabled={generationSettingsStore.softInpaintingEnabled}
+      inpaintControlNetEnabled={generationSettingsStore.inpaintControlNetEnabled}
+      inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
+      inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
+      coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
       onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
       onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
       onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
       onSoftInpaintingChange={(value) =>
         generationSettingsStore.setSoftInpaintingEnabled(value)}
+      onInpaintControlNetEnabledChange={(value) =>
+        generationSettingsStore.setInpaintControlNetEnabled(value)}
+      onInpaintControlNetModelChange={(value) =>
+        generationSettingsStore.setInpaintControlNetModel(value)}
+      onInpaintControlNetWeightChange={(value) =>
+        generationSettingsStore.setInpaintControlNetWeight(value)}
+      onCoherenceEdgeSizeChange={(value) =>
+        generationSettingsStore.setCoherenceEdgeSize(value)}
     />
   </Accordion>
 </section>

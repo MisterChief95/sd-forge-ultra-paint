@@ -1,5 +1,5 @@
 export type ScaleMode = "none" | "auto" | "manual";
-export type InpaintArea = "whole" | "masked";
+export type InpaintArea = "whole" | "masked" | "coherence";
 
 export interface GenerationSettings {
     scaleMode: ScaleMode;
@@ -10,6 +10,26 @@ export interface GenerationSettings {
     inpaintPadding: number;
     inpaintArea: InpaintArea;
     softInpaintingEnabled: boolean;
+    /**
+     * Global inpaint ControlNet (e.g. Anima's LLLite Inpaint Adapter): most
+     * models don't need this, but a few require their dedicated inpainting
+     * ControlNet model rather than relying on `p.mask` alone. Reuses the
+     * already-composited mask/init image as the unit's control input --
+     * there is no per-layer setup because the composited mask layers already
+     * are the mask this unit needs.
+     */
+    inpaintControlNetEnabled: boolean;
+    /** ControlNet model filename, from `GET /controlnet/model_list`. */
+    inpaintControlNetModel: string;
+    /** ControlNet unit weight. Forge allows negative weights (inverted influence), hence -2..2. */
+    inpaintControlNetWeight: number;
+    /**
+     * Coherence Pass (InvokeAI-style): width in pixels of the blend ring
+     * straddling the mask boundary that gets a second, low-strength
+     * denoising pass to smooth the seam. Only used when `inpaintArea` is
+     * `"coherence"`.
+     */
+    coherenceEdgeSize: number;
 }
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -21,6 +41,10 @@ const DEFAULT_SETTINGS: GenerationSettings = {
     inpaintPadding: 32,
     inpaintArea: "whole",
     softInpaintingEnabled: false,
+    inpaintControlNetEnabled: false,
+    inpaintControlNetModel: "",
+    inpaintControlNetWeight: 1,
+    coherenceEdgeSize: 32,
 };
 
 export class GenerationSettingsStore {
@@ -109,6 +133,44 @@ export class GenerationSettingsStore {
 
     public setSoftInpaintingEnabled(enabled: boolean): void {
         this._state.softInpaintingEnabled = enabled;
+    }
+
+    public get inpaintControlNetEnabled(): boolean {
+        return this._state.inpaintControlNetEnabled;
+    }
+
+    public get inpaintControlNetModel(): string {
+        return this._state.inpaintControlNetModel;
+    }
+
+    public setInpaintControlNetEnabled(enabled: boolean): void {
+        this._state.inpaintControlNetEnabled = enabled;
+    }
+
+    public setInpaintControlNetModel(model: string): void {
+        this._state.inpaintControlNetModel = model;
+    }
+
+    public get inpaintControlNetWeight(): number {
+        return this._state.inpaintControlNetWeight;
+    }
+
+    public setInpaintControlNetWeight(weight: number): void {
+        if (!Number.isFinite(weight)) return;
+        this._state.inpaintControlNetWeight = Math.max(-2, Math.min(2, weight));
+    }
+
+    public get coherenceEdgeSize(): number {
+        return this._state.coherenceEdgeSize;
+    }
+
+    public setCoherenceEdgeSize(value: number): void {
+        this._state.coherenceEdgeSize = normaliseRange(
+            value,
+            this._state.coherenceEdgeSize,
+            0,
+            256,
+        );
     }
 }
 

@@ -26,6 +26,7 @@ interface UltraPaintTestHook {
     ready: Promise<void>;
     flattenToDataURL(): string;
     flattenMaskToDataURL(): string | null;
+    addBlankLayer(): Promise<string>;
     resizeBoundaryBox(width: number, height: number): void;
     getZoom(): number;
     isGridVisible(): boolean;
@@ -36,10 +37,17 @@ interface UltraPaintTestHook {
       layers: TestLayer[];
     };
     setBoundaryBox(box: BoundaryBox): void;
+    setSelectedLayerId(id: string | null): void;
     setVisible(id: string, visible: boolean): void;
     setTransform(id: string, transform: Partial<TestLayer["transform"]>): void;
   };
   paintToolStore: {
+    readonly activeTool: "brush" | "eraser" | "boundary-box";
+    readonly brush: {
+      radius: number;
+      hardness: number;
+      opacity: number;
+    };
     setBrushSettings(settings: {
       color?: string;
       radius?: number;
@@ -74,14 +82,16 @@ async function openApp(page: Page): Promise<void> {
 
 async function addBlankLayer(page: Page): Promise<void> {
   const before = await page.locator("[data-layer-id]").count();
-  await page.getByRole("button", { name: "+ Blank", exact: true }).click();
+  await page.getByRole("button", { name: "Add a layer" }).click();
+  await page.getByRole("menuitem", { name: "Raster Layer", exact: true }).click();
   await expect(page.locator("[data-layer-id]")).toHaveCount(before + 1);
 }
 
 async function addMaskLayer(page: Page): Promise<void> {
   const masks = page.locator('[data-layer-section="masks"] [data-layer-id]');
   const before = await masks.count();
-  await page.getByRole("button", { name: "+ Mask", exact: true }).click();
+  await page.getByRole("button", { name: "Add a layer" }).click();
+  await page.getByRole("menuitem", { name: "Mask Layer", exact: true }).click();
   await expect(masks).toHaveCount(before + 1);
 }
 
@@ -159,6 +169,43 @@ test("smoke: app loads, mounts its canvas, and logs no errors", async ({
   await expect(page.locator("#upaint-root canvas")).toBeVisible();
   await page.waitForTimeout(100);
   expect(errors).toEqual([]);
+});
+
+test("pasting an image into the focused canvas adds a layer without consuming prompt pastes", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+
+  const result = await page.evaluate(() => {
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="), (char) => char.charCodeAt(0));
+    const imagePaste = () => {
+      const data = new DataTransfer();
+      data.items.add(new File([png], "Pasted image.png", { type: "image/png" }));
+      return new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+    };
+    const prompt = document.querySelector<HTMLTextAreaElement>("textarea");
+    const canvas = document.querySelector<HTMLCanvasElement>("#upaint-root canvas");
+    if (!prompt || !canvas) throw new Error("Paste targets are unavailable");
+
+    const promptPaste = imagePaste();
+    prompt.dispatchEvent(promptPaste);
+    canvas.focus();
+    const canvasPaste = imagePaste();
+    canvas.dispatchEvent(canvasPaste);
+    return {
+      promptPrevented: promptPaste.defaultPrevented,
+      canvasPrevented: canvasPaste.defaultPrevented,
+    };
+  });
+
+  expect(result).toEqual({ promptPrevented: false, canvasPrevented: true });
+  await expect(page.locator("[data-layer-id]")).toHaveCount(1);
+  await expect(page.locator("[data-layer-id]")).toContainText("Pasted image.png");
 });
 
 test("viewport zoom control reflects wheel zoom and resets to 100%", async ({
@@ -306,6 +353,133 @@ test("paint round-trip persists a pointer stroke in flattenToDataURL", async ({
       }),
     )
     .toEqual({ width: 256, height: 256, alpha: 255 });
+});
+
+test("contextual shortcuts switch tools and modifier drags adjust without painting", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(async () => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setSelectedLayerId(await app.addBlankLayer());
+  });
+  await page.evaluate(() => {
+    const tools = (window as TestWindow).__ultraPaintTest?.paintToolStore;
+    if (!tools) throw new Error("Ultra Paint test hook is unavailable");
+    tools.setBrushSettings({ radius: 20, hardness: 0.5, opacity: 1 });
+  });
+
+  await page.keyboard.press("E");
+  expect(
+    await page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.activeTool),
+  ).toBe("eraser");
+  await page.keyboard.press("B");
+
+  const prompt = page.getByPlaceholder("Describe what to generate");
+  await prompt.focus();
+  await page.keyboard.press("E");
+  await expect(prompt).toHaveValue("E");
+  expect(
+    await page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.activeTool),
+  ).toBe("brush");
+
+  const canvas = page.locator("#upaint-root canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const x = bounds.x + bounds.width / 2;
+  const y = bounds.y + bounds.height / 2;
+
+  await page.keyboard.down("Control");
+  await page.keyboard.down("Alt");
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 40, y - 40, { steps: 4 });
+  await expect(page.locator('[role="status"]').filter({ hasText: "Size 60px" })).toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await page.keyboard.up("Control");
+
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const brush = (window as TestWindow).__ultraPaintTest?.paintToolStore.brush;
+      return brush ? { radius: brush.radius, hardness: brush.hardness } : null;
+    }),
+  ).toEqual({ radius: 60, hardness: 0.7 });
+
+  await page.keyboard.down("Alt");
+  await page.keyboard.down("Shift");
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - 100, y, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await page.keyboard.up("Alt");
+  expect(
+    await page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.brush.opacity),
+  ).toBe(0.5);
+
+  const centerAlpha = await page.evaluate(async () => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    const image = new Image();
+    image.src = app.flattenToDataURL();
+    await image.decode();
+    const sample = document.createElement("canvas");
+    sample.width = image.naturalWidth;
+    sample.height = image.naturalHeight;
+    const context = sample.getContext("2d");
+    if (!context) throw new Error("2D canvas context is unavailable");
+    context.drawImage(image, 0, 0);
+    return context.getImageData(
+      Math.floor(image.naturalWidth / 2),
+      Math.floor(image.naturalHeight / 2),
+      1,
+      1,
+    ).data[3];
+  });
+  expect(centerAlpha).toBe(0);
+});
+
+test("mask shortcuts clear undoably and fit the boundary box to painted alpha", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(256, 256);
+    hook.paintToolStore.setBrushSettings({ radius: 12, hardness: 1, opacity: 1 });
+  });
+  await page.keyboard.press("Control+Shift+M");
+  await expect(page.locator('[data-layer-section="masks"] [data-layer-id]')).toHaveCount(1);
+  await paintCenteredStroke(page);
+  await expect.poll(() => readMaskPixel(page, 128, 128)).toEqual([255, 255, 255, 255]);
+
+  await page.keyboard.press("Alt+C");
+  await expect.poll(() => readMaskPixel(page, 128, 128)).toEqual([0, 0, 0, 255]);
+  await expect(page.locator('[data-layer-section="masks"] [data-layer-id]')).toHaveCount(1);
+
+  await page.keyboard.press("Control+Z");
+  await expect.poll(() => readMaskPixel(page, 128, 128)).toEqual([255, 255, 255, 255]);
+
+  await page.keyboard.press("Control+Shift+B");
+  const box = await page.evaluate(() => {
+    const boundaryBox = (window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox;
+    if (!boundaryBox) throw new Error("Ultra Paint test hook is unavailable");
+    return { ...boundaryBox };
+  });
+  expect(box.x).toBeGreaterThan(0);
+  expect(box.y).toBeGreaterThan(0);
+  expect(box.width).toBeGreaterThan(0);
+  expect(box.width).toBeLessThan(128);
+  expect(box.height).toBeGreaterThan(0);
+  expect(box.height).toBeLessThan(64);
 });
 
 test("mask accordion keeps mask rows separate and its controls working", async ({

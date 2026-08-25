@@ -85,6 +85,7 @@ export class LayerTree {
             switch (layer.kind) {
                 case "raster":
                 case "mask":
+                case "control":
                     texture = this.store.getTexture(layer.id);
                     break;
                 case "group":

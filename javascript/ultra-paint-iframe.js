@@ -19,7 +19,10 @@ Promise.resolve().then(async () => {
   wrap.childNodes.forEach((child) => wrap.removeChild(child))
 
   const iframe = document.createElement('iframe')
-  iframe.src = window.location.origin + '/ultra_paint/app/'
+  // Cache-bust on every tab (re)load: StaticFiles serves index.html/JS
+  // without no-cache headers, so a plain reload of the outer Gradio page
+  // can silently reuse a stale cached build after a rebuild.
+  iframe.src = window.location.origin + '/ultra_paint/app/?v=' + Date.now()
   iframe.style = 'width: 100%; height: 100vh; border: none; display: block;'
   wrap.appendChild(iframe)
 

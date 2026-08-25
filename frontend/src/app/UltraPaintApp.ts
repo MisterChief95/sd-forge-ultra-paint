@@ -56,10 +56,23 @@ import {
     paintToolStore,
     type PaintTool,
 } from "../state/paintToolStore.svelte";
-import type { ImageRef, LayerId, Transform } from "../state/schema";
+import type { ImageRef, Layer, LayerId, Transform } from "../state/schema";
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
+
+type BrushAdjustmentMode = "size-hardness" | "opacity";
+
+interface ActiveBrushAdjustment {
+    pointerId: number;
+    mode: BrushAdjustmentMode;
+    startClientX: number;
+    startClientY: number;
+    startRadius: number;
+    startHardness: number;
+    startOpacity: number;
+    restingCursor: string;
+}
 
 /**
  * The most recently constructed `UltraPaintApp`, or `null` before one exists
@@ -146,6 +159,10 @@ export class UltraPaintApp {
     private panClientY = 0;
 
     private panRestingCursor = "";
+
+    private brushAdjustment: ActiveBrushAdjustment | null = null;
+
+    private brushAdjustmentHud: HTMLDivElement | null = null;
 
     private destroyed = false;
 
@@ -291,8 +308,19 @@ export class UltraPaintApp {
         canvas.addEventListener("pointercancel", this.handlePointerEnd);
         canvas.addEventListener("lostpointercapture", this.handlePointerEnd);
         canvas.addEventListener("auxclick", this.handleAuxClick);
-        canvas.addEventListener("keydown", this.handleHistoryKeyDown);
+        canvas.addEventListener("paste", this.handlePaste);
         canvas.tabIndex = 0;
+
+        const hud = document.createElement("div");
+        hud.setAttribute("role", "status");
+        hud.style.cssText =
+            "position:absolute;z-index:20;display:none;pointer-events:none;" +
+            "padding:4px 7px;border:1px solid var(--upaint-border);" +
+            "border-radius:var(--upaint-radius-sm);background:var(--upaint-surface);" +
+            "color:var(--upaint-text);font:11px var(--upaint-font);" +
+            "box-shadow:0 2px 8px rgb(0 0 0 / 35%);white-space:nowrap;";
+        root.appendChild(hud);
+        this.brushAdjustmentHud = hud;
 
         if (typeof ResizeObserver !== "undefined") {
             this.viewportResizeObserver = new ResizeObserver(() => {
@@ -324,11 +352,14 @@ export class UltraPaintApp {
         canvas.removeEventListener("pointercancel", this.handlePointerEnd);
         canvas.removeEventListener("lostpointercapture", this.handlePointerEnd);
         canvas.removeEventListener("auxclick", this.handleAuxClick);
-        canvas.removeEventListener("keydown", this.handleHistoryKeyDown);
+        canvas.removeEventListener("paste", this.handlePaste);
         this.viewportResizeObserver?.disconnect();
         this.viewportResizeObserver = null;
+        this.brushAdjustmentHud?.remove();
+        this.brushAdjustmentHud = null;
         this.viewportCanvas = null;
         this.panPointerId = null;
+        this.brushAdjustment = null;
     }
 
     private readonly handleWheel = (event: WheelEvent): void => {
@@ -368,6 +399,7 @@ export class UltraPaintApp {
         if (event.button === 0 || event.button === 1) {
             canvas.focus({ preventScroll: true });
         }
+        if (event.button === 0 && this.beginBrushAdjustment(event)) return;
         if (event.button !== 1) return;
         event.preventDefault();
         this.panRestingCursor = canvas.style.cursor;
@@ -379,6 +411,12 @@ export class UltraPaintApp {
     };
 
     private readonly handlePointerMove = (event: PointerEvent): void => {
+        if (event.pointerId === this.brushAdjustment?.pointerId) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            this.updateBrushAdjustment(event);
+            return;
+        }
         const app = this.app;
         const world = this.world;
         const canvas = this.viewportCanvas;
@@ -408,6 +446,18 @@ export class UltraPaintApp {
 
     private readonly handlePointerEnd = (event: PointerEvent): void => {
         const canvas = this.viewportCanvas;
+        if (canvas && event.pointerId === this.brushAdjustment?.pointerId) {
+            const restingCursor = this.brushAdjustment.restingCursor;
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            this.brushAdjustment = null;
+            this.brushAdjustmentHud && (this.brushAdjustmentHud.style.display = "none");
+            canvas.style.cursor = restingCursor;
+            if (canvas.hasPointerCapture(event.pointerId)) {
+                canvas.releasePointerCapture(event.pointerId);
+            }
+            return;
+        }
         if (!canvas || event.pointerId !== this.panPointerId) return;
         this.panPointerId = null;
         canvas.style.cursor = this.panRestingCursor;
@@ -420,21 +470,104 @@ export class UltraPaintApp {
         if (event.button === 1) event.preventDefault();
     };
 
-    private readonly handleHistoryKeyDown = (event: KeyboardEvent): void => {
-        if ((!event.ctrlKey && !event.metaKey) || event.altKey) return;
-
-        const key = event.key.toLowerCase();
-        const redo = key === "y" || (key === "z" && event.shiftKey);
-        if (key !== "z" && key !== "y") return;
+    /** Paste the first clipboard image as a selected raster layer when the canvas has focus. */
+    private readonly handlePaste = (event: ClipboardEvent): void => {
+        const item = [...(event.clipboardData?.items ?? [])].find((candidate) =>
+            candidate.type.startsWith("image/"),
+        );
+        const file = item?.getAsFile();
+        if (!file) return;
 
         event.preventDefault();
-        try {
-            if (redo) this.history?.redo();
-            else this.history?.undo();
-        } catch (error) {
-            console.error("[ultra-paint] undo/redo failed", error);
-        }
+        void this.addImageFromFile(file)
+            .then((id) => this.store.setSelectedLayerId(id))
+            .catch((error) =>
+                console.error("[ultra-paint] could not paste image:", error),
+            );
     };
+
+    private beginBrushAdjustment(event: PointerEvent): boolean {
+        const canvas = this.viewportCanvas;
+        const tool = this.toolStore.activeTool;
+        if (!canvas || (tool !== "brush" && tool !== "eraser") || this.brushAdjustment) {
+            return false;
+        }
+        const primaryModifier = event.ctrlKey || event.metaKey;
+        const mode: BrushAdjustmentMode | null =
+            event.altKey && primaryModifier && !event.shiftKey
+                ? "size-hardness"
+                : event.altKey && event.shiftKey && !primaryModifier
+                  ? "opacity"
+                  : null;
+        if (!mode) return false;
+
+        const brush = this.toolStore.brush;
+        this.brushAdjustment = {
+            pointerId: event.pointerId,
+            mode,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startRadius: brush.radius,
+            startHardness: brush.hardness,
+            startOpacity: brush.opacity,
+            restingCursor: canvas.style.cursor,
+        };
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = "ew-resize";
+        this.updateBrushAdjustment(event);
+        return true;
+    }
+
+    private updateBrushAdjustment(event: PointerEvent): void {
+        const active = this.brushAdjustment;
+        const hud = this.brushAdjustmentHud;
+        const canvas = this.viewportCanvas;
+        if (!active || !canvas) return;
+
+        const deltaX = event.clientX - active.startClientX;
+        const deltaY = event.clientY - active.startClientY;
+        if (active.mode === "size-hardness") {
+            this.toolStore.setBrushSettings({
+                radius: Math.round(active.startRadius + deltaX),
+                hardness: active.startHardness - deltaY / 200,
+            });
+        } else {
+            this.toolStore.setBrushSettings({
+                opacity: active.startOpacity + deltaX / 200,
+            });
+        }
+
+        if (!hud) return;
+        const brush = this.toolStore.brush;
+        hud.textContent =
+            active.mode === "size-hardness"
+                ? `Size ${Math.round(brush.radius)}px · Hardness ${Math.round(brush.hardness * 100)}%`
+                : `Opacity ${Math.round(brush.opacity * 100)}%`;
+        const rect = canvas.parentElement?.getBoundingClientRect() ?? canvas.getBoundingClientRect();
+        hud.style.left = `${event.clientX - rect.left + 12}px`;
+        hud.style.top = `${event.clientY - rect.top + 12}px`;
+        hud.style.display = "block";
+    }
+
+    /** Undo the most recent document or pixel operation. */
+    public undo(): void {
+        try {
+            this.history?.undo();
+        } catch (error) {
+            console.error("[ultra-paint] undo failed", error);
+        }
+    }
+
+    /** Redo the most recently undone document or pixel operation. */
+    public redo(): void {
+        try {
+            this.history?.redo();
+        } catch (error) {
+            console.error("[ultra-paint] redo failed", error);
+        }
+    }
 
     private readonly beginStroke = (
         tool: PaintTool,
@@ -516,6 +649,37 @@ export class UltraPaintApp {
             fillGraphics.destroy();
         }
     };
+
+    /** Clear the selected mask's pixels without removing the layer. */
+    public clearSelectedMask(): boolean {
+        const app = this.app;
+        const history = this.history;
+        const layerId = this.store.getSelectedLayerId();
+        const layer = layerId ? this.store.getLayer(layerId) : undefined;
+        const target = layerId ? this.store.getTexture(layerId) : undefined;
+        if (!app || !history || !layerId || layer?.kind !== "mask" || !target) {
+            return false;
+        }
+
+        const pending = history.beginPixelChange(layerId);
+        if (!pending) return false;
+        const empty = new Container();
+        try {
+            app.renderer.render({
+                container: empty,
+                target,
+                clear: true,
+                clearColor: [0, 0, 0, 0],
+            });
+            history.commitPixelChange(pending);
+            return true;
+        } catch (error) {
+            history.discardPixelChange(pending);
+            throw error;
+        } finally {
+            empty.destroy();
+        }
+    }
 
     // ------------------------------------------------------------ public API
 
@@ -617,6 +781,57 @@ export class UltraPaintApp {
     }
 
     /**
+     * Decode an uploaded `File`/`Blob` into a texture and add it as a new
+     * top-level control (ControlNet) layer. Resolves with the new layer's id.
+     */
+    public async addControlLayerFromFile(file: File | Blob): Promise<LayerId> {
+        await this.ready;
+        const texture = await decodeToTexture(file);
+        const name = file instanceof File ? file.name : undefined;
+        return this.store.addControlLayer(this.createPaintableTexture(texture), name);
+    }
+
+    /**
+     * Extract a layer's own source texture (ignoring its transform and any
+     * compositing with other layers) as a `data:image/png;base64,...` URL.
+     * Used for ControlNet preprocessing/preview, which operates on one
+     * layer's raw pixels, not the flattened canvas. `null` if the layer has
+     * no registered texture (group layers, or before the app is ready).
+     */
+    public layerSourceDataURL(id: LayerId): string | null {
+        const app = this.app;
+        const texture = this.store.getTexture(id);
+        if (!app || !texture) return null;
+        const canvas = app.renderer.extract.canvas({ target: texture, resolution: 1 });
+        return typeof canvas.toDataURL === "function" ? canvas.toDataURL("image/png") : null;
+    }
+
+    /** Encode one textured layer's untransformed source pixels as PNG. */
+    public async layerSourcePngBlob(id: LayerId): Promise<Blob | null> {
+        await this.ready;
+        const app = this.app;
+        const texture = this.store.getTexture(id);
+        if (!app || !texture) return null;
+
+        const canvas = app.renderer.extract.canvas({ target: texture, resolution: 1 }) as {
+            convertToBlob?: (options?: { type?: string }) => Promise<Blob>;
+            toBlob?: (callback: (blob: Blob | null) => void, type?: string) => void;
+        };
+        if (typeof canvas.convertToBlob === "function") {
+            return canvas.convertToBlob({ type: "image/png" });
+        }
+        if (typeof canvas.toBlob === "function") {
+            return new Promise<Blob>((resolve, reject) => {
+                canvas.toBlob?.(
+                    (blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed")),
+                    "image/png",
+                );
+            });
+        }
+        return null;
+    }
+
+    /**
      * Add a layer from a data URL or any fetchable image URL. This is the entry
      * point the Python bridge will use for generated images.
      */
@@ -683,6 +898,62 @@ export class UltraPaintApp {
             throw error;
         } finally {
             empty.destroy();
+        }
+    }
+
+    /** Rasterize selected top-level regular layers into a new document-space layer. */
+    public mergeLayersToNewLayer(ids: readonly LayerId[]): LayerId {
+        const app = this.app;
+        const tree = this.tree;
+        if (!app || !tree) {
+            throw new Error("[ultra-paint] cannot merge layers before the app is ready");
+        }
+
+        const doc = this.store.getDocument();
+        const selected = [...new Set(ids)].filter((id) => {
+            const layer = this.store.getLayer(id);
+            return layer?.parentId === null && (layer.kind === "raster" || layer.kind === "group");
+        });
+        if (selected.length < 2) {
+            throw new Error("Select at least two raster or group layers to merge");
+        }
+
+        const selectedSet = new Set(selected);
+        const topIndex = Math.min(...selected.map((id) => doc.layerOrder.indexOf(id)));
+        const renderable = doc.layerOrder.map((id) => {
+            const node = tree.getNode(id);
+            return node ? { node, value: node.container.renderable } : null;
+        }).filter((entry) => entry !== null);
+
+        for (const entry of renderable) {
+            entry.node.container.renderable = selectedSet.has(entry.node.id);
+        }
+
+        let texture: RenderTexture;
+        try {
+            texture = Compositor.flattenToTexture(app, tree.root, doc.boundaryBox);
+        } finally {
+            for (const entry of renderable) entry.node.container.renderable = entry.value;
+        }
+
+        let adopted = false;
+        try {
+            const id = this.store.addRasterLayer(
+                texture,
+                `Merged ${selected.length} layers`,
+                "paint",
+            );
+            adopted = true;
+            this.store.setTransform(id, {
+                x: doc.boundaryBox.x,
+                y: doc.boundaryBox.y,
+            });
+            this.store.reorderLayer(id, topIndex);
+            this.store.setSelectedLayerId(id);
+            return id;
+        } catch (error) {
+            if (!adopted) texture.destroy(true);
+            throw error;
         }
     }
 
@@ -792,6 +1063,90 @@ export class UltraPaintApp {
             height: Math.max(8, maxY - minY),
         });
         this.fitToBoundaryBox(paddingPx);
+    }
+
+    /** Fit the operating region to non-transparent pixels in visible masks. */
+    public fitBoundaryBoxToCompositeMask(paddingPx = 8): boolean {
+        const app = this.app;
+        const tree = this.tree;
+        if (!app || !tree) return false;
+
+        const doc = this.store.getDocument();
+        const byId = new Map(doc.layers.map((layer) => [layer.id, layer]));
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+
+        for (const layer of doc.layers) {
+            if (layer.kind !== "mask" || !this.isEffectivelyVisible(layer, byId)) continue;
+            const texture = this.store.getTexture(layer.id);
+            const node = tree.getNode(layer.id);
+            if (!texture || !node) continue;
+
+            const origin = tree.root.toLocal({ x: 0, y: 0 }, node.container);
+            const xUnit = tree.root.toLocal({ x: 1, y: 0 }, node.container);
+            const yUnit = tree.root.toLocal({ x: 0, y: 1 }, node.container);
+            const a = xUnit.x - origin.x;
+            const b = xUnit.y - origin.y;
+            const c = yUnit.x - origin.x;
+            const d = yUnit.y - origin.y;
+            const extracted = app.renderer.extract.pixels(texture);
+            const stepX = texture.width / extracted.width;
+            const stepY = texture.height / extracted.height;
+            const ax = a * stepX;
+            const ay = b * stepX;
+            const cx = c * stepY;
+            const cy = d * stepY;
+
+            for (let offset = 3, pixel = 0; offset < extracted.pixels.length; offset += 4, pixel += 1) {
+                if (extracted.pixels[offset] === 0) continue;
+                const x = (pixel % extracted.width) * stepX;
+                const y = Math.floor(pixel / extracted.width) * stepY;
+                const x0 = origin.x + a * x + c * y;
+                const y0 = origin.y + b * x + d * y;
+                minX = Math.min(minX, x0, x0 + ax, x0 + cx, x0 + ax + cx);
+                minY = Math.min(minY, y0, y0 + ay, y0 + cy, y0 + ay + cy);
+                maxX = Math.max(maxX, x0, x0 + ax, x0 + cx, x0 + ax + cx);
+                maxY = Math.max(maxY, y0, y0 + ay, y0 + cy, y0 + ay + cy);
+            }
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(minY)) return false;
+        const left = Math.floor(minX);
+        const top = Math.floor(minY);
+        const right = Math.ceil(maxX);
+        const bottom = Math.ceil(maxY);
+        this.store.setBoundaryBox({
+            x: left,
+            y: top,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top),
+        });
+        this.fitToBoundaryBox(paddingPx);
+        return true;
+    }
+
+    private isEffectivelyVisible(
+        layer: Layer,
+        byId: ReadonlyMap<LayerId, Layer>,
+    ): boolean {
+        const seen = new Set<LayerId>();
+        let current: Layer | undefined = layer;
+        while (current) {
+            if (
+                seen.has(current.id) ||
+                !current.visible ||
+                !Number.isFinite(current.opacity) ||
+                current.opacity <= 0
+            ) {
+                return false;
+            }
+            seen.add(current.id);
+            if (current.parentId === null) return true;
+            current = byId.get(current.parentId);
+        }
+        return false;
     }
 
     /** Tear down the renderer, the scene graph, and the DOM canvas. */

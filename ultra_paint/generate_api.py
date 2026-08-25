@@ -28,7 +28,13 @@ from modules_forge import main_thread
 
 from ultra_paint.generation import run_generation
 
-__all__ = ["GENERATE_ROUTE", "GenerateRequest", "GenerateResponse", "generate"]
+__all__ = [
+    "GENERATE_ROUTE",
+    "ControlLayerRequest",
+    "GenerateRequest",
+    "GenerateResponse",
+    "generate",
+]
 
 GENERATE_ROUTE = "/ultra_paint/api/generate"
 
@@ -41,6 +47,25 @@ GENERATE_ROUTE = "/ultra_paint/api/generate"
 _DATA_URL_RE = re.compile(r"^data:image/(?:png|jpeg|webp);base64,(?P<b64>.+)$", re.DOTALL)
 
 
+class ControlLayerRequest(BaseModel):
+    """Mirrors the control-layer dict expected by `generation.py`."""
+
+    image: str
+    mask_image: str | None = None
+    model: str
+    preprocessor: str
+    preprocessor_resolution: int = -1
+    preprocessor_threshold_a: float = -1
+    preprocessor_threshold_b: float = -1
+    weight: float = 1.0
+    guidance_start: float = 0.0
+    guidance_end: float = 1.0
+    control_mode: str = "balanced"
+    pixel_perfect: bool = False
+    resize_mode: str = "resize"
+    enabled: bool = True
+
+
 class GenerateRequest(BaseModel):
     composite_image: str
     gen_params: dict = {}
@@ -49,6 +74,7 @@ class GenerateRequest(BaseModel):
     # Compositor.flattenMask() (Phase 3) -- omitted/None when no mask layer
     # has been painted, matching Phase 1/2 behavior exactly (no inpainting).
     mask_image: str | None = None
+    control_layers: list[ControlLayerRequest] = []
 
 
 class GenerateResponse(BaseModel):
@@ -88,6 +114,25 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     try:
         composite_image = _decode_data_url(request.composite_image)
         mask_image = _decode_data_url(request.mask_image) if request.mask_image else None
+        control_layers = [
+            {
+                "image": _decode_data_url(layer.image),
+                "mask_image": _decode_data_url(layer.mask_image) if layer.mask_image else None,
+                "model": layer.model,
+                "preprocessor": layer.preprocessor,
+                "preprocessor_resolution": layer.preprocessor_resolution,
+                "preprocessor_threshold_a": layer.preprocessor_threshold_a,
+                "preprocessor_threshold_b": layer.preprocessor_threshold_b,
+                "weight": layer.weight,
+                "guidance_start": layer.guidance_start,
+                "guidance_end": layer.guidance_end,
+                "control_mode": layer.control_mode,
+                "pixel_perfect": layer.pixel_perfect,
+                "resize_mode": layer.resize_mode,
+                "enabled": layer.enabled,
+            }
+            for layer in request.control_layers
+        ]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -104,6 +149,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
                 request.gen_params,
                 mask_image,
                 request.generation_mode,
+                control_layers=control_layers,
             )
         finally:
             shared.state.end()

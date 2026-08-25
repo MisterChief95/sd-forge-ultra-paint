@@ -63,6 +63,14 @@ key                          default    notes
 ``inpainting_mask_invert``   ``0``      0 = inpaint masked area, 1 = inpaint unmasked area.
 ``soft_inpainting_enabled``  ``False``  Enables Forge's Soft Inpainting always-on script
                                         when a mask is supplied.
+``inpaint_controlnet_enabled``  ``False``  Enables the selected inpaint ControlNet model
+                                          when a mask is supplied.
+``inpaint_controlnet_model``  ``""``     Model name for the inpaint ControlNet unit.
+``inpaint_controlnet_weight``  ``1.0``   Weight of the inpaint ControlNet unit.
+``coherence_pass_enabled``    ``False``  Runs a low-strength second img2img pass over a
+                                        ring straddling the mask boundary.
+``coherence_edge_size``       ``32``     Pixels on each side of the mask boundary included
+                                        in the coherence-pass ring.
 ``soft_inpainting_power``    ``1``
 ``soft_inpainting_scale``    ``0.5``
 ``soft_inpainting_detail_preservation``  ``4``
@@ -99,6 +107,13 @@ The boundary-box scale mode and `inpaint_full_res` are independent: the first
 sets the model's working resolution, while the second chooses whether its
 context is the whole BB or a tighter mask-and-padding crop.
 
+`control_layers`
+----------------
+Optional structured ControlNet inputs, kept separate from `gen_params` because
+each layer carries its own decoded PIL image and settings. The builders splice
+them into Forge's ControlNet always-on script when that optional extension is
+registered; otherwise ordinary generation continues unchanged.
+
 `batch_size` and `n_iter` are pinned to 1 in Phase 1 (one canvas in, one image
 out) and are deliberately *not* read from `gen_params`.
 """
@@ -106,7 +121,7 @@ out) and are deliberately *not* read from `gen_params`.
 from contextlib import closing
 
 import gradio as gr
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter
 
 import modules.scripts
 from modules import shared
@@ -118,6 +133,7 @@ from modules.processing import (
 )
 from modules.shared import opts
 
+from ultra_paint.controlnet_units import apply_controlnet_units
 from ultra_paint.model_profile import is_unsupported_video_model
 
 __all__ = [
@@ -149,6 +165,11 @@ GEN_PARAM_DEFAULTS: dict = {
     "mask_blur": 4,
     "inpainting_mask_invert": 0,
     "soft_inpainting_enabled": False,
+    "inpaint_controlnet_enabled": False,
+    "inpaint_controlnet_model": "",
+    "inpaint_controlnet_weight": 1.0,
+    "coherence_pass_enabled": False,
+    "coherence_edge_size": 32,
     "soft_inpainting_power": 1,
     "soft_inpainting_scale": 0.5,
     "soft_inpainting_detail_preservation": 4,
@@ -158,6 +179,9 @@ GEN_PARAM_DEFAULTS: dict = {
     "target_width": None,
     "target_height": None,
 }
+
+
+COHERENCE_DENOISING_STRENGTH = 0.3
 
 
 def _get(gen_params: dict, key: str):
@@ -260,6 +284,7 @@ def build_img2img_processing(
     composite_image: Image.Image,
     gen_params: dict,
     mask_image: Image.Image | None = None,
+    control_layers: list[dict] | None = None,
 ) -> StableDiffusionProcessingImg2Img:
     """Assemble the processing object for one Ultra Paint generation.
 
@@ -273,6 +298,9 @@ def build_img2img_processing(
     no inpainting path taken. When present, Phase 3's inpainting fields
     (`inpainting_fill`, `mask_blur`, `inpainting_mask_invert`, and the selected
     `inpaint_full_res` area mode) come into play.
+
+    `control_layers` is the ordered ControlNet layer stack; first layers take
+    the available Forge unit slots first.
     """
     if composite_image is None:
         raise ValueError("Ultra Paint: no composite image was received from the canvas")
@@ -369,6 +397,35 @@ def build_img2img_processing(
     p.script_args = _default_script_args(p.scripts)
 
     if mask is not None:
+        inpaint_controlnet_model = _get(gen_params, "inpaint_controlnet_model")
+        if (
+            _get(gen_params, "inpaint_controlnet_enabled")
+            and isinstance(inpaint_controlnet_model, str)
+            and inpaint_controlnet_model
+        ):
+            control_layers = [
+                {
+                    "image": composite_image,
+                    "mask_image": mask,
+                    "model": inpaint_controlnet_model,
+                    # "None" (capital) is the no-op preprocessor's actual registry
+                    # key (lib_controlnet.global_state.supported_preprocessors) --
+                    # lowercase "none" raises a KeyError in ControlNet's own code.
+                    "preprocessor": "None",
+                    "preprocessor_resolution": -1,
+                    "preprocessor_threshold_a": -1,
+                    "preprocessor_threshold_b": -1,
+                    "weight": float(_get(gen_params, "inpaint_controlnet_weight")),
+                    "guidance_start": 0.0,
+                    "guidance_end": 1.0,
+                    "control_mode": "balanced",
+                    "pixel_perfect": False,
+                    "resize_mode": "resize",
+                    "enabled": True,
+                },
+                *(control_layers or []),
+            ]
+
         for script in p.scripts.alwayson_scripts:
             if script.title() != "Soft Inpainting":
                 continue
@@ -383,12 +440,14 @@ def build_img2img_processing(
             ]
             break
 
+    apply_controlnet_units(p, control_layers or [])
     return p
 
 
 def build_txt2img_processing(
     composite_image: Image.Image,
     gen_params: dict,
+    control_layers: list[dict] | None = None,
 ) -> StableDiffusionProcessingTxt2Img:
     """Assemble a txt2img processing object sized to the boundary box."""
     if composite_image is None:
@@ -432,6 +491,7 @@ def build_txt2img_processing(
     p.is_api = True
     p.scripts = modules.scripts.scripts_txt2img
     p.script_args = _default_script_args(p.scripts)
+    apply_controlnet_units(p, control_layers or [])
     return p
 
 
@@ -443,11 +503,12 @@ def run_generation(
     gen_params: dict,
     mask_image: Image.Image | None = None,
     generation_mode: str = "img2img",
+    control_layers: list[dict] | None = None,
 ) -> Processed:
     """Run one txt2img or img2img pass over the boundary box. GPU-thread only.
 
-    Call as `main_thread.run_and_wait_result(run_generation, image, params, mask)`
-    -- see the module docstring.
+    `control_layers` stays a separate top-level argument rather than becoming
+    part of `gen_params`; see the module docstring.
     """
     if generation_mode not in {"img2img", "txt2img"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
@@ -460,9 +521,11 @@ def run_generation(
 
     is_txt2img = generation_mode == "txt2img"
     p = (
-        build_txt2img_processing(composite_image, gen_params)
+        build_txt2img_processing(composite_image, gen_params, control_layers)
         if is_txt2img
-        else build_img2img_processing(composite_image, gen_params, mask_image)
+        else build_img2img_processing(
+            composite_image, gen_params, mask_image, control_layers
+        )
     )
 
     with closing(p):
@@ -483,15 +546,28 @@ def run_generation(
             ]
         elif mask_image is not None:
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
-            processed.images = [
-                _transparent_inpaint_patch(
-                    image,
-                    composite_image.size,
-                    mask_for_alpha,
-                    p.paste_to,
-                )
-                for image in processed.images
-            ]
+            if _get(gen_params, "coherence_pass_enabled"):
+                processed.images = [
+                    _apply_coherence_pass(
+                        image,
+                        composite_image.size,
+                        mask_for_alpha,
+                        int(_get(gen_params, "coherence_edge_size")),
+                        p,
+                        gen_params,
+                    )
+                    for image in processed.images
+                ]
+            else:
+                processed.images = [
+                    _transparent_inpaint_patch(
+                        image,
+                        composite_image.size,
+                        mask_for_alpha,
+                        p.paste_to,
+                    )
+                    for image in processed.images
+                ]
 
     shared.total_tqdm.clear()
 
@@ -499,6 +575,74 @@ def run_generation(
         print(processed.js())
 
     return processed
+
+
+def _apply_coherence_pass(
+    image: Image.Image,
+    canvas_size: tuple[int, int],
+    mask_for_alpha: Image.Image,
+    edge_size: int,
+    base_p: StableDiffusionProcessingImg2Img,
+    gen_params: dict,
+) -> Image.Image:
+    """Denoise a ring around an inpaint boundary, keeping its expanded alpha."""
+    flattened = image.convert("RGBA")
+    alpha = mask_for_alpha.convert("L")
+    if edge_size <= 0:
+        dilated = eroded = alpha
+    else:
+        kernel = edge_size * 2 + 1
+        dilated = alpha.filter(ImageFilter.MaxFilter(kernel))
+        eroded = alpha.filter(ImageFilter.MinFilter(kernel))
+    ring = ImageChops.subtract(dilated, eroded)
+
+    p2 = StableDiffusionProcessingImg2Img(
+        sd_model=base_p.sd_model,
+        outpath_samples=opts.outdir_samples or opts.outdir_img2img_samples,
+        outpath_grids=opts.outdir_grids or opts.outdir_img2img_grids,
+        prompt=base_p.prompt,
+        negative_prompt=base_p.negative_prompt,
+        styles=list(base_p.styles),
+        batch_size=1,
+        n_iter=1,
+        steps=base_p.steps,
+        cfg_scale=base_p.cfg_scale,
+        distilled_cfg_scale=base_p.distilled_cfg_scale,
+        denoising_strength=COHERENCE_DENOISING_STRENGTH,
+        sampler_name=base_p.sampler_name,
+        scheduler=base_p.scheduler,
+        seed=base_p.seed,
+        subseed=base_p.subseed,
+        subseed_strength=base_p.subseed_strength,
+        width=base_p.width,
+        height=base_p.height,
+        init_images=[flattened],
+        mask=ring,
+        resize_mode=0,
+        override_settings={"overlay_inpaint": False},
+        inpainting_fill=1,
+        inpaint_full_res=False,
+        inpaint_full_res_padding=0,
+        mask_blur=int(_get(gen_params, "mask_blur")),
+        inpainting_mask_invert=0,
+    )
+    with closing(p2):
+        processed2 = process_images(p2)
+
+    # `image`/`mask_for_alpha` are both sized to the generation resolution
+    # (`base_p.width x base_p.height`), not the canvas -- Forge's own
+    # `process_images` resizes `mask_for_overlay` to match right before
+    # returning (processing.py:1757-1760), the same reason
+    # `_transparent_inpaint_patch`'s "Whole image" branch resizes back down.
+    # Skipping this step pastes the result back at generation resolution
+    # instead of the boundary box's actual pixel size.
+    patch = processed2.images[0].convert("RGBA")
+    if patch.size != canvas_size:
+        patch = patch.resize(canvas_size, Image.Resampling.LANCZOS)
+    if dilated.size != canvas_size:
+        dilated = dilated.resize(canvas_size, Image.Resampling.LANCZOS)
+    patch.putalpha(dilated)
+    return patch
 
 
 def _transparent_inpaint_patch(

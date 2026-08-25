@@ -3,11 +3,12 @@
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { layerStore } from "../state/layerStore.svelte";
-  import type { Document, Layer, LayerId } from "../state/schema";
+  import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
   import Accordion from "./lib/Accordion.svelte";
   import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
   import Slider from "./lib/Slider.svelte";
+  import ControlLayerSettings from "./ControlLayerSettings.svelte";
 
   const THUMB_SIZE = 34;
   const thumbnails = new Map<LayerId, { key: unknown; url: string }>();
@@ -20,10 +21,14 @@
   let dropBefore = $state(false);
   let layersOpen = $state(true);
   let masksOpen = $state(true);
+  let controlsOpen = $state(true);
+  let expandedControlId = $state<LayerId | null>(null);
+  let showControlOnly = $state(false);
   let contextMenuOpen = $state(false);
   let contextMenuX = $state(0);
   let contextMenuY = $state(0);
   let contextMenuItems = $state<ContextMenuItem[]>([]);
+  let actionMessage = $state("");
 
   const orderedRootLayers = $derived(
     layerStore.document.layerOrder
@@ -31,10 +36,16 @@
       .filter((layer): layer is Layer => layer !== undefined),
   );
   const regularLayers = $derived(
-    orderedRootLayers.filter((layer) => layer.kind !== "mask"),
+    showControlOnly
+      ? []
+      : orderedRootLayers.filter((layer) => layer.kind !== "mask" && layer.kind !== "control"),
   );
   const maskLayers = $derived(
-    orderedRootLayers.filter((layer) => layer.kind === "mask"),
+    orderedRootLayers.filter((layer): layer is MaskLayer => layer.kind === "mask"),
+  );
+  const visibleMaskLayers = $derived(showControlOnly ? [] : maskLayers);
+  const controlLayers = $derived(
+    orderedRootLayers.filter((layer) => layer.kind === "control"),
   );
 
   $effect(() => {
@@ -120,6 +131,7 @@
         return null;
       case "raster":
       case "mask":
+      case "control":
         break;
       default: {
         const exhaustive: never = layer;
@@ -180,6 +192,28 @@
     masksOpen = true;
   }
 
+  async function handleControlFiles(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = [...(input.files ?? [])];
+    input.value = "";
+
+    for (const file of files) {
+      const app = getActiveUltraPaintApp();
+      if (!app) {
+        console.error("[ultra-paint] cannot add a control layer before the app is ready");
+        return;
+      }
+      try {
+        const id = await app.addControlLayerFromFile(file);
+        layerStore.setSelectedLayerId(id);
+        controlsOpen = true;
+        expandedControlId = id;
+      } catch (error) {
+        console.error(`[ultra-paint] could not add control layer "${file.name}":`, error);
+      }
+    }
+  }
+
   function isInteractiveTarget(target: EventTarget | null): boolean {
     return (
       target instanceof Element &&
@@ -187,28 +221,129 @@
     );
   }
 
-  function selectRow(event: MouseEvent, id: LayerId): void {
-    if (!isInteractiveTarget(event.target)) layerStore.setSelectedLayerId(id);
+  function selectRow(event: MouseEvent, layer: Layer): void {
+    if (isInteractiveTarget(event.target)) return;
+    selectLayer(layer, event.shiftKey || event.ctrlKey || event.metaKey);
   }
 
-  function openLayerContextMenu(event: MouseEvent, layer: Layer): void {
-    event.preventDefault();
-    layerStore.setSelectedLayerId(layer.id);
-    contextMenuX = event.clientX;
-    contextMenuY = event.clientY;
+  function selectLayer(layer: Layer, toggle: boolean): void {
+    if (!toggle) {
+      layerStore.setSelectedLayerId(layer.id);
+      return;
+    }
+    const selected = layerStore.selectedLayerIds
+      .map((id) => layerStore.getLayer(id))
+      .filter((candidate): candidate is Layer => candidate !== undefined);
+    if (selected.some((candidate) => !shareAccordion(candidate, layer))) {
+      layerStore.setSelectedLayerId(layer.id);
+      return;
+    }
+    layerStore.toggleSelectedLayerId(layer.id);
+  }
+
+  function openAddMenu(event: MouseEvent): void {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    contextMenuX = rect.left;
+    contextMenuY = rect.bottom + 4;
     contextMenuItems = [
-      { label: "Rename", action: () => void beginRename(layer) },
-      { label: layer.visible ? "Hide layer" : "Show layer", action: () => layerStore.setVisible(layer.id, !layer.visible) },
-      { label: "Delete", action: () => layerStore.removeLayer(layer.id), destructive: true },
+      { label: "Raster Layer", action: () => void handleAddBlankLayer() },
+      { label: "Mask Layer", action: handleAddMaskLayer },
+      {
+        label: "Control Layer",
+        action: () => document.getElementById("upaint-control-file-input")?.click(),
+      },
+      { divider: true },
+      {
+        label: "Insert Image",
+        action: () => document.getElementById("upaint-layer-file-input")?.click(),
+      },
     ];
     contextMenuOpen = true;
   }
 
-  function selectRowFromKeyboard(event: KeyboardEvent, id: LayerId): void {
+  function openLayerContextMenu(event: MouseEvent, layer: Layer): void {
+    event.preventDefault();
+    if (!layerStore.selectedLayerIds.includes(layer.id)) {
+      layerStore.setSelectedLayerId(layer.id);
+    }
+    const selected = layerStore.selectedLayerIds
+      .map((id) => layerStore.getLayer(id))
+      .filter(
+        (candidate): candidate is Layer =>
+          candidate !== undefined && shareAccordion(candidate, layer),
+      );
+    const allVisible = selected.every((candidate) => candidate.visible);
+    const single = selected.length === 1 ? selected[0] : undefined;
+    const mergeable = accordionBucket(layer) === "layers" && selected.length > 1;
+    const copyable = single !== undefined && single.kind !== "group";
+    contextMenuX = event.clientX;
+    contextMenuY = event.clientY;
+    contextMenuItems = [
+      ...(single
+        ? [{ label: "Rename", action: () => void beginRename(single) }]
+        : []),
+      {
+        label: allVisible ? "Hide selected" : "Show selected",
+        action: () => selected.forEach((candidate) => layerStore.setVisible(candidate.id, !allVisible)),
+      },
+      ...(mergeable
+        ? [{ label: "Merge selected into new layer", action: () => mergeSelected(selected) }]
+        : []),
+      ...(copyable
+        ? [{
+            label: clipboardSupported()
+              ? "Copy layer to clipboard"
+              : "Copy layer to clipboard (unsupported)",
+            action: () => void copyLayer(single),
+            disabled: !clipboardSupported(),
+          }]
+        : []),
+      {
+        label: showControlOnly ? "Show all layers" : "Show Control layers only",
+        action: () => (showControlOnly = !showControlOnly),
+      },
+      {
+        label: selected.length === 1 ? "Delete layer" : `Delete ${selected.length} selected`,
+        action: () => selected.forEach((candidate) => layerStore.removeLayer(candidate.id)),
+        destructive: true,
+      },
+    ];
+    contextMenuOpen = true;
+  }
+
+  function mergeSelected(selected: readonly Layer[]): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      app.mergeLayersToNewLayer(selected.map((layer) => layer.id));
+      actionMessage = `Merged ${selected.length} layers into a new layer.`;
+    } catch (error) {
+      actionMessage = `Could not merge layers: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function clipboardSupported(): boolean {
+    return typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function";
+  }
+
+  async function copyLayer(layer: Layer): Promise<void> {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app || !clipboardSupported()) throw new Error("PNG clipboard access is unavailable");
+      const blob = await app.layerSourcePngBlob(layer.id);
+      if (!blob) throw new Error("This layer has no copyable pixel data");
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      actionMessage = `Copied “${layer.name}” to the clipboard.`;
+    } catch (error) {
+      actionMessage = `Could not copy layer: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function selectRowFromKeyboard(event: KeyboardEvent, layer: Layer): void {
     if (event.target !== event.currentTarget) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    layerStore.setSelectedLayerId(id);
+    selectLayer(layer, event.shiftKey || event.ctrlKey || event.metaKey);
   }
 
   async function beginRename(layer: Layer): Promise<void> {
@@ -347,8 +482,14 @@
     layerStore.setSelectedLayerId(dragged);
   }
 
+  function accordionBucket(layer: Layer): "mask" | "control" | "layers" {
+    if (layer.kind === "mask") return "mask";
+    if (layer.kind === "control") return "control";
+    return "layers";
+  }
+
   function shareAccordion(a: Layer, b: Layer): boolean {
-    return (a.kind === "mask") === (b.kind === "mask");
+    return accordionBucket(a) === accordionBucket(b);
   }
 
   function moveWithinStack(
@@ -366,7 +507,7 @@
 {#snippet layerRows(layers: Layer[])}
   {#each layers as layer, index (layer.id)}
         {@const thumbnail = thumbnailFor(layer)}
-        {@const selected = layerStore.selectedLayerId === layer.id}
+        {@const selected = layerStore.selectedLayerIds.includes(layer.id)}
         <div
           class={`grid cursor-default grid-cols-[22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border p-1.5 ${selected ? "border-(--upaint-accent) bg-(--upaint-accent-muted)" : "border-(--upaint-border) bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
           style="border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition), background-color var(--upaint-transition), opacity var(--upaint-transition);"
@@ -376,8 +517,8 @@
           draggable={false}
           data-layer-id={layer.id}
           data-layer-kind={layer.kind}
-          onclick={(event) => selectRow(event, layer.id)}
-          onkeydown={(event) => selectRowFromKeyboard(event, layer.id)}
+          onclick={(event) => selectRow(event, layer)}
+          onkeydown={(event) => selectRowFromKeyboard(event, layer)}
           onpointerdowncapture={armRowDrag}
           onpointerup={disarmRowDrag}
           onpointercancel={disarmRowDrag}
@@ -483,6 +624,20 @@
             >
               ▼
             </button>
+            {#if layer.kind === "control"}
+              <button
+                type="button"
+                class={`h-7 w-7 cursor-pointer border text-[10px] text-(--upaint-text) ${expandedControlId === layer.id ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
+                style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+                title="ControlNet settings"
+                aria-label={`Configure ${layer.name}`}
+                aria-pressed={expandedControlId === layer.id}
+                onclick={() =>
+                  (expandedControlId = expandedControlId === layer.id ? null : layer.id)}
+              >
+                ⚙
+              </button>
+            {/if}
             <button
               type="button"
               class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-base text-(--upaint-danger) hover:border-(--upaint-danger)"
@@ -547,6 +702,10 @@
               </select>
             </div>
           {/if}
+
+          {#if layer.kind === "control" && expandedControlId === layer.id}
+            <ControlLayerSettings {layer} {maskLayers} />
+          {/if}
         </div>
   {/each}
 {/snippet}
@@ -564,29 +723,20 @@
       type="button"
       class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
       style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
-      title="Add image layer(s) from file"
-      onclick={() => document.getElementById("upaint-layer-file-input")?.click()}
+      title="Add a layer"
+      aria-label="Add a layer"
+      onclick={openAddMenu}
     >
-      + Add
+      +
     </button>
-    <button
-      type="button"
-      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
-      title="Add a blank transparent layer"
-      onclick={() => void handleAddBlankLayer()}
-    >
-      + Blank
-    </button>
-    <button
-      type="button"
-      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
-      title="Add an inpainting mask"
-      onclick={handleAddMaskLayer}
-    >
-      + Mask
-    </button>
+    <input
+      id="upaint-control-file-input"
+      class="hidden"
+      type="file"
+      accept="image/*"
+      multiple
+      onchange={(event) => void handleControlFiles(event)}
+    />
     <input
       id="upaint-layer-file-input"
       class="hidden"
@@ -601,23 +751,39 @@
     <Accordion bind:open={layersOpen} title="Layers" count={regularLayers.length} id="upaint-regular-layer-list" data-layer-section="layers">
       {#if regularLayers.length === 0}
         <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-          No layers yet -- use + Add or + Blank.
+          No layers yet -- use + to add one.
         </div>
       {:else}
         {@render layerRows(regularLayers)}
       {/if}
     </Accordion>
 
-    <Accordion bind:open={masksOpen} title="Masks" count={maskLayers.length} id="upaint-mask-layer-list" data-layer-section="masks">
-      {#if maskLayers.length === 0}
+    <Accordion bind:open={masksOpen} title="Masks" count={visibleMaskLayers.length} id="upaint-mask-layer-list" data-layer-section="masks">
+      {#if visibleMaskLayers.length === 0}
         <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-          No masks yet -- use + Mask.
+          No masks yet -- use + to add one.
         </div>
       {:else}
-        {@render layerRows(maskLayers)}
+        {@render layerRows(visibleMaskLayers)}
+      {/if}
+    </Accordion>
+
+    <Accordion bind:open={controlsOpen} title="Control" count={controlLayers.length} id="upaint-control-layer-list" data-layer-section="controls">
+      {#if controlLayers.length === 0}
+        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
+          No ControlNet layers yet -- use + to add one.
+        </div>
+      {:else}
+        {@render layerRows(controlLayers)}
       {/if}
     </Accordion>
   </div>
+
+  {#if actionMessage}
+    <div class="shrink-0 border-t px-3 py-2 text-[11px] text-(--upaint-text-muted)" style="border-color: var(--upaint-border);" role="status">
+      {actionMessage}
+    </div>
+  {/if}
 
   <ContextMenu
     bind:open={contextMenuOpen}

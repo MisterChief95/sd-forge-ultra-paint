@@ -11,6 +11,9 @@ import { RenderTexture } from "pixi.js";
 import type {
     BoundaryBox,
     BlendMode,
+    ControlLayer,
+    ControlMode,
+    ControlResizeMode,
     Document,
     GroupLayer,
     ImageRef,
@@ -250,6 +253,8 @@ export class LayerStore {
 
     private _selectedLayerId = $state<LayerId | null>(null);
 
+    private _selectedLayerIds = $state<LayerId[]>([]);
+
     constructor(width = 1024, height = 1024) {
         this._document = createEmptyDocument(width, height);
     }
@@ -264,6 +269,11 @@ export class LayerStore {
     /** Reactive selection getter for Svelte consumers. */
     public get selectedLayerId(): LayerId | null {
         return this._selectedLayerId;
+    }
+
+    /** Reactive multi-selection getter for layer-panel consumers. */
+    public get selectedLayerIds(): readonly LayerId[] {
+        return this._selectedLayerIds;
     }
 
     /** Whether an effectively visible raster layer has positive-area BB overlap. */
@@ -295,6 +305,10 @@ export class LayerStore {
         return this._selectedLayerId;
     }
 
+    public getSelectedLayerIds(): readonly LayerId[] {
+        return this._selectedLayerIds;
+    }
+
     /** The live paintable texture for a raster layer, if one is registered. */
     public getTexture(id: LayerId): RenderTexture | undefined {
         return this._textures.get(id);
@@ -318,8 +332,44 @@ export class LayerStore {
     /** Select an existing layer, or clear selection with `null`. */
     public setSelectedLayerId(id: LayerId | null): void {
         const next = id !== null && this.getLayer(id) ? id : null;
-        if (this._selectedLayerId === next) return;
+        const nextIds = next === null ? [] : [next];
+        if (
+            this._selectedLayerId === next &&
+            this._selectedLayerIds.length === nextIds.length &&
+            this._selectedLayerIds.every((selected, index) => selected === nextIds[index])
+        ) {
+            return;
+        }
         this._selectedLayerId = next;
+        this._selectedLayerIds = nextIds;
+        this.emit();
+    }
+
+    /** Replace selection with existing layer ids; the last id is primary. */
+    public setSelectedLayerIds(ids: readonly LayerId[]): void {
+        const live = new Set(this._document.layers.map((layer) => layer.id));
+        const next = [...new Set(ids)].filter((id) => live.has(id));
+        const primary = next[next.length - 1] ?? null;
+        if (
+            this._selectedLayerId === primary &&
+            this._selectedLayerIds.length === next.length &&
+            this._selectedLayerIds.every((id, index) => id === next[index])
+        ) {
+            return;
+        }
+        this._selectedLayerId = primary;
+        this._selectedLayerIds = next;
+        this.emit();
+    }
+
+    /** Toggle one existing layer in the current selection. */
+    public toggleSelectedLayerId(id: LayerId): void {
+        if (!this.getLayer(id)) return;
+        const next = this._selectedLayerIds.includes(id)
+            ? this._selectedLayerIds.filter((selected) => selected !== id)
+            : [...this._selectedLayerIds, id];
+        this._selectedLayerIds = next;
+        this._selectedLayerId = next[next.length - 1] ?? null;
         this.emit();
     }
 
@@ -443,6 +493,89 @@ export class LayerStore {
         return id;
     }
 
+    /** Create a control (ControlNet) layer backed by the given source texture. */
+    public addControlLayer(texture: RenderTexture, name?: string): LayerId {
+        const id = newId("control");
+        const layer: ControlLayer = {
+            id,
+            name:
+                name ??
+                `Control ${
+                    this._document.layers.filter((candidate) => candidate.kind === "control")
+                        .length + 1
+                }`,
+            kind: "control",
+            visible: true,
+            locked: false,
+            opacity: 1,
+            blendMode: "normal",
+            transform: identityTransform(),
+            parentId: null,
+            image: {
+                source: "upload",
+                width: texture.width,
+                height: texture.height,
+            },
+            model: "None",
+            preprocessor: "None",
+            preprocessorResolution: -1,
+            preprocessorThresholdA: -1,
+            preprocessorThresholdB: -1,
+            weight: 1,
+            guidanceStart: 0,
+            guidanceEnd: 1,
+            controlMode: "balanced",
+            pixelPerfect: false,
+            resizeMode: "resize",
+            maskLayerId: null,
+            preview: null,
+        };
+
+        this._textures.set(id, texture);
+        this._document.layers.push(layer);
+        this._document.layerOrder.unshift(id);
+        this.emit();
+        this.emitMutation({ kind: "add-layer", layerId: id });
+        return id;
+    }
+
+    /**
+     * Patch a control layer's ControlNet settings (model, preprocessor,
+     * weight, guidance range, mode, mask reference...). Not undoable, same as
+     * {@link setMaskColor} -- these are cosmetic/config fields, not pixel or
+     * structural document state.
+     */
+    public setControlParams(
+        id: LayerId,
+        patch: Partial<{
+            model: string;
+            preprocessor: string;
+            preprocessorResolution: number;
+            preprocessorThresholdA: number;
+            preprocessorThresholdB: number;
+            weight: number;
+            guidanceStart: number;
+            guidanceEnd: number;
+            controlMode: ControlMode;
+            pixelPerfect: boolean;
+            resizeMode: ControlResizeMode;
+            maskLayerId: LayerId | null;
+        }>,
+    ): void {
+        const layer = this.getLayer(id);
+        if (!layer || layer.kind !== "control") return;
+        Object.assign(layer, patch);
+        this.emit();
+    }
+
+    /** Cache (or clear) a control layer's on-canvas preprocessor preview. */
+    public setControlPreview(id: LayerId, preview: ImageRef | null): void {
+        const layer = this.getLayer(id);
+        if (!layer || layer.kind !== "control") return;
+        layer.preview = preview;
+        this.emit();
+    }
+
     /** Remove `id` and, if it is a group, every descendant. */
     public removeLayer(id: LayerId): void {
         const layer = this.getLayer(id);
@@ -467,11 +600,15 @@ export class LayerStore {
             }
         }
 
+        this._selectedLayerIds = this._selectedLayerIds.filter(
+            (selected) => !doomed.has(selected),
+        );
         if (
-            this._selectedLayerId !== null &&
+            this._selectedLayerId === null ||
             doomed.has(this._selectedLayerId)
         ) {
-            this._selectedLayerId = null;
+            this._selectedLayerId =
+                this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
         }
 
         this.emit();
@@ -609,7 +746,7 @@ export class LayerStore {
         const previousTexture = this._textures.get(id);
         if (
             !layer ||
-            (layer.kind !== "raster" && layer.kind !== "mask") ||
+            (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
             previousTexture !== expectedTexture
         ) {
             return null;
@@ -638,7 +775,7 @@ export class LayerStore {
         const previousTexture = this._textures.get(id);
         if (
             !layer ||
-            (layer.kind !== "raster" && layer.kind !== "mask") ||
+            (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
             previousTexture !== expectedTexture
         ) {
             return null;
@@ -677,6 +814,7 @@ export class LayerStore {
         this._document.layers = [];
         this._document.layerOrder = [];
         this._selectedLayerId = null;
+        this._selectedLayerIds = [];
         this.emit();
         this.emitMutation({ kind: "clear" });
     }

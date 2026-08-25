@@ -22,6 +22,7 @@
   import { onDestroy, onMount } from "svelte";
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
+  import { handleInputKeyDown } from "./input/actionMap";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
   import LayerPanel from "./ui/LayerPanel.svelte";
   import PaintToolbar from "./ui/PaintToolbar.svelte";
@@ -37,7 +38,13 @@
     ultraPaintApp?.destroy();
     ultraPaintApp = null;
   });
+
+  function handleKeyDown(event: KeyboardEvent): void {
+    handleInputKeyDown(event, ultraPaintApp);
+  }
 </script>
+
+<svelte:window onkeydown={handleKeyDown} />
 
 <div class="flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
   <aside

@@ -154,6 +154,16 @@ raster layers, generated images landing as layers not a gallery, the iframe
 viewport-height/scroll bug, the layer-panel opacity-slider row-drag conflict) are
 fixed — detail inline above in this section's history.
 
+**Layer selection workflow: IMPLEMENTED.** The layer panel now supports
+modifier-based multi-selection, selected-set hide/show and delete actions from the
+context menu, merging selected raster/group content into a new raster layer, and
+copying a single textured layer to the system clipboard as PNG. The store keeps a
+primary selection for existing callers while tracking the selected set, cleans up
+selection when layers are removed, and keeps regular/mask/control selections
+bucket-compatible. Merge preserves the originals and document-space placement;
+mask/control selections are intentionally not mergeable. Verified with
+`npm run typecheck`, `npm run build`, and `git diff --check`.
+
 **Boundary box (Invoke-style operating region): IMPLEMENTED** (superseding the
 original Phase 2.5 item 1 fixed-size canvas controls) — `Document.boundaryBox` is
 now the sole operating region for Fill, Generate export, and new blank layers, with
@@ -1243,6 +1253,32 @@ Suggested order: T32 (quick, independent) · T33 (independent, fixes a real bug)
 · T34 -> T35 -> T38's T35 coverage · T36 -> T37 -> T38's T36/T37 coverage. T33
 and T34-T37 don't depend on each other and can be done in either order within
 one Codex session.
+
+### Phase 3 follow-up round 3 (developer, 2026-08-25) — T42
+
+| Task | What | Owner |
+|---|---|---|
+| T42 | Layer workflow improvements: add robust multi-selection to `LayerStore` and `LayerPanel.svelte` with normal/Shift/Ctrl/Cmd selection semantics; make right-click hide/show and delete operate on the selected compatible set; merge selected top-level raster layers or rendered groups into a new raster layer while preserving originals and document-space coordinates; copy one textured raster, mask, or control layer to the native clipboard as PNG with graceful unsupported/error feedback. | Codex (gpt-5.6-sol) |
+| T43 | Canvas-only image paste: attach a `paste` handler directly to the focusable Pixi canvas, import the first `image/*` item as a selected raster layer through `addImageFromFile()`, and prevent default only when an image was handled so prompt/other text-field pastes retain native behavior. Add focused Playwright coverage for both targets. | Codex |
+
+**T42: DONE, 2026-08-25.** Changed only `frontend/src/state/layerStore.svelte.ts`,
+`frontend/src/ui/LayerPanel.svelte`, and `frontend/src/app/UltraPaintApp.ts`;
+`PLAN.md` was then updated with this entry. Merge uses the existing GPU compositor,
+inserts above the highest selected layer, and leaves source layers intact. Copy
+uses the native `ClipboardItem` API and reports encoding/permission failures in
+the panel. Verification: `npm run typecheck` passed with 0 errors/warnings,
+`npm run build` passed, and `git diff --check` passed.
+
+**T43: DONE, 2026-08-25.** Image paste is scoped to the focusable Pixi canvas
+only: its `paste` listener imports the first `image/*` clipboard item through the
+existing `addImageFromFile()` path, selects the created layer, and prevents the
+browser default only for an actual image. Prompt and other text-field paste events
+are untouched. Added a focused Playwright check that proves a prompt-targeted image
+paste is not consumed while the focused canvas receives the same image as a layer.
+Updated the existing blank/mask test helpers to use the current `+` menu's
+"Raster Layer" / "Mask Layer" actions. Final verification: `npm run typecheck`
+passed with 0 errors/warnings, `npm run build` passed, `npm run test:e2e` passed
+24/24, and `git diff --check` passed.
 
 ---
 
