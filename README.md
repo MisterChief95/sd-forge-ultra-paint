@@ -1,9 +1,19 @@
-# sd-forge-ultra-paint
+# Forge Neo UltraPaint
+
+<p align="center">
+  <img src="https://img.shields.io/badge/powered%20by-Codex-080808" alt="Powered by Codex" />
+  &nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/powered%20by-Claude-da7756" alt="Powered by Claude" />
+  &nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/powered%20by-Copilot-8534F3" alt="Powered by Copilot" />
+</p>
 
 Ultra Paint adds a layer-based painting tab to Forge Classic, similar to InvokeAI's
 canvas. It's a real GPU-accelerated multi-layer paint surface — paint, mask and
 reference layers composited with PixiJS v8 — wired directly into Forge's existing
 img2img/inpaint/ControlNet pipeline instead of round-tripping through separate tabs.
+
+<img width="1814" height="992" alt="image" src="https://github.com/user-attachments/assets/11139467-5399-4195-97fa-cefef7738253" />
 
 **Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
