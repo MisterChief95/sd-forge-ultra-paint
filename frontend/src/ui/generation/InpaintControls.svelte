@@ -10,6 +10,7 @@
     inpaintControlNetModel: string;
     inpaintControlNetWeight: number;
     coherenceEdgeSize: number;
+    coherencePassFast: boolean;
     onMaskBlurChange: (value: number) => void;
     onInpaintPaddingChange: (value: number) => void;
     onInpaintAreaChange: (value: InpaintArea) => void;
@@ -18,6 +19,7 @@
     onInpaintControlNetModelChange: (value: string) => void;
     onInpaintControlNetWeightChange: (value: number) => void;
     onCoherenceEdgeSizeChange: (value: number) => void;
+    onCoherencePassFastChange: (value: boolean) => void;
   }
 
   import SliderNumberInput from "../lib/SliderNumberInput.svelte";
@@ -32,6 +34,7 @@
     inpaintControlNetModel,
     inpaintControlNetWeight,
     coherenceEdgeSize,
+    coherencePassFast,
     onMaskBlurChange,
     onInpaintPaddingChange,
     onInpaintAreaChange,
@@ -40,6 +43,7 @@
     onInpaintControlNetModelChange,
     onInpaintControlNetWeightChange,
     onCoherenceEdgeSizeChange,
+    onCoherencePassFastChange,
   }: Props = $props();
 
   let controlModels = $state<string[]>([]);
@@ -80,6 +84,15 @@
   <SliderNumberInput label="Context padding" value={inpaintPadding} min={0} max={256} sliderStep={8} numberStep={1} onValueInput={onInpaintPaddingChange} />
 {:else if inpaintArea === "coherence"}
   <SliderNumberInput label="Edge size" value={coherenceEdgeSize} min={0} max={256} sliderStep={8} numberStep={1} onValueInput={onCoherenceEdgeSizeChange} />
+  <label class="flex cursor-pointer items-center gap-2 text-(--upaint-text-muted)">
+    <input
+      class="m-0 h-4 w-4 accent-(--upaint-accent)"
+      type="checkbox"
+      checked={coherencePassFast}
+      onchange={(event) => onCoherencePassFastChange(event.currentTarget.checked)}
+    />
+    Fast (latent-space, experimental)
+  </label>
 {/if}
 
 {#if inpaintArea !== "coherence"}

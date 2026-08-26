@@ -44,7 +44,7 @@ key                          default    notes
 ``denoising_strength``       ``0.75``
 ``sampler_name``             ``None``   ``None`` -> Forge's own fallback
 ``scheduler``                ``None``   ``None`` -> Forge's own fallback
-``seed``                     ``-1``     ``-1`` -> randomised by `process_images`
+``seed``                     ``-1``     ``-1`` -> randomized by `process_images`
 ``subseed``                  ``-1``
 ``subseed_strength``         ``0.0``
 ``resize_mode``              ``0``      0 = "Just resize"
@@ -118,10 +118,11 @@ registered; otherwise ordinary generation continues unchanged.
 out) and are deliberately *not* read from `gen_params`.
 """
 
+import time
 from contextlib import closing
 
 import gradio as gr
-from PIL import Image, ImageChops, ImageFilter
+from PIL import Image
 
 import modules.scripts
 from modules import shared
@@ -134,6 +135,7 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
+from ultra_paint.mask_ring import compute_ring
 from ultra_paint.model_profile import is_unsupported_video_model
 
 __all__ = [
@@ -170,6 +172,7 @@ GEN_PARAM_DEFAULTS: dict = {
     "inpaint_controlnet_weight": 1.0,
     "coherence_pass_enabled": False,
     "coherence_edge_size": 32,
+    "coherence_pass_fast": False,
     "soft_inpainting_power": 1,
     "soft_inpainting_scale": 0.5,
     "soft_inpainting_detail_preservation": 4,
@@ -530,14 +533,32 @@ def run_generation(
         )
     )
 
+    use_fast_coherence = (
+        not is_txt2img
+        and mask_image is not None
+        and _get(gen_params, "coherence_pass_enabled")
+        and _get(gen_params, "coherence_pass_fast")
+    )
+    if use_fast_coherence:
+        # Picked up by scripts/fast_coherence_pass.py's post_sample hook --
+        # patches the latent in place before Forge's single decode, instead
+        # of dispatching a second full StableDiffusionProcessingImg2Img like
+        # `_apply_coherence_pass` below.
+        p.ultra_paint_fast_coherence_enabled = True
+        p.ultra_paint_coherence_edge_size = int(_get(gen_params, "coherence_edge_size"))
+
     with closing(p):
         # Index 0 of script_args is 0 ("Script: None"), so `run` returns None and
         # we fall through to `process_images`. The call is still required: it is
         # what gives a *selectable* script the chance to take over, and it is the
         # shape modules/img2img.py:273-275 uses.
+        _t_process_images = time.perf_counter()
         processed = p.scripts.run(p, *p.script_args)
         if processed is None:
             processed = process_images(p)
+        print(
+            f"[TIMING] generation: process_images()={time.perf_counter() - _t_process_images:.3f}s"
+        )
 
         if is_txt2img:
             processed.images = [
@@ -547,8 +568,30 @@ def run_generation(
                 for image in processed.images
             ]
         elif mask_image is not None:
+            _t_composite = time.perf_counter()
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
-            if _get(gen_params, "coherence_pass_enabled"):
+            if use_fast_coherence:
+                # Latent already patched pre-decode -- paste back like the
+                # no-coherence path, but alpha against the *dilated* mask
+                # (same as _apply_coherence_pass's `patch.putalpha(dilated)`
+                # below), not the plain one: the ring's blend extends
+                # `coherence_edge_size` px outside the original mask, and
+                # compositing against the un-dilated mask would clip that
+                # outward half away with alpha=0.
+                dilated, _, _ = compute_ring(
+                    mask_for_alpha.convert("L"),
+                    int(_get(gen_params, "coherence_edge_size")),
+                )
+                processed.images = [
+                    _transparent_inpaint_patch(
+                        image,
+                        composite_image.size,
+                        dilated,
+                        p.paste_to,
+                    )
+                    for image in processed.images
+                ]
+            elif _get(gen_params, "coherence_pass_enabled"):
                 processed.images = [
                     _apply_coherence_pass(
                         image,
@@ -570,6 +613,9 @@ def run_generation(
                     )
                     for image in processed.images
                 ]
+            print(
+                f"[TIMING] generation: post-process_images compositing={time.perf_counter() - _t_composite:.3f}s"
+            )
 
     shared.total_tqdm.clear()
 
@@ -590,13 +636,7 @@ def _apply_coherence_pass(
     """Denoise a ring around an inpaint boundary, keeping its expanded alpha."""
     flattened = image.convert("RGBA")
     alpha = mask_for_alpha.convert("L")
-    if edge_size <= 0:
-        dilated = eroded = alpha
-    else:
-        kernel = edge_size * 2 + 1
-        dilated = alpha.filter(ImageFilter.MaxFilter(kernel))
-        eroded = alpha.filter(ImageFilter.MinFilter(kernel))
-    ring = ImageChops.subtract(dilated, eroded)
+    dilated, eroded, ring = compute_ring(alpha, edge_size)
 
     p2 = StableDiffusionProcessingImg2Img(
         sd_model=base_p.sd_model,

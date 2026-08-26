@@ -331,6 +331,11 @@ export class UltraPaintApp {
                 if (!app || !world || width <= 0 || height <= 0) return;
                 if (app.screen.width !== width || app.screen.height !== height) {
                     app.renderer.resize(width, height);
+                    // Resizing clears the WebGL backbuffer immediately; force
+                    // a redraw now instead of waiting for the ticker's next
+                    // tick, or rapid-fire resizes (e.g. dragging the panel
+                    // separator) outrun the ticker and the canvas reads black.
+                    app.render();
                 }
                 // A hidden host can initialise at 0x0. Center once when the
                 // viewport first becomes measurable, then preserve the camera.

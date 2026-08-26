@@ -56,6 +56,7 @@ export interface GenerationParameters {
   inpaintControlNetWeight: number;
   coherencePassEnabled: boolean;
   coherenceEdgeSize: number;
+  coherencePassFast: boolean;
   samplerName: string;
   scheduler: string;
   targetResolution: { width: number; height: number } | null;
@@ -184,6 +185,7 @@ export async function requestGeneration(
           : {}),
         coherence_pass_enabled: parameters.coherencePassEnabled,
         coherence_edge_size: parameters.coherenceEdgeSize,
+        coherence_pass_fast: parameters.coherencePassFast,
         sampler_name: parameters.samplerName || null,
         scheduler: parameters.scheduler || null,
         ...(parameters.targetResolution === null

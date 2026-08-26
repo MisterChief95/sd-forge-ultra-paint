@@ -40,7 +40,7 @@
   <div class="flex items-baseline justify-between gap-2">
     <span class="min-w-0">{label}</span>
     <input
-      class="w-[58px] shrink-0 border bg-(--upaint-surface-raised) px-1.5 py-1 text-right text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
+      class="w-14.5 shrink-0 border bg-(--upaint-surface-raised) px-1.5 py-1 text-right text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent) [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
       style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
       type="number"
       {min}

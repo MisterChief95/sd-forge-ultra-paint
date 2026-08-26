@@ -27,6 +27,7 @@ export class BoundaryBoxOverlay {
     private canvas: HTMLCanvasElement | null = null;
     private active: ActiveDrag | null = null;
     private liveBox: BoundaryBox;
+    private lastScale = -1;
 
     public constructor(
         private readonly app: Application,
@@ -37,6 +38,7 @@ export class BoundaryBoxOverlay {
     ) {
         this.liveBox = { ...store.getDocument().boundaryBox };
         this.container.addChild(this.border, this.handles);
+        this.container.onRender = () => this.refreshZoom();
         this.redraw(this.liveBox);
         this.unsubscribe = store.subscribe((doc) => {
             if (!this.active) {
@@ -60,6 +62,7 @@ export class BoundaryBoxOverlay {
         }
         this.canvas = null;
         this.active = null;
+        this.container.onRender = null;
         this.container.destroy({ children: true });
     }
 
@@ -213,6 +216,13 @@ export class BoundaryBoxOverlay {
         for (const [x, y] of corners) {
             this.handles.rect(x - radius / 2, y - radius / 2, radius, radius).fill({ color: 0x5b8def, alpha: 1 });
         }
+    }
+
+    private refreshZoom(): void {
+        const scale = this.worldScale();
+        if (scale === this.lastScale) return;
+        this.lastScale = scale;
+        this.redraw(this.liveBox);
     }
 
     private dashedLine(x1: number, y1: number, x2: number, y2: number, dash: number): void {

@@ -20,6 +20,7 @@
    * preserve) -- T21's generation-settings components mount there.
    */
   import { onDestroy, onMount } from "svelte";
+  import type { Action } from 'svelte/action';
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
@@ -29,6 +30,17 @@
   import ViewportControls from "./ui/ViewportControls.svelte";
 
   let ultraPaintApp: UltraPaintApp | null = null;
+
+  const MIN_PANEL_WIDTH = 320; // min-w-80
+  const MAX_PANEL_WIDTH = 500; // max-w-125
+  let leftPanelWidth = $state(MIN_PANEL_WIDTH);
+  let rightPanelWidth = $state(MIN_PANEL_WIDTH);
+  let leftDragStartWidth = MIN_PANEL_WIDTH;
+  let rightDragStartWidth = MIN_PANEL_WIDTH;
+
+  function clampPanelWidth(width: number): number {
+    return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width));
+  }
 
   onMount(() => {
     ultraPaintApp = new UltraPaintApp("upaint-root");
@@ -42,6 +54,58 @@
   function handleKeyDown(event: KeyboardEvent): void {
     handleInputKeyDown(event, ultraPaintApp);
   }
+
+  // Define the shape of the parameters passed to the action
+  interface DragParams {
+    orientation: 'vertical' | 'horizontal';
+  }
+
+  // Custom events this action dispatches. Named "sep*" (not "drag*") so they
+  // don't collide with the native HTML drag-and-drop `ondrag`/`ondragstart`
+  // attributes -- Svelte 5 has no `on:` directive to disambiguate anymore.
+  interface DragAttributes {
+    'onsepDragStart'?: (e: CustomEvent<string>) => void;
+    'onsepDrag'?: (e: CustomEvent<number>) => void;
+    'onsepDragEnd'?: (e: CustomEvent<string>) => void;
+  }
+
+  export const onDrag: Action<HTMLElement, DragParams, DragAttributes> = (node, params) => {
+    let dragStart: number | null = null;
+
+    // Type-safe ternary to pick the correct property name
+    const attr = params.orientation === 'vertical' ? 'screenX' : 'screenY';
+
+    const mouseDownAction = (e: MouseEvent) => {
+      e.preventDefault();
+      node.dispatchEvent(new CustomEvent('sepDragStart', { detail: 'hello' }));
+      dragStart = e[attr];
+    };
+
+    const mouseMoveAction = (e: MouseEvent) => {
+      if (dragStart !== null) {
+        const delta = e[attr] - dragStart;
+        node.dispatchEvent(new CustomEvent('sepDrag', { detail: delta }));
+      }
+    };
+
+    const mouseUpAction = () => {
+      dragStart = null;
+      node.dispatchEvent(new CustomEvent('sepDragEnd', { detail: 'hello' }));
+    };
+
+    node.addEventListener('mousedown', mouseDownAction);
+    document.addEventListener('mousemove', mouseMoveAction);
+    document.addEventListener('mouseup', mouseUpAction);
+
+    return {
+      destroy() {
+        node.removeEventListener('mousedown', mouseDownAction);
+        document.removeEventListener('mousemove', mouseMoveAction);
+        document.removeEventListener('mouseup', mouseUpAction);
+      }
+    };
+  };
+
 </script>
 
 <svelte:window onkeydown={handleKeyDown} />
@@ -49,13 +113,23 @@
 <div class="flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
   <aside
     id="upaint-settings-panel"
-    class="w-[300px] shrink-0 overflow-y-auto"
-    style="border-right: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    class="pr-1 shrink-0 overflow-y-auto"
+    style="width: {leftPanelWidth}px; border-right: 1px solid var(--upaint-border); background: var(--upaint-surface);"
   >
     <GenerationPanel />
   </aside>
 
-  <div class="flex min-w-0 flex-1 flex-col">
+  <div
+    role="separator"
+    aria-roledescription="vertical-sep"
+    class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
+    use:onDrag={{ orientation: 'vertical' }}
+    onsepDragStart={() => (leftDragStartWidth = leftPanelWidth)}
+    onsepDrag={(e) => (leftPanelWidth = clampPanelWidth(leftDragStartWidth + e.detail))}
+    >
+  </div>
+
+  <div class="flex min-w-0 flex-1 pl-1 pr-1 flex-col">
     <div id="upaint-root-toolbar" class="shrink-0">
       <PaintToolbar />
     </div>
@@ -65,10 +139,20 @@
     </div>
   </div>
 
+  <div
+    role="separator"
+    aria-roledescription="vertical-sep"
+    class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
+    use:onDrag={{ orientation: 'vertical' }}
+    onsepDragStart={() => (rightDragStartWidth = rightPanelWidth)}
+    onsepDrag={(e) => (rightPanelWidth = clampPanelWidth(rightDragStartWidth - e.detail))}
+    >
+  </div>
+
   <aside
     id="upaint-root-panel"
-    class="w-[320px] shrink-0 overflow-y-auto"
-    style="border-left: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    class="pl-1 shrink-0 overflow-y-auto"
+    style="width: {rightPanelWidth}px; border-left: 1px solid var(--upaint-border); background: var(--upaint-surface);"
   >
     <LayerPanel />
   </aside>

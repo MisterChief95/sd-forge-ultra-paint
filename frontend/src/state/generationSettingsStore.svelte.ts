@@ -30,6 +30,13 @@ export interface GenerationSettings {
      * `"coherence"`.
      */
     coherenceEdgeSize: number;
+    /**
+     * Denoise just the ring in latent space and skip straight to Forge's one
+     * decode, instead of dispatching a second full img2img pass over the
+     * whole canvas and alpha-blending its result on top. Opt-in while this
+     * path is still new -- see scripts/fast_coherence_pass.py.
+     */
+    coherencePassFast: boolean;
 }
 
 const DEFAULT_SETTINGS: GenerationSettings = {
@@ -45,6 +52,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
     inpaintControlNetModel: "",
     inpaintControlNetWeight: 1,
     coherenceEdgeSize: 32,
+    coherencePassFast: false,
 };
 
 export class GenerationSettingsStore {
@@ -171,6 +179,14 @@ export class GenerationSettingsStore {
             0,
             256,
         );
+    }
+
+    public get coherencePassFast(): boolean {
+        return this._state.coherencePassFast;
+    }
+
+    public setCoherencePassFast(enabled: boolean): void {
+        this._state.coherencePassFast = enabled;
     }
 }
 
