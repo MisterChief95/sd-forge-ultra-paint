@@ -20,16 +20,44 @@
    * preserve) -- T21's generation-settings components mount there.
    */
   import { onDestroy, onMount } from "svelte";
-  import type { Action } from 'svelte/action';
+  import type { Action } from "svelte/action";
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
+  import GenerationPreviewBar from "./ui/GenerationPreviewBar.svelte";
   import LayerPanel from "./ui/LayerPanel.svelte";
   import PaintToolbar from "./ui/PaintToolbar.svelte";
+  import PasteMenu, { type PasteLayerKind } from "./ui/PasteMenu.svelte";
   import ViewportControls from "./ui/ViewportControls.svelte";
 
   let ultraPaintApp: UltraPaintApp | null = null;
+  let pasteFile: File | null = $state(null);
+
+  function handlePasteRequest(file: File): void {
+    pasteFile = file;
+  }
+
+  function closePasteMenu(): void {
+    pasteFile = null;
+  }
+
+  function handlePasteChoice(kind: PasteLayerKind): void {
+    const file = pasteFile;
+    const app = ultraPaintApp;
+    closePasteMenu();
+    if (!file || !app) return;
+
+    const add =
+      kind === "mask"
+        ? app.addMaskLayerFromFile(file)
+        : kind === "control"
+          ? app.addControlLayerFromFile(file)
+          : app.addImageFromFile(file);
+    void add
+      .then((id) => app.getStore().setSelectedLayerId(id))
+      .catch((error) => console.error("[ultra-paint] could not paste image:", error));
+  }
 
   const MIN_PANEL_WIDTH = 320; // min-w-80
   const MAX_PANEL_WIDTH = 500; // max-w-125
@@ -44,6 +72,7 @@
 
   onMount(() => {
     ultraPaintApp = new UltraPaintApp("upaint-root");
+    ultraPaintApp.pasteRequestHandler = handlePasteRequest;
   });
 
   onDestroy(() => {
@@ -57,55 +86,54 @@
 
   // Define the shape of the parameters passed to the action
   interface DragParams {
-    orientation: 'vertical' | 'horizontal';
+    orientation: "vertical" | "horizontal";
   }
 
   // Custom events this action dispatches. Named "sep*" (not "drag*") so they
   // don't collide with the native HTML drag-and-drop `ondrag`/`ondragstart`
   // attributes -- Svelte 5 has no `on:` directive to disambiguate anymore.
   interface DragAttributes {
-    'onsepDragStart'?: (e: CustomEvent<string>) => void;
-    'onsepDrag'?: (e: CustomEvent<number>) => void;
-    'onsepDragEnd'?: (e: CustomEvent<string>) => void;
+    onsepDragStart?: (e: CustomEvent<string>) => void;
+    onsepDrag?: (e: CustomEvent<number>) => void;
+    onsepDragEnd?: (e: CustomEvent<string>) => void;
   }
 
   export const onDrag: Action<HTMLElement, DragParams, DragAttributes> = (node, params) => {
     let dragStart: number | null = null;
 
     // Type-safe ternary to pick the correct property name
-    const attr = params.orientation === 'vertical' ? 'screenX' : 'screenY';
+    const attr = params.orientation === "vertical" ? "screenX" : "screenY";
 
     const mouseDownAction = (e: MouseEvent) => {
       e.preventDefault();
-      node.dispatchEvent(new CustomEvent('sepDragStart', { detail: 'hello' }));
+      node.dispatchEvent(new CustomEvent("sepDragStart", { detail: "hello" }));
       dragStart = e[attr];
     };
 
     const mouseMoveAction = (e: MouseEvent) => {
       if (dragStart !== null) {
         const delta = e[attr] - dragStart;
-        node.dispatchEvent(new CustomEvent('sepDrag', { detail: delta }));
+        node.dispatchEvent(new CustomEvent("sepDrag", { detail: delta }));
       }
     };
 
     const mouseUpAction = () => {
       dragStart = null;
-      node.dispatchEvent(new CustomEvent('sepDragEnd', { detail: 'hello' }));
+      node.dispatchEvent(new CustomEvent("sepDragEnd", { detail: "hello" }));
     };
 
-    node.addEventListener('mousedown', mouseDownAction);
-    document.addEventListener('mousemove', mouseMoveAction);
-    document.addEventListener('mouseup', mouseUpAction);
+    node.addEventListener("mousedown", mouseDownAction);
+    document.addEventListener("mousemove", mouseMoveAction);
+    document.addEventListener("mouseup", mouseUpAction);
 
     return {
       destroy() {
-        node.removeEventListener('mousedown', mouseDownAction);
-        document.removeEventListener('mousemove', mouseMoveAction);
-        document.removeEventListener('mouseup', mouseUpAction);
-      }
+        node.removeEventListener("mousedown", mouseDownAction);
+        document.removeEventListener("mousemove", mouseMoveAction);
+        document.removeEventListener("mouseup", mouseUpAction);
+      },
     };
   };
-
 </script>
 
 <svelte:window onkeydown={handleKeyDown} />
@@ -123,11 +151,10 @@
     role="separator"
     aria-roledescription="vertical-sep"
     class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
-    use:onDrag={{ orientation: 'vertical' }}
+    use:onDrag={{ orientation: "vertical" }}
     onsepDragStart={() => (leftDragStartWidth = leftPanelWidth)}
     onsepDrag={(e) => (leftPanelWidth = clampPanelWidth(leftDragStartWidth + e.detail))}
-    >
-  </div>
+  ></div>
 
   <div class="flex min-w-0 flex-1 pl-1 pr-1 flex-col">
     <div id="upaint-root-toolbar" class="shrink-0">
@@ -136,6 +163,8 @@
     <div class="relative min-h-0 flex-1">
       <div id="upaint-root" class="h-full w-full"></div>
       <ViewportControls />
+      <GenerationPreviewBar />
+      <PasteMenu open={pasteFile !== null} onChoose={handlePasteChoice} onCancel={closePasteMenu} />
     </div>
   </div>
 
@@ -143,11 +172,10 @@
     role="separator"
     aria-roledescription="vertical-sep"
     class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
-    use:onDrag={{ orientation: 'vertical' }}
+    use:onDrag={{ orientation: "vertical" }}
     onsepDragStart={() => (rightDragStartWidth = rightPanelWidth)}
     onsepDrag={(e) => (rightPanelWidth = clampPanelWidth(rightDragStartWidth - e.detail))}
-    >
-  </div>
+  ></div>
 
   <aside
     id="upaint-root-panel"

@@ -11,7 +11,10 @@
   import ControlLayerSettings from "./ControlLayerSettings.svelte";
 
   const THUMB_SIZE = 34;
-  const thumbnails = new Map<LayerId, { key: unknown; url: string }>();
+  const THUMBNAIL_DEBOUNCE_MS = 1000;
+  let thumbnailUrls = $state<Record<LayerId, string | null>>({});
+  const thumbnailVersions = new Map<LayerId, number>();
+  const thumbnailTimers = new Map<LayerId, ReturnType<typeof setTimeout>>();
 
   let editingId = $state<LayerId | null>(null);
   let renameDraft = $state("");
@@ -44,112 +47,55 @@
     orderedRootLayers.filter((layer): layer is MaskLayer => layer.kind === "mask"),
   );
   const visibleMaskLayers = $derived(showControlOnly ? [] : maskLayers);
-  const controlLayers = $derived(
-    orderedRootLayers.filter((layer) => layer.kind === "control"),
+  const controlLayers = $derived(orderedRootLayers.filter((layer) => layer.kind === "control"));
+  const opacitySelection = $derived(
+    layerStore.selectedLayerIds.length === 1
+      ? layerStore.getLayer(layerStore.selectedLayerIds[0]!)
+      : undefined,
   );
 
   $effect(() => {
     const liveIds = new Set(layerStore.document.layers.map((layer) => layer.id));
-    for (const id of thumbnails.keys()) {
-      if (!liveIds.has(id)) thumbnails.delete(id);
+    for (const id of thumbnailVersions.keys()) {
+      if (!liveIds.has(id)) thumbnailVersions.delete(id);
+    }
+    for (const [id, timer] of thumbnailTimers) {
+      if (!liveIds.has(id)) {
+        clearTimeout(timer);
+        thumbnailTimers.delete(id);
+      }
+    }
+    if (Object.keys(thumbnailUrls).some((id) => !liveIds.has(id))) {
+      thumbnailUrls = Object.fromEntries(
+        Object.entries(thumbnailUrls).filter(([id]) => liveIds.has(id)),
+      );
     }
   });
-
-  type ThumbSource =
-    | ImageBitmap
-    | HTMLImageElement
-    | HTMLCanvasElement
-    | HTMLVideoElement
-    | OffscreenCanvas;
 
   function prettyBlendMode(mode: string): string {
     const spaced = mode.replace(/-/g, " ");
     return spaced.charAt(0).toUpperCase() + spaced.slice(1);
   }
 
-  function toDrawable(resource: unknown): ThumbSource | null {
-    if (!resource || typeof resource !== "object") return null;
-    if (typeof ImageBitmap !== "undefined" && resource instanceof ImageBitmap) {
-      return resource;
-    }
-    if (resource instanceof HTMLImageElement) return resource;
-    if (resource instanceof HTMLCanvasElement) return resource;
-    if (resource instanceof HTMLVideoElement) return resource;
-    if (
-      typeof OffscreenCanvas !== "undefined" &&
-      resource instanceof OffscreenCanvas
-    ) {
-      return resource;
-    }
-    return null;
-  }
-
-  function sourceWidth(drawable: ThumbSource): number {
-    if (drawable instanceof HTMLVideoElement) return drawable.videoWidth;
-    if (drawable instanceof HTMLImageElement) return drawable.naturalWidth;
-    return drawable.width;
-  }
-
-  function sourceHeight(drawable: ThumbSource): number {
-    if (drawable instanceof HTMLVideoElement) return drawable.videoHeight;
-    if (drawable instanceof HTMLImageElement) return drawable.naturalHeight;
-    return drawable.height;
-  }
-
-  function drawThumbnail(drawable: ThumbSource): string | null {
-    const width = sourceWidth(drawable);
-    const height = sourceHeight(drawable);
-    if (!width || !height) return null;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = THUMB_SIZE;
-    canvas.height = THUMB_SIZE;
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-
-    const scale = Math.min(THUMB_SIZE / width, THUMB_SIZE / height);
-    const targetWidth = Math.max(1, Math.round(width * scale));
-    const targetHeight = Math.max(1, Math.round(height * scale));
-    try {
-      context.drawImage(
-        drawable,
-        Math.round((THUMB_SIZE - targetWidth) / 2),
-        Math.round((THUMB_SIZE - targetHeight) / 2),
-        targetWidth,
-        targetHeight,
-      );
-      return canvas.toDataURL("image/png");
-    } catch (error) {
-      console.warn("[ultra-paint] thumbnail render failed:", error);
-      return null;
-    }
+  /** Debounced GPU-side downsample of a layer's render texture, so a burst of quick strokes samples once. */
+  function scheduleThumbnail(id: LayerId): void {
+    if (thumbnailTimers.has(id)) return;
+    const timer = setTimeout(() => {
+      thumbnailTimers.delete(id);
+      const version = layerStore.getTextureVersion(id);
+      const url = getActiveUltraPaintApp()?.getLayerThumbnail(id, THUMB_SIZE) ?? null;
+      thumbnailVersions.set(id, version);
+      thumbnailUrls = { ...thumbnailUrls, [id]: url };
+    }, THUMBNAIL_DEBOUNCE_MS);
+    thumbnailTimers.set(id, timer);
   }
 
   function thumbnailFor(layer: Layer): string | null {
-    switch (layer.kind) {
-      case "group":
-        return null;
-      case "raster":
-      case "mask":
-      case "control":
-        break;
-      default: {
-        const exhaustive: never = layer;
-        throw new Error(`Unsupported layer kind: ${String(exhaustive)}`);
-      }
+    if (layer.kind === "group" || layer.kind === "mask") return null;
+    if (thumbnailVersions.get(layer.id) !== layerStore.getTextureVersion(layer.id)) {
+      scheduleThumbnail(layer.id);
     }
-
-    const cached = thumbnails.get(layer.id);
-    const texture = layerStore.getTexture(layer.id);
-    const drawable = toDrawable(
-      (texture?.source as { resource?: unknown } | undefined)?.resource,
-    );
-    if (!drawable) return cached?.url ?? null;
-    if (cached?.key === drawable) return cached.url;
-
-    const url = drawThumbnail(drawable);
-    if (url) thumbnails.set(layer.id, { key: drawable, url });
-    return url;
+    return thumbnailUrls[layer.id] ?? null;
   }
 
   async function handleFiles(event: Event): Promise<void> {
@@ -215,10 +161,7 @@
   }
 
   function isInteractiveTarget(target: EventTarget | null): boolean {
-    return (
-      target instanceof Element &&
-      target.closest("input, select, button, textarea") !== null
-    );
+    return target instanceof Element && target.closest("input, select, button, textarea") !== null;
   }
 
   function selectRow(event: MouseEvent, layer: Layer): void {
@@ -279,24 +222,25 @@
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
     contextMenuItems = [
-      ...(single
-        ? [{ label: "Rename", action: () => void beginRename(single) }]
-        : []),
+      ...(single ? [{ label: "Rename", action: () => void beginRename(single) }] : []),
       {
         label: allVisible ? "Hide selected" : "Show selected",
-        action: () => selected.forEach((candidate) => layerStore.setVisible(candidate.id, !allVisible)),
+        action: () =>
+          selected.forEach((candidate) => layerStore.setVisible(candidate.id, !allVisible)),
       },
       ...(mergeable
         ? [{ label: "Merge selected into new layer", action: () => mergeSelected(selected) }]
         : []),
       ...(copyable
-        ? [{
-            label: clipboardSupported()
-              ? "Copy layer to clipboard"
-              : "Copy layer to clipboard (unsupported)",
-            action: () => void copyLayer(single),
-            disabled: !clipboardSupported(),
-          }]
+        ? [
+            {
+              label: clipboardSupported()
+                ? "Copy layer to clipboard"
+                : "Copy layer to clipboard (unsupported)",
+              action: () => void copyLayer(single),
+              disabled: !clipboardSupported(),
+            },
+          ]
         : []),
       {
         label: showControlOnly ? "Show all layers" : "Show Control layers only",
@@ -381,11 +325,16 @@
     if (isBlendMode(value)) layerStore.setBlendMode(id, value);
   }
 
+  function toggleLocked(layer: Layer): void {
+    layerStore.setLocked(layer.id, !layer.locked);
+  }
+
+  function togglePreserveAlpha(layer: Layer): void {
+    layerStore.setPreserveAlpha(layer.id, !layer.preserveAlpha);
+  }
+
   function handleMaskColorInput(event: Event, id: LayerId): void {
-    layerStore.setMaskColor(
-      id,
-      (event.currentTarget as HTMLInputElement).value,
-    );
+    layerStore.setMaskColor(id, (event.currentTarget as HTMLInputElement).value);
   }
 
   /**
@@ -491,222 +440,203 @@
   function shareAccordion(a: Layer, b: Layer): boolean {
     return accordionBucket(a) === accordionBucket(b);
   }
-
-  function moveWithinStack(
-    layers: readonly Layer[],
-    index: number,
-    direction: -1 | 1,
-  ): void {
-    const layer = layers[index];
-    const anchor = layers[index + direction];
-    if (!layer || !anchor) return;
-    dropOnto(layerStore.document, layer.id, anchor.id, direction < 0);
-  }
 </script>
 
 {#snippet layerRows(layers: Layer[])}
-  {#each layers as layer, index (layer.id)}
-        {@const thumbnail = thumbnailFor(layer)}
-        {@const selected = layerStore.selectedLayerIds.includes(layer.id)}
+  {#each layers as layer (layer.id)}
+    {@const thumbnail = thumbnailFor(layer)}
+    {@const selected = layerStore.selectedLayerIds.includes(layer.id)}
+    {@const dropIndicator =
+      dropAnchorId === layer.id
+        ? `inset 0 ${dropBefore ? "2px" : "-2px"} 0 0 var(--upaint-accent)`
+        : "none"}
+    <div
+      class={`grid w-full cursor-default grid-cols-[12px_22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border-b px-2 py-1.5 ${selected ? "bg-(--upaint-accent-muted)" : "bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
+      style={`border-color: var(--upaint-border); box-shadow: ${dropIndicator}; transition: background-color var(--upaint-transition), opacity var(--upaint-transition);`}
+      role="button"
+      aria-pressed={selected}
+      tabindex="0"
+      draggable={false}
+      data-layer-id={layer.id}
+      data-layer-kind={layer.kind}
+      onclick={(event) => selectRow(event, layer)}
+      onkeydown={(event) => selectRowFromKeyboard(event, layer)}
+      onpointerdowncapture={armRowDrag}
+      onpointerup={disarmRowDrag}
+      onpointercancel={disarmRowDrag}
+      oncontextmenu={(event) => openLayerContextMenu(event, layer)}
+      ondragstart={(event) => handleDragStart(event, layer.id)}
+      ondragend={clearDragState}
+      ondragover={(event) => handleDragOver(event, layer.id)}
+      ondragleave={(event) => handleDragLeave(event, layer.id)}
+      ondrop={(event) => handleDrop(event, layer.id)}
+    >
+      <div
+        class="flex h-[34px] w-[12px] shrink-0 cursor-grab flex-col items-center justify-center gap-[3px]"
+        title="Drag to reorder"
+        aria-hidden="true"
+      >
+        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
+        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
+        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
+      </div>
+
+      <input
+        class="m-0 cursor-pointer accent-(--upaint-accent)"
+        type="checkbox"
+        checked={layer.visible}
+        title={layer.visible ? "Hide layer" : "Show layer"}
+        aria-label={`Toggle "${layer.name}" visible`}
+        onchange={(event) =>
+          layerStore.setVisible(layer.id, (event.currentTarget as HTMLInputElement).checked)}
+      />
+
+      {#if layer.kind === "group"}
         <div
-          class={`grid cursor-default grid-cols-[22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border p-1.5 ${selected ? "border-(--upaint-accent) bg-(--upaint-accent-muted)" : "border-(--upaint-border) bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
-          style="border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition), background-color var(--upaint-transition), opacity var(--upaint-transition);"
-          role="button"
-          aria-pressed={selected}
-          tabindex="0"
-          draggable={false}
-          data-layer-id={layer.id}
-          data-layer-kind={layer.kind}
-          onclick={(event) => selectRow(event, layer)}
-          onkeydown={(event) => selectRowFromKeyboard(event, layer)}
-          onpointerdowncapture={armRowDrag}
-          onpointerup={disarmRowDrag}
-          onpointercancel={disarmRowDrag}
-          oncontextmenu={(event) => openLayerContextMenu(event, layer)}
-          ondragstart={(event) => handleDragStart(event, layer.id)}
-          ondragend={clearDragState}
-          ondragover={(event) => handleDragOver(event, layer.id)}
-          ondragleave={(event) => handleDragLeave(event, layer.id)}
-          ondrop={(event) => handleDrop(event, layer.id)}
+          class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          title="Group"
+          aria-label="Group layer"
         >
-          <input
-            class="m-0 cursor-pointer accent-(--upaint-accent)"
-            type="checkbox"
-            checked={layer.visible}
-            title={layer.visible ? "Hide layer" : "Show layer"}
-            aria-label={`Toggle "${layer.name}" visible`}
-            onchange={(event) =>
-              layerStore.setVisible(
-                layer.id,
-                (event.currentTarget as HTMLInputElement).checked,
-              )}
-          />
-
-          {#if layer.kind === "group"}
-            <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              title="Group"
-              aria-label="Group layer"
-            >
-              ▦
-            </div>
-          {:else if layer.kind === "mask"}
-            <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
-              style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm); color: ${layer.color};`}
-              title="Mask"
-              aria-label="Mask layer"
-            >
-              ▨
-            </div>
-          {:else if thumbnail}
-            <img
-              class="h-[34px] w-[34px] border bg-(--upaint-surface) object-contain"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              src={thumbnail}
-              alt={`${layer.name} preview`}
-              draggable="false"
-            />
-          {:else}
-            <div
-              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              title="No preview"
-              aria-label="No layer preview"
-            >
-              ▣
-            </div>
-          {/if}
-
-          {#if editingId === layer.id}
-            <input
-              bind:this={renameInput}
-              bind:value={renameDraft}
-              class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              type="text"
-              aria-label={`Rename ${layer.name}`}
-              onkeydown={(event) => handleRenameKeydown(event, layer)}
-              onblur={() => commitRename(layer)}
-            />
-          {:else}
-            <button
-              type="button"
-              class="min-w-0 cursor-text overflow-hidden border-0 bg-transparent p-0 text-left text-xs text-ellipsis whitespace-nowrap text-(--upaint-text)"
-              title={`${layer.name} (click to rename)`}
-              onclick={() => void beginRename(layer)}
-            >
-              {layer.name}
-            </button>
-          {/if}
-
-          <div class="flex items-center gap-0.5">
-            <button
-              type="button"
-              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-[10px] text-(--upaint-text) disabled:cursor-not-allowed disabled:opacity-35"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              title="Move up (towards the front)"
-              aria-label={`Move ${layer.name} up`}
-              disabled={index === 0}
-              onclick={() => moveWithinStack(layers, index, -1)}
-            >
-              ▲
-            </button>
-            <button
-              type="button"
-              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-[10px] text-(--upaint-text) disabled:cursor-not-allowed disabled:opacity-35"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              title="Move down (towards the back)"
-              aria-label={`Move ${layer.name} down`}
-              disabled={index === layers.length - 1}
-              onclick={() => moveWithinStack(layers, index, 1)}
-            >
-              ▼
-            </button>
-            {#if layer.kind === "control"}
-              <button
-                type="button"
-                class={`h-7 w-7 cursor-pointer border text-[10px] text-(--upaint-text) ${expandedControlId === layer.id ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
-                style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-                title="ControlNet settings"
-                aria-label={`Configure ${layer.name}`}
-                aria-pressed={expandedControlId === layer.id}
-                onclick={() =>
-                  (expandedControlId = expandedControlId === layer.id ? null : layer.id)}
-              >
-                ⚙
-              </button>
-            {/if}
-            <button
-              type="button"
-              class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-base text-(--upaint-danger) hover:border-(--upaint-danger)"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); transition: border-color var(--upaint-transition);"
-              title="Delete layer"
-              aria-label={`Delete ${layer.name}`}
-              onclick={() => layerStore.removeLayer(layer.id)}
-            >
-              ×
-            </button>
-          </div>
-
-          {#if layer.kind === "mask"}
-            <label
-              class={`col-span-4 flex items-center gap-2 border-t pt-1.5 text-[11px] text-(--upaint-text-muted) ${dropAnchorId === layer.id && dropBefore ? "border-t-(--upaint-accent)" : ""}`}
-              style={`border-color: ${dropAnchorId === layer.id && !dropBefore ? "var(--upaint-accent)" : "var(--upaint-border)"};`}
-            >
-              Display color
-              <input
-                class="h-6 w-12 cursor-pointer border bg-transparent p-0.5"
-                style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-                type="color"
-                value={layer.color}
-                title="Mask display color"
-                aria-label={`Display color of "${layer.name}"`}
-                oninput={(event) => handleMaskColorInput(event, layer.id)}
-              />
-            </label>
-          {:else}
-            <div
-              class={`col-span-4 grid grid-cols-[minmax(0,1fr)_36px_112px] items-center gap-1.5 border-t pt-1.5 ${dropAnchorId === layer.id && dropBefore ? "border-t-(--upaint-accent)" : ""}`}
-              style={`border-color: ${dropAnchorId === layer.id && !dropBefore ? "var(--upaint-accent)" : "var(--upaint-border)"};`}
-            >
-              <!--
-                No deferred-render guard is needed here. The keyed row survives
-                store emissions, and this value resolves to the same integer the
-                range input just emitted, so Svelte does not interrupt the drag.
-              -->
-              <Slider
-                value={Math.round(layer.opacity * 100)}
-                min={0}
-                max={100}
-                step={1}
-                title="Opacity"
-                ariaLabel={`Opacity of "${layer.name}"`}
-                onValueInput={(value) => layerStore.setOpacity(layer.id, value / 100)}
-              />
-              <output class="text-right text-[11px] tabular-nums text-(--upaint-text-muted)">
-                {Math.round(layer.opacity * 100)}%
-              </output>
-              <select
-                class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-[11px] text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-                style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-                value={layer.blendMode}
-                title="Blend mode"
-                aria-label={`Blend mode of "${layer.name}"`}
-                onchange={(event) => handleBlendChange(event, layer.id)}
-              >
-                {#each BLEND_MODE_ORDER as mode}
-                  <option value={mode}>{prettyBlendMode(mode)}</option>
-                {/each}
-              </select>
-            </div>
-          {/if}
-
-          {#if layer.kind === "control" && expandedControlId === layer.id}
-            <ControlLayerSettings {layer} {maskLayers} />
-          {/if}
+          ▦
         </div>
+      {:else if layer.kind === "mask"}
+        <div
+          class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
+          style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm); color: ${layer.color};`}
+          title="Mask"
+          aria-label="Mask layer"
+        >
+          ▨
+        </div>
+      {:else if thumbnail}
+        <img
+          class="h-[34px] w-[34px] border bg-(--upaint-surface) object-contain"
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          src={thumbnail}
+          alt={`${layer.name} preview`}
+          draggable="false"
+        />
+      {:else}
+        <div
+          class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          title="No preview"
+          aria-label="No layer preview"
+        >
+          ▣
+        </div>
+      {/if}
+
+      {#if editingId === layer.id}
+        <input
+          bind:this={renameInput}
+          bind:value={renameDraft}
+          class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          type="text"
+          aria-label={`Rename ${layer.name}`}
+          onkeydown={(event) => handleRenameKeydown(event, layer)}
+          onblur={() => commitRename(layer)}
+        />
+      {:else}
+        <button
+          type="button"
+          class="min-w-0 cursor-text overflow-hidden border-0 bg-transparent p-0 text-left text-sm text-ellipsis whitespace-nowrap text-(--upaint-text)"
+          title={`${layer.name} (click to rename)`}
+          onclick={() => void beginRename(layer)}
+        >
+          {layer.name}
+        </button>
+      {/if}
+
+      <div class="flex items-center gap-0.5">
+        <button
+          type="button"
+          class={`h-7 w-7 cursor-pointer border text-(--upaint-text) ${layer.locked ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          title={layer.locked ? "Unlock layer" : "Lock layer"}
+          aria-label={`${layer.locked ? "Unlock" : "Lock"} "${layer.name}"`}
+          aria-pressed={layer.locked}
+          onclick={() => toggleLocked(layer)}
+        >
+          <svg
+            class="mx-auto h-3 w-3"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+            aria-hidden="true"
+          >
+            <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
+            <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class={`h-7 w-7 cursor-pointer border text-(--upaint-text) ${layer.preserveAlpha ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          title={layer.preserveAlpha
+            ? "Stop preserving transparency"
+            : "Preserve transparency (lock alpha)"}
+          aria-label={`${layer.preserveAlpha ? "Stop preserving" : "Preserve"} transparency on "${layer.name}"`}
+          aria-pressed={layer.preserveAlpha}
+          onclick={() => togglePreserveAlpha(layer)}
+        >
+          <svg class="mx-auto h-3 w-3" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1" y="1" width="6" height="6" fill="currentColor" opacity="0.9" />
+            <rect x="9" y="1" width="6" height="6" fill="currentColor" opacity="0.35" />
+            <rect x="1" y="9" width="6" height="6" fill="currentColor" opacity="0.35" />
+            <rect x="9" y="9" width="6" height="6" fill="currentColor" opacity="0.9" />
+          </svg>
+        </button>
+        {#if layer.kind === "control"}
+          <button
+            type="button"
+            class={`h-7 w-7 cursor-pointer border text-[10px] text-(--upaint-text) ${expandedControlId === layer.id ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
+            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+            title="ControlNet settings"
+            aria-label={`Configure ${layer.name}`}
+            aria-pressed={expandedControlId === layer.id}
+            onclick={() => (expandedControlId = expandedControlId === layer.id ? null : layer.id)}
+          >
+            ⚙
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-base text-(--upaint-danger) hover:border-(--upaint-danger)"
+          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); transition: border-color var(--upaint-transition);"
+          title="Delete layer"
+          aria-label={`Delete ${layer.name}`}
+          onclick={() => layerStore.removeLayer(layer.id)}
+        >
+          ×
+        </button>
+      </div>
+
+      {#if layer.kind === "mask"}
+        <label
+          class="col-span-5 flex items-center gap-2 border-t pt-1.5 text-[11px] text-(--upaint-text-muted)"
+          style="border-color: var(--upaint-border);"
+        >
+          Display color
+          <input
+            class="h-6 w-12 cursor-pointer border bg-transparent p-0.5"
+            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+            type="color"
+            value={layer.color}
+            title="Mask display color"
+            aria-label={`Display color of "${layer.name}"`}
+            oninput={(event) => handleMaskColorInput(event, layer.id)}
+          />
+        </label>
+      {/if}
+
+      {#if layer.kind === "control" && expandedControlId === layer.id}
+        <ControlLayerSettings {layer} {maskLayers} />
+      {/if}
+    </div>
   {/each}
 {/snippet}
 
@@ -747,40 +677,95 @@
     />
   </header>
 
-  <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-    <Accordion bind:open={layersOpen} title="Layers" count={regularLayers.length} id="upaint-regular-layer-list" data-layer-section="layers">
-      {#if regularLayers.length === 0}
-        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-          No layers yet -- use + to add one.
-        </div>
-      {:else}
+  <div
+    class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-3 py-2"
+    style="border-color: var(--upaint-border);"
+  >
+    <div class="flex min-w-[140px] flex-1 items-center gap-1.5">
+      <span class="w-12 shrink-0 text-(--upaint-text-muted)">Opacity</span>
+      <Slider
+        value={opacitySelection ? Math.round(opacitySelection.opacity * 100) : 100}
+        min={0}
+        max={100}
+        step={1}
+        disabled={!opacitySelection}
+        title="Opacity of the selected layer"
+        ariaLabel="Opacity of the selected layer"
+        onValueInput={(value) =>
+          opacitySelection && layerStore.setOpacity(opacitySelection.id, value / 100)}
+      />
+      <output class="w-9 shrink-0 text-right text-[11px] tabular-nums text-(--upaint-text-muted)">
+        {opacitySelection ? Math.round(opacitySelection.opacity * 100) : 100}%
+      </output>
+    </div>
+    <div class="flex min-w-[140px] flex-1 items-center gap-1.5">
+      <span class="w-12 shrink-0 text-(--upaint-text-muted)">Blend</span>
+      <select
+        class="w-full min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-[11px] text-(--upaint-text) outline-none focus:border-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-50"
+        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        value={opacitySelection?.blendMode ?? "normal"}
+        disabled={!opacitySelection}
+        title="Blend mode of the selected layer"
+        aria-label="Blend mode of the selected layer"
+        onchange={(event) => opacitySelection && handleBlendChange(event, opacitySelection.id)}
+      >
+        {#each BLEND_MODE_ORDER as mode (mode)}
+          <option value={mode}>{prettyBlendMode(mode)}</option>
+        {/each}
+      </select>
+    </div>
+  </div>
+
+  <div class="flex min-h-0 flex-1 flex-col overflow-y-auto" style="scrollbar-gutter: stable;">
+    {#if regularLayers.length > 0}
+      <Accordion
+        bind:open={layersOpen}
+        title="Layers"
+        count={regularLayers.length}
+        id="upaint-regular-layer-list"
+        data-layer-section="layers"
+      >
         {@render layerRows(regularLayers)}
-      {/if}
-    </Accordion>
+      </Accordion>
+    {/if}
 
-    <Accordion bind:open={masksOpen} title="Masks" count={visibleMaskLayers.length} id="upaint-mask-layer-list" data-layer-section="masks">
-      {#if visibleMaskLayers.length === 0}
-        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-          No masks yet -- use + to add one.
-        </div>
-      {:else}
+    {#if visibleMaskLayers.length > 0}
+      <Accordion
+        bind:open={masksOpen}
+        title="Masks"
+        count={visibleMaskLayers.length}
+        id="upaint-mask-layer-list"
+        data-layer-section="masks"
+      >
         {@render layerRows(visibleMaskLayers)}
-      {/if}
-    </Accordion>
+      </Accordion>
+    {/if}
 
-    <Accordion bind:open={controlsOpen} title="Control" count={controlLayers.length} id="upaint-control-layer-list" data-layer-section="controls">
-      {#if controlLayers.length === 0}
-        <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-          No ControlNet layers yet -- use + to add one.
-        </div>
-      {:else}
+    {#if controlLayers.length > 0}
+      <Accordion
+        bind:open={controlsOpen}
+        title="Control"
+        count={controlLayers.length}
+        id="upaint-control-layer-list"
+        data-layer-section="controls"
+      >
         {@render layerRows(controlLayers)}
-      {/if}
-    </Accordion>
+      </Accordion>
+    {/if}
+
+    {#if regularLayers.length === 0 && visibleMaskLayers.length === 0 && controlLayers.length === 0}
+      <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
+        No layers yet -- use + to add one.
+      </div>
+    {/if}
   </div>
 
   {#if actionMessage}
-    <div class="shrink-0 border-t px-3 py-2 text-[11px] text-(--upaint-text-muted)" style="border-color: var(--upaint-border);" role="status">
+    <div
+      class="shrink-0 border-t px-3 py-2 text-[11px] text-(--upaint-text-muted)"
+      style="border-color: var(--upaint-border);"
+      role="status"
+    >
       {actionMessage}
     </div>
   {/if}

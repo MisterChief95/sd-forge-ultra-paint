@@ -1,5 +1,9 @@
 import { getActiveUltraPaintApp, type UltraPaintApp } from "../../app/UltraPaintApp";
-import type { ScaleMode } from "../../state/generationSettingsStore.svelte";
+import {
+  generationSettingsStore,
+  type ScaleMode,
+} from "../../state/generationSettingsStore.svelte";
+import { previewStore } from "../../state/previewStore.svelte";
 import {
   fetchGenerationOptions,
   fetchGenerationProgress,
@@ -43,7 +47,7 @@ function collectControlLayers(app: UltraPaintApp): ControlLayerPayload[] {
 const POLL_INTERVAL_MS = 750;
 const MAX_PROGRESS_POLLS = 1200;
 
-export interface GenerateInput extends GenerationParameters {
+export interface GenerateInput extends Omit<GenerationParameters, "seed"> {
   scaleMode: ScaleMode;
 }
 
@@ -117,32 +121,28 @@ export function createGenerationController(
     void pollProgress(runId);
 
     try {
-      const images = await requestGeneration(
+      const seedMode = generationSettingsStore.seedMode;
+      const seed = seedMode === "random" ? -1 : generationSettingsStore.seedValue;
+      const { images, seeds } = await requestGeneration(
         compositeImage,
         maskImage,
-        input,
+        { ...input, seed },
         collectControlLayers(app),
       );
       if (runId === progressRunId) progressRunId += 1;
+      // Only "random" mode's displayed seed follows the response -- "reuse"
+      // and "manual" stay frozen at exactly what was sent.
+      if (seedMode === "random" && seeds.length > 0 && seeds[0] !== undefined) {
+        generationSettingsStore.setSeedValue(seeds[0]);
+      }
 
       for (const image of images) {
         if (typeof image !== "string") continue;
-        const activeApp = getActiveUltraPaintApp();
-        if (!activeApp) {
-          throw new Error("The painting canvas closed before results were added.");
-        }
-        const id = await activeApp.addImageFromDataURL(
-          image,
-          "Generated",
-          "generated",
-        );
-        activeApp.getStore().setSelectedLayerId(id);
+        previewStore.add(image);
       }
     } catch (error) {
       if (!destroyed) {
-        bindings.setErrorMessage(
-          error instanceof Error ? error.message : "Generation failed.",
-        );
+        bindings.setErrorMessage(error instanceof Error ? error.message : "Generation failed.");
       }
     } finally {
       if (runId === progressRunId) progressRunId += 1;
@@ -185,9 +185,7 @@ export function createGenerationController(
       }, 4000);
     } catch (error) {
       if (!destroyed) {
-        bindings.setErrorMessage(
-          error instanceof Error ? error.message : "Save failed.",
-        );
+        bindings.setErrorMessage(error instanceof Error ? error.message : "Save failed.");
       }
     } finally {
       if (!destroyed) bindings.setSaving(false);
