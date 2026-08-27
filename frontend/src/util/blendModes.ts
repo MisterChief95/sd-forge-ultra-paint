@@ -39,20 +39,20 @@ import type { BlendMode } from "../state/schema";
  * every `BlendMode` variant has a real PixiJS target (the `Record` is total).
  */
 export const BLEND_MODE_MAP: Record<BlendMode, BLEND_MODES> = {
-    // --- standard (GPU blend equations, cheap) ---
-    normal: "normal",
-    multiply: "multiply",
-    screen: "screen",
-    add: "add",
-    erase: "erase",
-    min: "min", // WebGL2+ only
-    max: "max", // WebGL2+ only
+  // --- standard (GPU blend equations, cheap) ---
+  normal: "normal",
+  multiply: "multiply",
+  screen: "screen",
+  add: "add",
+  erase: "erase",
+  min: "min", // WebGL2+ only
+  max: "max", // WebGL2+ only
 
-    // --- advanced (filter-backed; need the import above + useBackBuffer) ---
-    overlay: "overlay",
-    "color-burn": "color-burn",
-    "color-dodge": "color-dodge",
-    "hard-light": "hard-light",
+  // --- advanced (filter-backed; need the import above + useBackBuffer) ---
+  overlay: "overlay",
+  "color-burn": "color-burn",
+  "color-dodge": "color-dodge",
+  "hard-light": "hard-light",
 };
 
 /**
@@ -61,38 +61,38 @@ export const BLEND_MODE_MAP: Record<BlendMode, BLEND_MODES> = {
  * back-buffer requirement.
  */
 export const ADVANCED_BLEND_MODES: ReadonlySet<BlendMode> = new Set<BlendMode>([
-    "overlay",
-    "color-burn",
-    "color-dodge",
-    "hard-light",
+  "overlay",
+  "color-burn",
+  "color-dodge",
+  "hard-light",
 ]);
 
 /** All blend modes, in a sensible order for a dropdown. */
 export const BLEND_MODE_ORDER: readonly BlendMode[] = [
-    "normal",
-    "multiply",
-    "screen",
-    "overlay",
-    "add",
-    "color-burn",
-    "color-dodge",
-    "hard-light",
-    "min",
-    "max",
-    "erase",
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "add",
+  "color-burn",
+  "color-dodge",
+  "hard-light",
+  "min",
+  "max",
+  "erase",
 ];
 
 /** Translate a schema blend mode into the string PixiJS expects. */
 export function toPixiBlendMode(mode: BlendMode): BLEND_MODES {
-    return BLEND_MODE_MAP[mode] ?? "normal";
+  return BLEND_MODE_MAP[mode] ?? "normal";
 }
 
 /** Narrowing helper for untrusted input (e.g. values coming back from Python). */
 export function isBlendMode(value: unknown): value is BlendMode {
-    return typeof value === "string" && value in BLEND_MODE_MAP;
+  return typeof value === "string" && value in BLEND_MODE_MAP;
 }
 
 /** True if `mode` needs the advanced-blend-modes filter path. */
 export function isAdvancedBlendMode(mode: BlendMode): boolean {
-    return ADVANCED_BLEND_MODES.has(mode);
+  return ADVANCED_BLEND_MODES.has(mode);
 }

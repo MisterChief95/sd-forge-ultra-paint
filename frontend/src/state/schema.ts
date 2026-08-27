@@ -25,26 +25,26 @@ export type LayerId = string;
  * init. See `util/blendModes.ts`.
  */
 export type BlendMode =
-    | "normal"
-    | "multiply"
-    | "screen"
-    | "overlay"
-    | "add"
-    | "erase"
-    | "min"
-    | "max"
-    | "color-burn"
-    | "color-dodge"
-    | "hard-light";
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "add"
+  | "erase"
+  | "min"
+  | "max"
+  | "color-burn"
+  | "color-dodge"
+  | "hard-light";
 
 /** Affine placement of a layer inside its parent's coordinate space. */
 export interface Transform {
-    x: number;
-    y: number;
-    scaleX: number;
-    scaleY: number;
-    /** Radians (PixiJS `Container.rotation` units), not degrees. */
-    rotation: number;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  /** Radians (PixiJS `Container.rotation` units), not degrees. */
+  rotation: number;
 }
 
 /**
@@ -58,20 +58,22 @@ export type LayerKind = "raster" | "group" | "mask" | "control";
 
 /** Fields shared by every layer variant. */
 export interface LayerBase {
-    id: LayerId;
-    name: string;
-    kind: LayerKind;
-    visible: boolean;
-    /** Reserved: not honoured by anything this phase. */
-    locked: boolean;
-    /** 0-1, maps to PixiJS `Container.alpha`. */
-    opacity: number;
-    blendMode: BlendMode;
-    transform: Transform;
-    /** `null` means the layer sits at the document root. */
-    parentId: LayerId | null;
-    /** Reserved for a future masking phase. Not implemented. */
-    mask?: unknown;
+  id: LayerId;
+  name: string;
+  kind: LayerKind;
+  visible: boolean;
+  /** Blocks paint strokes and fills on this layer while true. */
+  locked: boolean;
+  /** Photoshop-style "lock transparent pixels": brush strokes cannot extend past existing alpha. */
+  preserveAlpha: boolean;
+  /** 0-1, maps to PixiJS `Container.alpha`. */
+  opacity: number;
+  blendMode: BlendMode;
+  transform: Transform;
+  /** `null` means the layer sits at the document root. */
+  parentId: LayerId | null;
+  /** Reserved for a future masking phase. Not implemented. */
+  mask?: unknown;
 }
 
 /**
@@ -86,23 +88,23 @@ export type ControlResizeMode = "resize" | "crop" | "fill";
 
 /** A pixel layer backed by a texture registered in the store's texture map. */
 export interface RasterLayer extends LayerBase {
-    kind: "raster";
-    image: ImageRef;
+  kind: "raster";
+  image: ImageRef;
 }
 
 /** Paintable alpha coverage exported as an inpainting mask. */
 export interface MaskLayer extends LayerBase {
-    kind: "mask";
-    image: ImageRef;
-    /** CSS six-digit hex color used only by the on-canvas hatch display. */
-    color: string;
+  kind: "mask";
+  image: ImageRef;
+  /** CSS six-digit hex color used only by the on-canvas hatch display. */
+  color: string;
 }
 
 /** A container layer. Draws nothing itself; composites its children. */
 export interface GroupLayer extends LayerBase {
-    kind: "group";
-    /** Ordered child ids. Index 0 is the TOP of the stack within the group. */
-    children: LayerId[];
+  kind: "group";
+  /** Ordered child ids. Index 0 is the TOP of the stack within the group. */
+  children: LayerId[];
 }
 
 /**
@@ -114,28 +116,28 @@ export interface GroupLayer extends LayerBase {
  * implementation (`extensions-builtin/sd_forge_controlnet`).
  */
 export interface ControlLayer extends LayerBase {
-    kind: "control";
-    image: ImageRef;
-    /** ControlNet model name, from `GET /controlnet/control_types`. */
-    model: string;
-    /** Preprocessor/module name, from `GET /controlnet/module_list`. */
-    preprocessor: string;
-    /** -1 = auto (matches `Preprocessor.__call__`'s `resolution` default). */
-    preprocessorResolution: number;
-    /** -1 = unused by this preprocessor. */
-    preprocessorThresholdA: number;
-    /** -1 = unused by this preprocessor. */
-    preprocessorThresholdB: number;
-    weight: number;
-    guidanceStart: number;
-    guidanceEnd: number;
-    controlMode: ControlMode;
-    pixelPerfect: boolean;
-    resizeMode: ControlResizeMode;
-    /** Sibling mask layer supplying the inpaint mask, for Inpaint-tagged preprocessors. */
-    maskLayerId: LayerId | null;
-    /** Cached preprocessor output for on-canvas preview only; never sent to generation. */
-    preview: ImageRef | null;
+  kind: "control";
+  image: ImageRef;
+  /** ControlNet model name, from `GET /controlnet/control_types`. */
+  model: string;
+  /** Preprocessor/module name, from `GET /controlnet/module_list`. */
+  preprocessor: string;
+  /** -1 = auto (matches `Preprocessor.__call__`'s `resolution` default). */
+  preprocessorResolution: number;
+  /** -1 = unused by this preprocessor. */
+  preprocessorThresholdA: number;
+  /** -1 = unused by this preprocessor. */
+  preprocessorThresholdB: number;
+  weight: number;
+  guidanceStart: number;
+  guidanceEnd: number;
+  controlMode: ControlMode;
+  pixelPerfect: boolean;
+  resizeMode: ControlResizeMode;
+  /** Sibling mask layer supplying the inpaint mask, for Inpaint-tagged preprocessors. */
+  maskLayerId: LayerId | null;
+  /** Cached preprocessor output for on-canvas preview only; never sent to generation. */
+  preview: ImageRef | null;
 }
 
 export type Layer = RasterLayer | GroupLayer | MaskLayer | ControlLayer;
@@ -148,25 +150,25 @@ export type PaintLayer = RasterLayer | MaskLayer | ControlLayer;
  * `RenderTexture` handle -- look the texture up via `LayerStore.getTexture(id)`.
  */
 export interface ImageRef {
-    source: "upload" | "generated" | "paint";
-    width: number;
-    height: number;
+  source: "upload" | "generated" | "paint";
+  width: number;
+  height: number;
 }
 
 /** Editable document-space operating region used by fill and generation. */
 export interface BoundaryBox {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** The whole editable document. */
 export interface Document {
-    id: string;
-    boundaryBox: BoundaryBox;
-    /** FLAT array -- `parentId` encodes the tree, not nested serialisation. */
-    layers: Layer[];
-    /** Root-level stacking order. Index 0 is the TOP of the stack. */
-    layerOrder: LayerId[];
+  id: string;
+  boundaryBox: BoundaryBox;
+  /** FLAT array -- `parentId` encodes the tree, not nested serialisation. */
+  layers: Layer[];
+  /** Root-level stacking order. Index 0 is the TOP of the stack. */
+  layerOrder: LayerId[];
 }

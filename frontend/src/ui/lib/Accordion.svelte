@@ -25,8 +25,8 @@
 
 <section
   {...rest}
-  class="border bg-(--upaint-surface)"
-  style="border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
+  class="w-full border-b bg-(--upaint-surface)"
+  style="border-color: var(--upaint-border);"
 >
   <button
     type="button"
@@ -45,7 +45,7 @@
   </button>
 
   {#if open}
-    <div id={id} class="flex flex-col gap-1 p-1.5 pt-0" role="region">
+    <div {id} class="flex flex-col" role="region">
       {@render children?.()}
     </div>
   {/if}

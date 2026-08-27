@@ -54,12 +54,12 @@
   </div>
   <Slider
     bind:value
-    min={min}
-    max={max}
+    {min}
+    {max}
     step={sliderStep}
     inputClass="m-0 h-4 w-full cursor-pointer accent-(--upaint-accent)"
-    ariaLabel={ariaLabel}
+    {ariaLabel}
     {disabled}
-    onValueInput={onValueInput}
+    {onValueInput}
   />
 </div>

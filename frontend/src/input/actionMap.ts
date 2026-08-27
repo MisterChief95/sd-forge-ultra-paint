@@ -10,12 +10,14 @@ export type InputActionId =
   | "tool.brush"
   | "tool.eraser"
   | "tool.boundary-box"
+  | "tool.swap-colors"
   | "viewport.fit"
   | "viewport.reset-zoom"
   | "viewport.toggle-grid"
   | "layer.fill"
   | "layer.add-mask"
   | "layer.clear-mask"
+  | "layer.invert-mask"
   | "layer.toggle-visibility"
   | "layer.merge-selected"
   | "boundary.fit-to-mask"
@@ -99,9 +101,16 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
   {
     id: "layer.clear-mask",
     map: "global",
-    shortcut: "Alt+C",
-    matches: key("c", { altKey: true }),
+    shortcut: "Shift+C",
+    matches: key("c", { shiftKey: true }),
     run: (app) => app.clearSelectedMask(),
+  },
+  {
+    id: "layer.invert-mask",
+    map: "global",
+    shortcut: "Shift+V",
+    matches: key("v", { shiftKey: true }),
+    run: (app) => app.invertSelectedMask(),
   },
   {
     id: "layer.add-mask",
@@ -222,23 +231,28 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     matches: key("r"),
     run: (app) => (app.getToolStore().setActiveTool("boundary-box"), true),
   },
+  {
+    id: "tool.swap-colors",
+    map: "brush",
+    shortcut: "X",
+    matches: key("x"),
+    run: (app) => (app.getToolStore().swapColors(), true),
+  },
 ];
 
 export function isEditableTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !== null
+    target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !==
+      null
   );
 }
 
 /** Resolve the first matching, currently available action. */
 export function handleInputKeyDown(event: KeyboardEvent, app: UltraPaintApp | null): boolean {
-  if (!app || event.defaultPrevented || event.repeat || isEditableTarget(event.target)) return false;
-  const activeMaps = new Set<InputActionMapId>([
-    "global",
-    "canvas",
-    app.getToolStore().activeTool,
-  ]);
+  if (!app || event.defaultPrevented || event.repeat || isEditableTarget(event.target))
+    return false;
+  const activeMaps = new Set<InputActionMapId>(["global", "canvas", app.getToolStore().activeTool]);
   const action = INPUT_ACTIONS.find(
     (candidate) => activeMaps.has(candidate.map) && candidate.matches(event),
   );

@@ -60,6 +60,7 @@ export interface GenerationParameters {
   samplerName: string;
   scheduler: string;
   targetResolution: { width: number; height: number } | null;
+  seed: number;
 }
 
 export interface ProgressResponse {
@@ -87,7 +88,10 @@ interface RawLoraCatalogItem {
 }
 
 export class GenerationApiError extends Error {
-  public constructor(message: string, public readonly status: number) {
+  public constructor(
+    message: string,
+    public readonly status: number,
+  ) {
     super(message);
     this.name = "GenerationApiError";
   }
@@ -96,10 +100,7 @@ export class GenerationApiError extends Error {
 export async function fetchGenerationOptions(): Promise<GenerationOptions> {
   const response = await fetch(OPTIONS_URL);
   if (!response.ok) {
-    throw new GenerationApiError(
-      `options request failed (${response.status})`,
-      response.status,
-    );
+    throw new GenerationApiError(`options request failed (${response.status})`, response.status);
   }
 
   const body = (await response.json()) as Partial<RawGenerationOptions>;
@@ -115,10 +116,7 @@ export async function fetchGenerationOptions(): Promise<GenerationOptions> {
 export async function fetchLoras(): Promise<LoraCatalogItem[]> {
   const response = await fetch(LORAS_URL);
   if (!response.ok) {
-    throw new GenerationApiError(
-      `LoRA request failed (${response.status})`,
-      response.status,
-    );
+    throw new GenerationApiError(`LoRA request failed (${response.status})`, response.status);
   }
 
   const body = (await response.json()) as unknown;
@@ -128,15 +126,23 @@ export async function fetchLoras(): Promise<LoraCatalogItem[]> {
     if (typeof item !== "object" || item === null) return [];
     const raw = item as RawLoraCatalogItem;
     if (typeof raw.name !== "string" || typeof raw.prompt_name !== "string") return [];
-    return [{
-      name: raw.name,
-      promptName: raw.prompt_name,
-      activationText: typeof raw.activation_text === "string" ? raw.activation_text : "",
-      preferredWeight: typeof raw.preferred_weight === "number" && Number.isFinite(raw.preferred_weight)
-        ? raw.preferred_weight
-        : 1,
-    }];
+    return [
+      {
+        name: raw.name,
+        promptName: raw.prompt_name,
+        activationText: typeof raw.activation_text === "string" ? raw.activation_text : "",
+        preferredWeight:
+          typeof raw.preferred_weight === "number" && Number.isFinite(raw.preferred_weight)
+            ? raw.preferred_weight
+            : 1,
+      },
+    ];
   });
+}
+
+export interface GenerationResult {
+  images: unknown[];
+  seeds: number[];
 }
 
 export async function requestGeneration(
@@ -144,7 +150,7 @@ export async function requestGeneration(
   maskImage: string | null,
   parameters: GenerationParameters,
   controlLayers: ControlLayerPayload[] = [],
-): Promise<unknown[]> {
+): Promise<GenerationResult> {
   const response = await fetch(GENERATE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -188,6 +194,7 @@ export async function requestGeneration(
         coherence_pass_fast: parameters.coherencePassFast,
         sampler_name: parameters.samplerName || null,
         scheduler: parameters.scheduler || null,
+        seed: parameters.seed,
         ...(parameters.targetResolution === null
           ? {}
           : {
@@ -199,11 +206,16 @@ export async function requestGeneration(
   });
 
   if (!response.ok) throw new Error(await responseError(response));
-  const body = (await response.json()) as { images?: unknown };
+  const body = (await response.json()) as { images?: unknown; seeds?: unknown };
   if (!Array.isArray(body.images)) {
     throw new Error("Generation returned an invalid image response.");
   }
-  return body.images;
+  return {
+    images: body.images,
+    seeds: Array.isArray(body.seeds)
+      ? body.seeds.filter((seed): seed is number => typeof seed === "number")
+      : [],
+  };
 }
 
 export async function saveFlattenedImage(image: string): Promise<string> {
@@ -224,10 +236,7 @@ export async function saveFlattenedImage(image: string): Promise<string> {
 export async function fetchGenerationProgress(): Promise<ProgressResponse> {
   const response = await fetch(PROGRESS_URL, { cache: "no-store" });
   if (!response.ok) {
-    throw new GenerationApiError(
-      `progress request failed (${response.status})`,
-      response.status,
-    );
+    throw new GenerationApiError(`progress request failed (${response.status})`, response.status);
   }
   return (await response.json()) as ProgressResponse;
 }
@@ -235,17 +244,11 @@ export async function fetchGenerationProgress(): Promise<ProgressResponse> {
 export async function interruptGeneration(): Promise<void> {
   const response = await fetch(INTERRUPT_URL, { method: "POST" });
   if (!response.ok) {
-    throw new GenerationApiError(
-      `interrupt request failed (${response.status})`,
-      response.status,
-    );
+    throw new GenerationApiError(`interrupt request failed (${response.status})`, response.status);
   }
 }
 
-async function responseError(
-  response: Response,
-  action = "Generation",
-): Promise<string> {
+async function responseError(response: Response, action = "Generation"): Promise<string> {
   try {
     const body = (await response.json()) as { detail?: unknown };
     if (typeof body.detail === "string" && body.detail.trim()) {
@@ -264,7 +267,5 @@ function stringArray(value: unknown): string[] {
 }
 
 function positiveSafeInteger(value: unknown): number | null {
-  return Number.isSafeInteger(value) && (value as number) > 0
-    ? (value as number)
-    : null;
+  return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null;
 }

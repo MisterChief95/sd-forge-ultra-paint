@@ -78,7 +78,7 @@
 </script>
 
 <div
-  class="col-span-4 flex flex-col gap-1.5 border-t pt-1.5 text-[11px] text-(--upaint-text-muted)"
+  class="col-span-5 flex flex-col gap-1.5 border-t pt-1.5 text-[11px] text-(--upaint-text-muted)"
   style="border-color: var(--upaint-border);"
 >
   <div class="grid grid-cols-2 gap-1.5">

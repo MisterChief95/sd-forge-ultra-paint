@@ -6,18 +6,15 @@
   import { registerGenerationActions } from "../input/actionMap";
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
+  import BoundaryBoxControls from "./generation/BoundaryBoxControls.svelte";
   import GenerationActionsAndStatus from "./generation/GenerationActionsAndStatus.svelte";
   import InpaintControls from "./generation/InpaintControls.svelte";
   import LoraControls from "./generation/LoraControls.svelte";
   import PromptFields from "./generation/PromptFields.svelte";
-  import ResolutionSettings from "./generation/ResolutionSettings.svelte";
   import SamplingControls from "./generation/SamplingControls.svelte";
   import { createGenerationController } from "./generation/generationController.svelte";
   import type { GenerationOptions, ProgressResponse } from "./generation/generationApi";
-  import {
-    buildLoraPrompt,
-    type SelectedLora,
-  } from "./generation/lora";
+  import { buildLoraPrompt, type SelectedLora } from "./generation/lora";
 
   let prompt = $state("");
   let negativePrompt = $state("");
@@ -38,9 +35,7 @@
   let progress = $state<ProgressResponse | null>(null);
   let selectedLoras = $state<SelectedLora[]>([]);
 
-  const enabledLoraCount = $derived(
-    selectedLoras.filter((lora) => lora.enabled).length,
-  );
+  const enabledLoraCount = $derived(selectedLoras.filter((lora) => lora.enabled).length);
 
   const progressPercent = $derived.by(() => {
     const total = progress?.sampling_steps ?? 0;
@@ -74,9 +69,7 @@
     }
   });
 
-  const generationMode = $derived(
-    layerStore.hasVisibleRasterContent ? "img2img" : "txt2img",
-  );
+  const generationMode = $derived(layerStore.hasVisibleRasterContent ? "img2img" : "txt2img");
 
   const controller = createGenerationController({
     get generating() {
@@ -171,9 +164,7 @@
   aria-labelledby="upaint-generation-title"
 >
   <header class="border-b pb-2" style="border-color: var(--upaint-border);">
-    <h2 id="upaint-generation-title" class="m-0 text-sm font-semibold">
-      Generation
-    </h2>
+    <h2 id="upaint-generation-title" class="m-0 text-sm font-semibold">Generation</h2>
   </header>
 
   {#if isVideoModel}
@@ -182,8 +173,7 @@
       style="border-color: var(--upaint-danger); border-radius: var(--upaint-radius-sm);"
       role="alert"
     >
-      A Wan/video model is loaded. Generate will be rejected; select a supported
-      image model first.
+      A Wan/video model is loaded. Generate will be rejected; select a supported image model first.
     </p>
   {/if}
 
@@ -206,67 +196,79 @@
 
   <PromptFields bind:prompt bind:negativePrompt />
 
-  <Accordion title="LoRAs" count={enabledLoraCount}>
-    <LoraControls
-      {selectedLoras}
-      onSelectedLorasChange={(value) => (selectedLoras = value)}
-      onAddActivationWords={addActivationWords}
-    />
-  </Accordion>
+  <div class="-mx-3 flex flex-col">
+    <Accordion title="LoRAs" count={enabledLoraCount}>
+      <div class="p-2">
+        <LoraControls
+          {selectedLoras}
+          onSelectedLorasChange={(value) => (selectedLoras = value)}
+          onAddActivationWords={addActivationWords}
+        />
+      </div>
+    </Accordion>
 
-  <Accordion open title="Sampling" >
-    <SamplingControls
-      {samplers}
-      {schedulers}
-      bind:samplerName
-      bind:scheduler
-      bind:steps
-      bind:cfgScale
-      bind:denoisingStrength
-      denoisingDisabled={generationMode === "txt2img"}
-    />
-  </Accordion>
+    <Accordion open title="Sampling">
+      <div class="p-2">
+        <SamplingControls
+          {samplers}
+          {schedulers}
+          bind:samplerName
+          bind:scheduler
+          bind:steps
+          bind:cfgScale
+          bind:denoisingStrength
+          denoisingDisabled={generationMode === "txt2img"}
+          seedMode={generationSettingsStore.seedMode}
+          seedValue={generationSettingsStore.seedValue}
+          onSeedModeChange={(value) => generationSettingsStore.setSeedMode(value)}
+          onSeedValueChange={(value) => generationSettingsStore.setSeedValue(value)}
+        />
+      </div>
+    </Accordion>
 
-  <Accordion title="Bounding Box">
-    <ResolutionSettings
-      scaleMode={generationSettingsStore.scaleMode}
-      autoBaseWidth={generationSettingsStore.autoBaseWidth}
-      manualWidth={generationSettingsStore.manualWidth}
-      manualHeight={generationSettingsStore.manualHeight}
-      {autoTargetResolution}
-      onScaleModeChange={(value) => generationSettingsStore.setScaleMode(value)}
-      onAutoBaseWidthChange={(value) => generationSettingsStore.setAutoBaseWidth(value)}
-      onManualWidthChange={(value) => generationSettingsStore.setManualWidth(value)}
-      onManualHeightChange={(value) => generationSettingsStore.setManualHeight(value)}
-    />
-  </Accordion>
+    <Accordion title="Bounding Box">
+      <div class="p-2">
+        <BoundaryBoxControls
+          scaleMode={generationSettingsStore.scaleMode}
+          autoBaseWidth={generationSettingsStore.autoBaseWidth}
+          manualWidth={generationSettingsStore.manualWidth}
+          manualHeight={generationSettingsStore.manualHeight}
+          {autoTargetResolution}
+          onScaleModeChange={(value) => generationSettingsStore.setScaleMode(value)}
+          onAutoBaseWidthChange={(value) => generationSettingsStore.setAutoBaseWidth(value)}
+          onManualWidthChange={(value) => generationSettingsStore.setManualWidth(value)}
+          onManualHeightChange={(value) => generationSettingsStore.setManualHeight(value)}
+        />
+      </div>
+    </Accordion>
 
-  <Accordion title="Inpainting" >
-    <InpaintControls
-      maskBlur={generationSettingsStore.maskBlur}
-      inpaintPadding={generationSettingsStore.inpaintPadding}
-      inpaintArea={generationSettingsStore.inpaintArea}
-      softInpaintingEnabled={generationSettingsStore.softInpaintingEnabled}
-      inpaintControlNetEnabled={generationSettingsStore.inpaintControlNetEnabled}
-      inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
-      inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
-      coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
-      coherencePassFast={generationSettingsStore.coherencePassFast}
-      onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
-      onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
-      onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
-      onSoftInpaintingChange={(value) =>
-        generationSettingsStore.setSoftInpaintingEnabled(value)}
-      onInpaintControlNetEnabledChange={(value) =>
-        generationSettingsStore.setInpaintControlNetEnabled(value)}
-      onInpaintControlNetModelChange={(value) =>
-        generationSettingsStore.setInpaintControlNetModel(value)}
-      onInpaintControlNetWeightChange={(value) =>
-        generationSettingsStore.setInpaintControlNetWeight(value)}
-      onCoherenceEdgeSizeChange={(value) =>
-        generationSettingsStore.setCoherenceEdgeSize(value)}
-      onCoherencePassFastChange={(value) =>
-        generationSettingsStore.setCoherencePassFast(value)}
-    />
-  </Accordion>
+    <Accordion title="Inpainting">
+      <div class="p-2">
+        <InpaintControls
+          maskBlur={generationSettingsStore.maskBlur}
+          inpaintPadding={generationSettingsStore.inpaintPadding}
+          inpaintArea={generationSettingsStore.inpaintArea}
+          softInpaintingEnabled={generationSettingsStore.softInpaintingEnabled}
+          inpaintControlNetEnabled={generationSettingsStore.inpaintControlNetEnabled}
+          inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
+          inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
+          coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
+          coherencePassFast={generationSettingsStore.coherencePassFast}
+          onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
+          onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
+          onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
+          onSoftInpaintingChange={(value) =>
+            generationSettingsStore.setSoftInpaintingEnabled(value)}
+          onInpaintControlNetEnabledChange={(value) =>
+            generationSettingsStore.setInpaintControlNetEnabled(value)}
+          onInpaintControlNetModelChange={(value) =>
+            generationSettingsStore.setInpaintControlNetModel(value)}
+          onInpaintControlNetWeightChange={(value) =>
+            generationSettingsStore.setInpaintControlNetWeight(value)}
+          onCoherenceEdgeSizeChange={(value) => generationSettingsStore.setCoherenceEdgeSize(value)}
+          onCoherencePassFastChange={(value) => generationSettingsStore.setCoherencePassFast(value)}
+        />
+      </div>
+    </Accordion>
+  </div>
 </section>

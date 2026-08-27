@@ -1,15 +1,12 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
-  import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
   import Slider from "./lib/Slider.svelte";
 
-  const buttonBase =
-    "cursor-pointer border px-2.5 py-1.5 text-[11px] leading-tight";
+  const buttonBase = "cursor-pointer border px-2.5 py-1.5 text-[11px] leading-tight";
   const buttonInactive =
     "border-transparent bg-(--upaint-surface-raised) text-(--upaint-text) hover:border-(--upaint-border)";
-  const buttonActive =
-    "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text)";
+  const buttonActive = "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text)";
 
   function toolButtonClass(active: boolean): string {
     return `${buttonBase} ${active ? buttonActive : buttonInactive}`;
@@ -20,59 +17,12 @@
     paintToolStore.setBrushSettings({ color: input.value });
   }
 
-  function handleDocumentResize(event: SubmitEvent): void {
-    event.preventDefault();
-    const form = event.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
-    const width = Number(data.get("document-width"));
-    const height = Number(data.get("document-height"));
-    if (
-      !Number.isSafeInteger(width) ||
-      !Number.isSafeInteger(height) ||
-      width < 1 ||
-      height < 1
-    ) {
-      return;
-    }
-    getActiveUltraPaintApp()?.resizeBoundaryBox(width, height);
-  }
-
-  function handleBoundaryDimensionInput(
-    event: Event,
-    dimension: "width" | "height",
-  ): void {
-    const ratio = paintToolStore.boundaryAspectRatio;
-    if (ratio === null) return;
+  function handleSecondaryColorInput(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
-    const form = input.form;
-    const value = Number(input.value);
-    if (!form || !Number.isFinite(value) || value < 1) return;
-    const otherName =
-      dimension === "width" ? "document-height" : "document-width";
-    const other = form.elements.namedItem(otherName);
-    if (!(other instanceof HTMLInputElement)) return;
-    other.value = String(
-      Math.max(1, Math.round(dimension === "width" ? value / ratio : value * ratio)),
-    );
+    paintToolStore.setSecondaryColor(input.value);
   }
 
-  function toggleBoundaryAspectLock(): void {
-    if (paintToolStore.boundaryAspectRatio !== null) {
-      paintToolStore.setBoundaryAspectRatio(null);
-      return;
-    }
-    const box = layerStore.document.boundaryBox;
-    paintToolStore.setBoundaryAspectRatio(box.width / box.height);
-  }
-
-  function swapBoundaryDimensions(): void {
-    const box = layerStore.document.boundaryBox;
-    layerStore.setBoundaryBox({
-      ...box,
-      width: box.height,
-      height: box.width,
-    });
-  }
+  let pressurePopoverOpen = $state(false);
 </script>
 
 <div
@@ -81,10 +31,7 @@
   role="toolbar"
   aria-label="Painting tools"
 >
-  <div
-    class="flex shrink-0 gap-1 border-r pr-2"
-    style="border-color: var(--upaint-border);"
-  >
+  <div class="flex shrink-0 gap-1 border-r pr-2" style="border-color: var(--upaint-border);">
     <button
       type="button"
       class={toolButtonClass(paintToolStore.activeTool === "brush")}
@@ -111,6 +58,30 @@
       onclick={() => getActiveUltraPaintApp()?.fillSelectedLayer()}
     >
       Fill
+    </button>
+    <button
+      type="button"
+      class={toolButtonClass(paintToolStore.activeTool === "eyedropper")}
+      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
+      title="Eyedropper (hold Alt to switch temporarily)"
+      aria-pressed={paintToolStore.activeTool === "eyedropper"}
+      onclick={() => paintToolStore.setActiveTool("eyedropper")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M11.25 2.25a2 2 0 0 1 2.83 2.83l-1.3 1.3-2.83-2.83z" stroke-linejoin="round" />
+        <path
+          d="M10.98 5.4 4.2 12.18a1.5 1.5 0 0 1-.66.38l-2.04.6.6-2.04c.07-.25.2-.47.38-.66L9.26 3.68"
+          stroke-linejoin="round"
+        />
+        <path d="M8.4 5.9 10.1 7.6" />
+      </svg>
     </button>
   </div>
 
@@ -168,86 +139,84 @@
     </output>
   </label>
 
-  <label
-    class="grid shrink-0 grid-cols-[auto_30px] items-center gap-1 text-(--upaint-text-muted)"
-  >
-    Color
+  <div class="relative h-7 w-[38px] shrink-0" title="Primary / secondary color (X swaps)">
     <input
-      class="h-7 w-[30px] cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      class="absolute left-0 top-0 h-6 w-6 cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
+      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); z-index: 1;"
       type="color"
       value={paintToolStore.brush.color}
-      aria-label="Brush color"
+      aria-label="Primary brush color"
       oninput={handleColorInput}
     />
-  </label>
+    <input
+      class="absolute bottom-0 right-0 h-6 w-6 cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
+      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      type="color"
+      value={paintToolStore.secondaryColor}
+      aria-label="Secondary brush color"
+      oninput={handleSecondaryColorInput}
+    />
+  </div>
 
-  <form
-    class="flex shrink-0 items-center gap-1 border-l pl-2"
-    style="border-color: var(--upaint-border);"
-    onsubmit={handleDocumentResize}
-  >
-    <label class="flex items-center gap-1 text-(--upaint-text-muted)">
-      W
-      <input
-        class="h-7 w-[62px] border bg-(--upaint-surface-raised) px-1 text-right tabular-nums text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-        type="number"
-        name="document-width"
-        min="1"
-        max="16384"
-        step="1"
-        value={layerStore.document.boundaryBox.width}
-        aria-label="Boundary box width"
-        oninput={(event) => handleBoundaryDimensionInput(event, "width")}
-      />
-    </label>
-    <span class="text-(--upaint-text-muted)" aria-hidden="true">×</span>
-    <label class="flex items-center gap-1 text-(--upaint-text-muted)">
-      H
-      <input
-        class="h-7 w-[62px] border bg-(--upaint-surface-raised) px-1 text-right tabular-nums text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-        type="number"
-        name="document-height"
-        min="1"
-        max="16384"
-        step="1"
-        value={layerStore.document.boundaryBox.height}
-        aria-label="Boundary box height"
-        oninput={(event) => handleBoundaryDimensionInput(event, "height")}
-      />
-    </label>
+  <div class="relative shrink-0">
     <button
       type="button"
-      class={toolButtonClass(paintToolStore.boundaryAspectRatio !== null)}
+      class={toolButtonClass(pressurePopoverOpen)}
       style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      title="Lock boundary-box aspect ratio"
-      aria-label="Lock boundary-box aspect ratio"
-      aria-pressed={paintToolStore.boundaryAspectRatio !== null}
-      onclick={toggleBoundaryAspectLock}
+      title="Pen pressure settings"
+      aria-label="Pen pressure settings"
+      aria-pressed={pressurePopoverOpen}
+      onclick={() => (pressurePopoverOpen = !pressurePopoverOpen)}
     >
-      {paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <circle cx="8" cy="8" r="6.5" />
+        <circle cx="8" cy="8" r="3.5" />
+        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+      </svg>
     </button>
-    <button
-      type="button"
-      class={`${buttonBase} ${buttonInactive}`}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      title="Swap boundary-box width and height"
-      aria-label="Swap boundary-box width and height"
-      onclick={swapBoundaryDimensions}
-    >
-      ⇄
-    </button>
-    <button
-      type="submit"
-      class={`${buttonBase} ${buttonInactive}`}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      title="Resize and center the boundary box"
-    >
-      Resize
-    </button>
-  </form>
+    {#if pressurePopoverOpen}
+      <div
+        class="fixed inset-0 z-40"
+        role="presentation"
+        tabindex="-1"
+        onclick={() => (pressurePopoverOpen = false)}
+      ></div>
+      <div
+        class="absolute left-0 top-full z-50 mt-1 flex w-max flex-col gap-1.5 border p-2 text-(--upaint-text)"
+        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); background: var(--upaint-surface);"
+      >
+        <label class="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={paintToolStore.brush.sizePressure}
+            onchange={(event) =>
+              paintToolStore.setBrushSettings({
+                sizePressure: (event.currentTarget as HTMLInputElement).checked,
+              })}
+          />
+          Size pressure
+        </label>
+        <label class="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={paintToolStore.brush.opacityPressure}
+            onchange={(event) =>
+              paintToolStore.setBrushSettings({
+                opacityPressure: (event.currentTarget as HTMLInputElement).checked,
+              })}
+          />
+          Opacity pressure
+        </label>
+      </div>
+    {/if}
+  </div>
 
   <button
     type="button"

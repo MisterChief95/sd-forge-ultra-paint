@@ -12,24 +12,15 @@
     items?: ContextMenuItem[];
   }
 
-  let {
-    open = $bindable(false),
-    x = 0,
-    y = 0,
-    items = [],
-  }: Props = $props();
+  let { open = $bindable(false), x = 0, y = 0, items = [] }: Props = $props();
 
   // Measured after render so the menu can clamp itself inside the viewport
   // instead of overflowing when opened near an edge (e.g. a corner button).
   let measuredWidth = $state(0);
   let measuredHeight = $state(0);
   const GAP = 8;
-  const clampedX = $derived(
-    Math.max(GAP, Math.min(x, window.innerWidth - measuredWidth - GAP)),
-  );
-  const clampedY = $derived(
-    Math.max(GAP, Math.min(y, window.innerHeight - measuredHeight - GAP)),
-  );
+  const clampedX = $derived(Math.max(GAP, Math.min(x, window.innerWidth - measuredWidth - GAP)));
+  const clampedY = $derived(Math.max(GAP, Math.min(y, window.innerHeight - measuredHeight - GAP)));
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {

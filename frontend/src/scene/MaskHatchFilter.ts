@@ -109,45 +109,45 @@ fn mainFragment(
 
 /** Display-only quick-mask tint; it never writes into the source texture. */
 export class MaskHatchFilter extends Filter {
-    public constructor(color: string) {
-        super({
-            glProgram: GlProgram.from({
-                name: "ultra-paint-mask-hatch",
-                vertex,
-                fragment,
-            }),
-            gpuProgram: GpuProgram.from({
-                name: "ultra-paint-mask-hatch",
-                vertex: { source: wgsl, entryPoint: "mainVertex" },
-                fragment: { source: wgsl, entryPoint: "mainFragment" },
-            }),
-            resources: {
-                maskHatchUniforms: {
-                    uColor: {
-                        value: colorToRgba(color),
-                        type: "vec4<f32>",
-                    },
-                    uSpacing: { value: 12, type: "f32" },
-                    uStripeWidth: { value: 5, type: "f32" },
-                },
-            },
-            resolution: "inherit",
-            antialias: "off",
-            padding: 0,
-        });
-    }
+  public constructor(color: string) {
+    super({
+      glProgram: GlProgram.from({
+        name: "ultra-paint-mask-hatch",
+        vertex,
+        fragment,
+      }),
+      gpuProgram: GpuProgram.from({
+        name: "ultra-paint-mask-hatch",
+        vertex: { source: wgsl, entryPoint: "mainVertex" },
+        fragment: { source: wgsl, entryPoint: "mainFragment" },
+      }),
+      resources: {
+        maskHatchUniforms: {
+          uColor: {
+            value: colorToRgba(color),
+            type: "vec4<f32>",
+          },
+          uSpacing: { value: 12, type: "f32" },
+          uStripeWidth: { value: 5, type: "f32" },
+        },
+      },
+      resolution: "inherit",
+      antialias: "off",
+      padding: 0,
+    });
+  }
 
-    public setColor(color: string): void {
-        this.resources.maskHatchUniforms.uniforms.uColor = colorToRgba(color);
-    }
+  public setColor(color: string): void {
+    this.resources.maskHatchUniforms.uniforms.uColor = colorToRgba(color);
+  }
 }
 
 function colorToRgba(color: string): Float32Array {
-    const value = Number.parseInt(color.slice(1), 16);
-    return new Float32Array([
-        ((value >> 16) & 0xff) / 255,
-        ((value >> 8) & 0xff) / 255,
-        (value & 0xff) / 255,
-        1,
-    ]);
+  const value = Number.parseInt(color.slice(1), 16);
+  return new Float32Array([
+    ((value >> 16) & 0xff) / 255,
+    ((value >> 8) & 0xff) / 255,
+    (value & 0xff) / 255,
+    1,
+  ]);
 }

@@ -9,11 +9,7 @@
     onAddActivationWords: (text: string) => void;
   }
 
-  let {
-    selectedLoras,
-    onSelectedLorasChange,
-    onAddActivationWords,
-  }: Props = $props();
+  let { selectedLoras, onSelectedLorasChange, onAddActivationWords }: Props = $props();
 
   let picker: HTMLDialogElement;
   let catalog = $state.raw<LoraCatalogItem[] | null>(null);
@@ -53,9 +49,9 @@
   }
 
   function updateLora(promptName: string, patch: Partial<SelectedLora>): void {
-    onSelectedLorasChange(selectedLoras.map((lora) =>
-      lora.promptName === promptName ? { ...lora, ...patch } : lora,
-    ));
+    onSelectedLorasChange(
+      selectedLoras.map((lora) => (lora.promptName === promptName ? { ...lora, ...patch } : lora)),
+    );
   }
 
   function updateWeight(promptName: string, value: number): void {
@@ -113,14 +109,27 @@
             style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
             aria-label={`Remove ${lora.name}`}
             title={`Remove ${lora.name}`}
-            onclick={() => onSelectedLorasChange(selectedLoras.filter((item) => item.promptName !== lora.promptName))}
+            onclick={() =>
+              onSelectedLorasChange(
+                selectedLoras.filter((item) => item.promptName !== lora.promptName),
+              )}
           >
-            <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
               <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6" />
             </svg>
           </button>
 
-          <label class="col-span-4 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2 text-(--upaint-text-muted)">
+          <label
+            class="col-span-4 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2 text-(--upaint-text-muted)"
+          >
             <span class="sr-only">Strength for {lora.name}</span>
             <Slider
               value={lora.weight}
@@ -153,7 +162,7 @@
   class="m-auto max-h-[min(36rem,80vh)] w-[min(32rem,90vw)] border bg-(--upaint-surface) p-0 text-xs text-(--upaint-text) backdrop:bg-black/50"
   style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-lg);"
   aria-labelledby="upaint-lora-picker-title"
-  onclose={() => query = ""}
+  onclose={() => (query = "")}
 >
   <div class="flex flex-col gap-3 p-3">
     <header class="flex items-center justify-between gap-2">
@@ -183,7 +192,10 @@
         {catalog?.length === 0 ? "No LoRAs are installed." : "No matching LoRAs."}
       </p>
     {:else}
-      <div class="flex max-h-96 flex-col overflow-y-auto border" style="border-color: var(--upaint-border);">
+      <div
+        class="flex max-h-96 flex-col overflow-y-auto border"
+        style="border-color: var(--upaint-border);"
+      >
         {#each filteredCatalog as lora (lora.promptName)}
           <button
             type="button"

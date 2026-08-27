@@ -8,6 +8,6 @@
  * sibling assets and no import map.
  */
 declare module "*.css" {
-    const contents: string;
-    export default contents;
+  const contents: string;
+  export default contents;
 }

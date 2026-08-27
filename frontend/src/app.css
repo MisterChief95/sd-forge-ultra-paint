@@ -38,3 +38,42 @@ body {
   color: var(--upaint-text);
   font-family: var(--upaint-font);
 }
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--upaint-accent) 45%, transparent) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--upaint-accent) 45%, transparent);
+  border-radius: var(--upaint-radius);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--upaint-accent) 70%, transparent);
+}
+
+/* Prompt textarea resize handle */
+.upaint-prompt-textarea {
+  padding-right: 1rem;
+  padding-bottom: 1rem;
+}
+
+.upaint-prompt-textarea::-webkit-resizer {
+  transform: scale(0.6);
+  transform-origin: bottom right;
+}
