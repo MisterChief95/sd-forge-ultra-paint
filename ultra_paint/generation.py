@@ -118,7 +118,6 @@ registered; otherwise ordinary generation continues unchanged.
 out) and are deliberately *not* read from `gen_params`.
 """
 
-import time
 from contextlib import closing
 
 import gradio as gr
@@ -135,7 +134,7 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
-from ultra_paint.mask_ring import compute_ring
+from ultra_paint.mask_ring import compute_ring, scale_edge_size
 from ultra_paint.model_profile import is_unsupported_video_model
 
 __all__ = [
@@ -546,19 +545,16 @@ def run_generation(
         # `_apply_coherence_pass` below.
         p.ultra_paint_fast_coherence_enabled = True
         p.ultra_paint_coherence_edge_size = int(_get(gen_params, "coherence_edge_size"))
+        p.ultra_paint_coherence_canvas_size = composite_image.size
 
     with closing(p):
         # Index 0 of script_args is 0 ("Script: None"), so `run` returns None and
         # we fall through to `process_images`. The call is still required: it is
         # what gives a *selectable* script the chance to take over, and it is the
         # shape modules/img2img.py:273-275 uses.
-        _t_process_images = time.perf_counter()
         processed = p.scripts.run(p, *p.script_args)
         if processed is None:
             processed = process_images(p)
-        print(
-            f"[TIMING] generation: process_images()={time.perf_counter() - _t_process_images:.3f}s"
-        )
 
         if is_txt2img:
             processed.images = [
@@ -568,7 +564,6 @@ def run_generation(
                 for image in processed.images
             ]
         elif mask_image is not None:
-            _t_composite = time.perf_counter()
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
             if use_fast_coherence:
                 # Latent already patched pre-decode -- paste back like the
@@ -580,7 +575,11 @@ def run_generation(
                 # outward half away with alpha=0.
                 dilated, _, _ = compute_ring(
                     mask_for_alpha.convert("L"),
-                    int(_get(gen_params, "coherence_edge_size")),
+                    scale_edge_size(
+                        int(_get(gen_params, "coherence_edge_size")),
+                        composite_image.size,
+                        mask_for_alpha.size,
+                    ),
                 )
                 processed.images = [
                     _transparent_inpaint_patch(
@@ -613,9 +612,18 @@ def run_generation(
                     )
                     for image in processed.images
                 ]
-            print(
-                f"[TIMING] generation: post-process_images compositing={time.perf_counter() - _t_composite:.3f}s"
-            )
+        else:
+            # Whole-image img2img, no mask: same "paste back at canvas size"
+            # contract as the txt2img and masked branches above -- otherwise
+            # a Resolution-scale target larger than the boundary box ships
+            # the full upscaled result back to the frontend instead of the
+            # boundary box's own size.
+            processed.images = [
+                image.resize(composite_image.size, Image.Resampling.LANCZOS)
+                if image.size != composite_image.size
+                else image
+                for image in processed.images
+            ]
 
     shared.total_tqdm.clear()
 
@@ -636,7 +644,9 @@ def _apply_coherence_pass(
     """Denoise a ring around an inpaint boundary, keeping its expanded alpha."""
     flattened = image.convert("RGBA")
     alpha = mask_for_alpha.convert("L")
-    dilated, eroded, ring = compute_ring(alpha, edge_size)
+    dilated, eroded, ring = compute_ring(
+        alpha, scale_edge_size(edge_size, canvas_size, alpha.size)
+    )
 
     p2 = StableDiffusionProcessingImg2Img(
         sd_model=base_p.sd_model,

@@ -38,7 +38,9 @@ def fake_forge_modules(monkeypatch):
 
     def run_and_wait_result(*args, **kwargs):
         calls.append((args, kwargs))
-        return types.SimpleNamespace(images=[Image.new("RGB", (2, 2))], extra_images=[])
+        return types.SimpleNamespace(
+            images=[Image.new("RGB", (2, 2))], extra_images=[], all_seeds=[12345]
+        )
 
     fake_main_thread.run_and_wait_result = run_and_wait_result
     fake_modules_forge = types.ModuleType("modules_forge")

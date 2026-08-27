@@ -8,6 +8,20 @@ from PIL import Image, ImageChops, ImageFilter
 MAX_FILTER_DIM = 512
 
 
+def scale_edge_size(
+    edge_size: int,
+    from_size: tuple[int, int],
+    to_size: tuple[int, int],
+) -> int:
+    """Convert a canvas-space edge width to a mask's pixel space."""
+    if edge_size <= 0:
+        return 0
+    from_width, from_height = from_size
+    to_width, to_height = to_size
+    scale = (to_width / from_width + to_height / from_height) / 2
+    return max(1, round(edge_size * scale))
+
+
 def compute_ring(
     alpha: Image.Image, edge_size: int
 ) -> tuple[Image.Image, Image.Image, Image.Image]:

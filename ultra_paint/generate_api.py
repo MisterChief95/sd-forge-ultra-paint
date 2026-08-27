@@ -81,6 +81,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     images: list[str]
+    seeds: list[int] = []
 
 
 def _decode_data_url(data_url: str) -> Image.Image:
@@ -170,4 +171,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     # Same extraction as modules/img2img.py:287 / the old `_on_generate`.
     # `n_iter == batch_size == 1`, so there is never a grid image to strip.
     images = processed.images + processed.extra_images
-    return GenerateResponse(images=[_encode_data_url(image) for image in images])
+    return GenerateResponse(
+        images=[_encode_data_url(image) for image in images],
+        seeds=[int(seed) for seed in processed.all_seeds],
+    )

@@ -410,6 +410,41 @@ def test_coherence_pass_resizes_back_to_canvas_size(fake_forge_modules, monkeypa
     assert result.images[0].size == composite.size
 
 
+def test_coherence_pass_scales_edge_size_to_generation_resolution(
+    fake_forge_modules, monkeypatch
+):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+    original_compute_ring = generation.compute_ring
+    edge_sizes = []
+
+    def _capture_compute_ring(alpha, edge_size):
+        edge_sizes.append(edge_size)
+        return original_compute_ring(alpha, edge_size)
+
+    def _fake_process_images(p):
+        fake_shared.process_calls.append(p)
+        if p.mask is not None:
+            p.mask_for_overlay = p.mask.resize((64, 64))
+            p.paste_to = None
+        return types.SimpleNamespace(
+            images=[Image.new("RGB", (64, 64))], extra_images=[]
+        )
+
+    monkeypatch.setattr(generation, "compute_ring", _capture_compute_ring)
+    monkeypatch.setattr(generation, "process_images", _fake_process_images)
+
+    generation.run_generation(
+        composite,
+        {"coherence_pass_enabled": True, "coherence_edge_size": 3},
+        mask,
+    )
+
+    assert edge_sizes == [6]
+
+
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):
     generation, _fake_shared = fake_forge_modules
     script = _install_soft_inpainting_script(generation, [False, 9, 9, 9, 9, 9, 9])

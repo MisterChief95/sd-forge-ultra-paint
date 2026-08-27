@@ -35,7 +35,7 @@ import torch
 from PIL import Image
 
 from modules import scripts
-from ultra_paint.mask_ring import compute_ring
+from ultra_paint.mask_ring import compute_ring, scale_edge_size
 
 
 COHERENCE_STEPS = 6
@@ -80,6 +80,9 @@ class FastCoherencePass(scripts.Script):
             return  # not an inpaint job
 
         edge_size = getattr(p, "ultra_paint_coherence_edge_size", DEFAULT_EDGE_SIZE)
+        canvas_size = getattr(
+            p, "ultra_paint_coherence_canvas_size", mask_for_overlay.size
+        )
         samples = (
             ps.samples
         )  # (B, C, H, W) latent, pre-decode -- (B, C, T, H, W) for video models
@@ -93,6 +96,7 @@ class FastCoherencePass(scripts.Script):
         lh, lw = samples.shape[-2], samples.shape[-1]
         iw, ih = mask_for_overlay.size
         edge_scale = (lw / iw + lh / ih) / 2
+        edge_size = scale_edge_size(edge_size, canvas_size, mask_for_overlay.size)
 
         # MaxFilter/MinFilter (in compute_ring) are O(w*h*kernel) -- run at
         # the mask's full pixel resolution with edge_size~32 (kernel~65) this
