@@ -1,16 +1,12 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { paintToolStore } from "../state/paintToolStore.svelte";
+  import brushIcon from "./img/brush-tool-svgrepo-com.svg";
+  import eraserIcon from "./img/eraser-svgrepo-com.svg";
+  import fillIcon from "./img/fill-svgrepo-com.svg";
+  import Button from "./lib/Button.svelte";
+  import CheckboxField from "./lib/CheckboxField.svelte";
   import Slider from "./lib/Slider.svelte";
-
-  const buttonBase = "cursor-pointer border px-2.5 py-1.5 text-[11px] leading-tight";
-  const buttonInactive =
-    "border-transparent bg-(--upaint-surface-raised) text-(--upaint-text) hover:border-(--upaint-border)";
-  const buttonActive = "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text)";
-
-  function toolButtonClass(active: boolean): string {
-    return `${buttonBase} ${active ? buttonActive : buttonInactive}`;
-  }
 
   function handleColorInput(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
@@ -23,7 +19,32 @@
   }
 
   let pressurePopoverOpen = $state(false);
+
+  function positionPressurePopover(event: MouseEvent): void {
+    const button = event.currentTarget;
+    const popover = document.getElementById("upaint-pressure-popover");
+    if (!(button instanceof HTMLButtonElement) || !(popover instanceof HTMLElement)) return;
+    const bounds = button.getBoundingClientRect();
+    popover.style.left = `${bounds.left}px`;
+    popover.style.top = `${bounds.bottom + 4}px`;
+  }
+
+  function dismissPressurePopover(event: PointerEvent): void {
+    if (!pressurePopoverOpen || !(event.target instanceof Element)) return;
+    if (
+      event.target.closest("#upaint-pressure-popover") ||
+      event.target.closest('[popovertarget="upaint-pressure-popover"]')
+    ) {
+      return;
+    }
+    const popover = document.getElementById("upaint-pressure-popover");
+    if (popover instanceof HTMLElement && popover.matches(":popover-open")) {
+      popover.hidePopover();
+    }
+  }
 </script>
+
+<svelte:window onpointerdown={dismissPressurePopover} />
 
 <div
   class="box-border flex h-[52px] w-full select-none items-center gap-2.5 overflow-x-auto overflow-y-hidden whitespace-nowrap border px-2 py-1.5 text-[11px] leading-tight"
@@ -32,39 +53,37 @@
   aria-label="Painting tools"
 >
   <div class="flex shrink-0 gap-1 border-r pr-2" style="border-color: var(--upaint-border);">
-    <button
-      type="button"
-      class={toolButtonClass(paintToolStore.activeTool === "brush")}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      aria-pressed={paintToolStore.activeTool === "brush"}
+    <Button
+      size="icon"
+      pressed={paintToolStore.activeTool === "brush"}
+      title="Brush"
+      aria-label="Brush"
       onclick={() => paintToolStore.setActiveTool("brush")}
     >
-      Brush
-    </button>
-    <button
-      type="button"
-      class={toolButtonClass(paintToolStore.activeTool === "eraser")}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      aria-pressed={paintToolStore.activeTool === "eraser"}
+      <img src={brushIcon} alt="" class="h-4 w-4 brightness-0 invert" />
+    </Button>
+    <Button
+      size="icon"
+      pressed={paintToolStore.activeTool === "eraser"}
+      title="Eraser"
+      aria-label="Eraser"
       onclick={() => paintToolStore.setActiveTool("eraser")}
     >
-      Eraser
-    </button>
-    <button
-      type="button"
-      class={`${buttonBase} ${buttonInactive}`}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
+      <img src={eraserIcon} alt="" class="h-4 w-4 brightness-0 invert" />
+    </Button>
+    <Button
+      size="icon"
       title="Fill the selected layer"
+      aria-label="Fill the selected layer"
       onclick={() => getActiveUltraPaintApp()?.fillSelectedLayer()}
     >
-      Fill
-    </button>
-    <button
-      type="button"
-      class={toolButtonClass(paintToolStore.activeTool === "eyedropper")}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
+      <img src={fillIcon} alt="" class="h-4 w-4 brightness-0 invert" />
+    </Button>
+    <Button
+      size="icon"
+      pressed={paintToolStore.activeTool === "eyedropper"}
       title="Eyedropper (hold Alt to switch temporarily)"
-      aria-pressed={paintToolStore.activeTool === "eyedropper"}
+      aria-label="Eyedropper (hold Alt to switch temporarily)"
       onclick={() => paintToolStore.setActiveTool("eyedropper")}
     >
       <svg
@@ -82,7 +101,7 @@
         />
         <path d="M8.4 5.9 10.1 7.6" />
       </svg>
-    </button>
+    </Button>
   </div>
 
   <label
@@ -158,15 +177,19 @@
     />
   </div>
 
-  <div class="relative shrink-0">
-    <button
-      type="button"
-      class={toolButtonClass(pressurePopoverOpen)}
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
-      title="Pen pressure settings"
-      aria-label="Pen pressure settings"
-      aria-pressed={pressurePopoverOpen}
-      onclick={() => (pressurePopoverOpen = !pressurePopoverOpen)}
+  <div class="flex shrink-0">
+    <Button
+      size="icon"
+      radius="left"
+      pressed={paintToolStore.brush.pressureEnabled}
+      title={paintToolStore.brush.pressureEnabled ? "Disable pen pressure" : "Enable pen pressure"}
+      aria-label={paintToolStore.brush.pressureEnabled
+        ? "Disable pen pressure"
+        : "Enable pen pressure"}
+      onclick={() =>
+        paintToolStore.setBrushSettings({
+          pressureEnabled: !paintToolStore.brush.pressureEnabled,
+        })}
     >
       <svg
         class="h-3.5 w-3.5"
@@ -180,50 +203,35 @@
         <circle cx="8" cy="8" r="3.5" />
         <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
       </svg>
-    </button>
-    {#if pressurePopoverOpen}
-      <div
-        class="fixed inset-0 z-40"
-        role="presentation"
-        tabindex="-1"
-        onclick={() => (pressurePopoverOpen = false)}
-      ></div>
-      <div
-        class="absolute left-0 top-full z-50 mt-1 flex w-max flex-col gap-1.5 border p-2 text-(--upaint-text)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); background: var(--upaint-surface);"
+    </Button>
+    <Button
+      size="icon"
+      radius="right"
+      pressed={pressurePopoverOpen}
+      title="Configure pen pressure"
+      aria-label="Configure pen pressure"
+      aria-haspopup="dialog"
+      popovertarget="upaint-pressure-popover"
+      onclick={positionPressurePopover}
+      style="width: 20px; padding: 0; border-left-width: 0;"
+    >
+      <svg
+        class="h-3 w-3"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        aria-hidden="true"
       >
-        <label class="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={paintToolStore.brush.sizePressure}
-            onchange={(event) =>
-              paintToolStore.setBrushSettings({
-                sizePressure: (event.currentTarget as HTMLInputElement).checked,
-              })}
-          />
-          Size pressure
-        </label>
-        <label class="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={paintToolStore.brush.opacityPressure}
-            onchange={(event) =>
-              paintToolStore.setBrushSettings({
-                opacityPressure: (event.currentTarget as HTMLInputElement).checked,
-              })}
-          />
-          Opacity pressure
-        </label>
-      </div>
-    {/if}
+        <path d="m4 6 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </Button>
   </div>
 
-  <button
-    type="button"
-    class={`ml-auto flex shrink-0 items-center gap-1.5 ${toolButtonClass(paintToolStore.activeTool === "boundary-box")}`}
-    style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition), border-color var(--upaint-transition);"
+  <Button
+    class="ml-auto gap-1.5"
+    pressed={paintToolStore.activeTool === "boundary-box"}
     title="Move or resize the boundary box"
-    aria-pressed={paintToolStore.activeTool === "boundary-box"}
     onclick={() => paintToolStore.setActiveTool("boundary-box")}
   >
     <svg
@@ -238,5 +246,34 @@
       <path d="M5 2.25v11.5M11 2.25v11.5M2.25 5h11.5M2.25 11h11.5" opacity="0.45" />
     </svg>
     Boundary Box
-  </button>
+  </Button>
 </div>
+
+<div
+  id="upaint-pressure-popover"
+  popover="auto"
+  role="dialog"
+  aria-label="Pen pressure settings"
+  class="fixed inset-auto z-50 m-0 w-max flex-col gap-1.5 border p-2 text-[11px] text-(--upaint-text)"
+  style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); background: var(--upaint-surface);"
+  ontoggle={(event) => (pressurePopoverOpen = event.newState === "open")}
+>
+  <CheckboxField
+    label="Size pressure"
+    checked={paintToolStore.brush.sizePressure}
+    onchange={(event) =>
+      paintToolStore.setBrushSettings({ sizePressure: event.currentTarget.checked })}
+  />
+  <CheckboxField
+    label="Opacity pressure"
+    checked={paintToolStore.brush.opacityPressure}
+    onchange={(event) =>
+      paintToolStore.setBrushSettings({ opacityPressure: event.currentTarget.checked })}
+  />
+</div>
+
+<style>
+  #upaint-pressure-popover:popover-open {
+    display: flex;
+  }
+</style>

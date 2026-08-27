@@ -49,6 +49,9 @@ interface UltraPaintTestHook {
       radius: number;
       hardness: number;
       opacity: number;
+      pressureEnabled: boolean;
+      sizePressure: boolean;
+      opacityPressure: boolean;
     };
     readonly secondaryColor: string;
     setBrushSettings(settings: {
@@ -56,6 +59,9 @@ interface UltraPaintTestHook {
       radius?: number;
       hardness?: number;
       opacity?: number;
+      pressureEnabled?: boolean;
+      sizePressure?: boolean;
+      opacityPressure?: boolean;
     }): void;
     setSecondaryColor(color: string): void;
     swapColors(): void;
@@ -604,6 +610,52 @@ test("clicking the Eyedropper toolbar button selects it as a persistent tool", a
       page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.activeTool),
     )
     .toBe("eyedropper");
+});
+
+test("pen pressure split control toggles independently and dismisses above-canvas popover", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+
+  await page.getByRole("button", { name: "Enable pen pressure" }).click();
+  await expect(page.getByRole("button", { name: "Disable pen pressure" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(
+    await page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.brush),
+  ).toMatchObject({ pressureEnabled: true, sizePressure: true, opacityPressure: false });
+
+  const button = page.getByRole("button", { name: "Configure pen pressure" });
+  const popover = page.locator("#upaint-pressure-popover");
+  await button.click();
+
+  await expect(popover).toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  expect(
+    await popover.evaluate((element) => {
+      const popoverBounds = element.getBoundingClientRect();
+      const canvasBounds = document.querySelector("#upaint-root canvas")?.getBoundingClientRect();
+      if (!canvasBounds) return false;
+      const x = popoverBounds.left + popoverBounds.width / 2;
+      const y = Math.max(popoverBounds.top, canvasBounds.top) + 1;
+      return element.contains(document.elementFromPoint(x, y));
+    }),
+  ).toBe(true);
+
+  await popover.getByRole("checkbox", { name: "Opacity pressure" }).check();
+  expect(
+    await page.evaluate(() => (window as TestWindow).__ultraPaintTest?.paintToolStore.brush),
+  ).toMatchObject({ pressureEnabled: true, sizePressure: true, opacityPressure: true });
+
+  await page.locator("#upaint-settings-panel").click({ position: { x: 8, y: 8 } });
+  await expect(popover).not.toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "Disable pen pressure" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("mask shortcuts clear undoably and fit the boundary box to painted alpha", async ({

@@ -16,6 +16,8 @@ export interface BrushSettings {
   color: string;
   /** Per-stamp alpha from 0 to 1, independent of layer opacity. */
   opacity: number;
+  /** Whether configured pen-pressure effects are applied to strokes. */
+  pressureEnabled: boolean;
   /** Scale each stamp's radius by the pen's reported pressure (0..1). */
   sizePressure: boolean;
   /** Scale each stamp's alpha by the pen's reported pressure (0..1). */
@@ -43,7 +45,8 @@ const DEFAULT_STATE: PaintToolState = {
     hardness: 0.75,
     color: "#ffffff",
     opacity: 1,
-    sizePressure: false,
+    pressureEnabled: false,
+    sizePressure: true,
     opacityPressure: false,
   },
 };
@@ -130,6 +133,7 @@ export class PaintToolStore {
           : patch.color.toLowerCase(),
       opacity:
         patch.opacity === undefined ? current.opacity : Math.max(0, Math.min(1, patch.opacity)),
+      pressureEnabled: patch.pressureEnabled ?? current.pressureEnabled,
       sizePressure: patch.sizePressure ?? current.sizePressure,
       opacityPressure: patch.opacityPressure ?? current.opacityPressure,
     };
@@ -139,6 +143,7 @@ export class PaintToolStore {
       next.hardness === current.hardness &&
       next.color === current.color &&
       next.opacity === current.opacity &&
+      next.pressureEnabled === current.pressureEnabled &&
       next.sizePressure === current.sizePressure &&
       next.opacityPressure === current.opacityPressure
     ) {

@@ -63,8 +63,8 @@ export class ConsistentOpacityStroke implements StrokeSession {
     private readonly options: ConsistentOpacityStrokeOptions,
   ) {
     this.radius = settings.radius;
-    this.sizePressure = settings.sizePressure;
-    this.opacityPressure = settings.opacityPressure;
+    this.sizePressure = settings.pressureEnabled && settings.sizePressure;
+    this.opacityPressure = settings.pressureEnabled && settings.opacityPressure;
     this.spacing = Math.max(1, settings.radius * 0.25);
     const stamp = createCoverageStamp(app, settings, this.options.color);
     this.stampTexture = stamp.texture;
