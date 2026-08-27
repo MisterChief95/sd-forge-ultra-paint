@@ -191,4 +191,10 @@ packages/svelte/scripts/_baseline/
 benchmarking/.profiles
 benchmarking/compare/.results
 benchmarking/compare/.profiles
+
+# Frontend (Vite/Playwright)
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.eslintcache
 benchmarking/compare/results.html

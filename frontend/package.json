@@ -9,19 +9,30 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "pixi.js": "^8.6.6"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.23.0",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "prettier-plugin-svelte": "^4.1.1",
     "svelte": "^5.15.0",
     "svelte-check": "^4.1.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.68.0",
     "vite": "^6.0.0"
   }
 }

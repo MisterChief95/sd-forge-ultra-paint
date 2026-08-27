@@ -15,12 +15,24 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 
+// Forge backend origin for `npm run dev` -- override with
+// `ULTRA_PAINT_BACKEND` if it's not running on the default port.
+const BACKEND_ORIGIN = process.env.ULTRA_PAINT_BACKEND ?? "http://127.0.0.1:7860";
+
 export default defineConfig({
   base: "/ultra_paint/app/",
   plugins: [svelte(), tailwindcss()],
+  server: {
+    proxy: {
+      "/ultra_paint/api": BACKEND_ORIGIN,
+    },
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,
+    // Single-entry embedded app -- no routes to code-split to, so the whole
+    // bundle loads on first paint regardless. Silence the default 500kB hint.
+    chunkSizeWarningLimit: 1024,
   },
 });
