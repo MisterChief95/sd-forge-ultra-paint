@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { previewStore } from "../state/previewStore.svelte";
+  import Button from "./lib/Button.svelte";
 
   let applying = $state(false);
 
@@ -46,10 +47,8 @@
     </div>
 
     <div class="flex items-center gap-1">
-      <button
-        type="button"
-        class="flex cursor-pointer items-center justify-center rounded border p-1.5 hover:border-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-50"
-        style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+      <Button
+        size="icon"
         aria-label="Apply selected preview"
         title="Apply selected preview"
         disabled={!previewStore.selected || applying}
@@ -65,15 +64,13 @@
         >
           <path d="M3 8.5l3.2 3.2L13 4.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
-      </button>
+      </Button>
 
-      <button
-        type="button"
-        class="flex cursor-pointer items-center justify-center rounded border p-1.5 hover:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+      <Button
+        size="icon"
+        pressed={previewStore.visible}
         aria-label={previewStore.visible ? "Hide preview" : "Show preview"}
         title={previewStore.visible ? "Hide preview (A/B compare)" : "Show preview"}
-        aria-pressed={previewStore.visible}
         onclick={() => previewStore.toggleVisible()}
       >
         {#if previewStore.visible}
@@ -108,12 +105,11 @@
             <path d="M2 14L14 2" stroke-linecap="round" />
           </svg>
         {/if}
-      </button>
+      </Button>
 
-      <button
-        type="button"
-        class="flex cursor-pointer items-center justify-center rounded border p-1.5 hover:border-(--upaint-danger) disabled:cursor-not-allowed disabled:opacity-50"
-        style="border-color: var(--upaint-border); background: var(--upaint-surface-raised); color: var(--upaint-danger);"
+      <Button
+        size="icon"
+        variant="danger"
         aria-label="Discard selected preview"
         title="Discard selected preview"
         disabled={!previewStore.selected}
@@ -129,12 +125,11 @@
         >
           <path d="M3 3l10 10M13 3L3 13" stroke-linecap="round" />
         </svg>
-      </button>
+      </Button>
 
-      <button
-        type="button"
-        class="flex cursor-pointer items-center justify-center rounded border p-1.5 hover:border-(--upaint-danger)"
-        style="border-color: var(--upaint-border); background: var(--upaint-surface-raised); color: var(--upaint-danger);"
+      <Button
+        size="icon"
+        variant="danger"
         aria-label="Discard all previews"
         title="Discard all previews"
         onclick={() => previewStore.discardAll()}
@@ -153,7 +148,7 @@
             stroke-linejoin="round"
           />
         </svg>
-      </button>
+      </Button>
     </div>
   </div>
 {/if}

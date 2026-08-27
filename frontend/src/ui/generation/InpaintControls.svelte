@@ -22,6 +22,8 @@
     onCoherencePassFastChange: (value: boolean) => void;
   }
 
+  import CheckboxField from "../lib/CheckboxField.svelte";
+  import Select from "../lib/Select.svelte";
   import SliderNumberInput from "../lib/SliderNumberInput.svelte";
   import { fetchControlModels } from "./controlnetApi";
 
@@ -66,16 +68,11 @@
 
 <label class="flex flex-col gap-1 text-(--upaint-text-muted)">
   Inpaint area
-  <select
-    class="border bg-(--upaint-surface) px-2 py-1.5 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-    value={inpaintArea}
-    onchange={handleAreaChange}
-  >
+  <Select surface="base" value={inpaintArea} onchange={handleAreaChange}>
     <option value="whole">Whole BB</option>
     <option value="masked">Only masked</option>
     <option value="coherence">Coherence Pass</option>
-  </select>
+  </Select>
 </label>
 
 <SliderNumberInput
@@ -108,45 +105,32 @@
     numberStep={1}
     onValueInput={onCoherenceEdgeSizeChange}
   />
-  <label class="flex cursor-pointer items-center gap-2 text-(--upaint-text-muted)">
-    <input
-      class="m-0 h-4 w-4 accent-(--upaint-accent)"
-      type="checkbox"
-      checked={coherencePassFast}
-      onchange={(event) => onCoherencePassFastChange(event.currentTarget.checked)}
-    />
-    Fast (latent-space, experimental)
-  </label>
+  <CheckboxField
+    label="Fast (latent-space, experimental)"
+    checked={coherencePassFast}
+    onchange={(event) => onCoherencePassFastChange(event.currentTarget.checked)}
+  />
 {/if}
 
 {#if inpaintArea !== "coherence"}
-  <label class="flex cursor-pointer items-center gap-2 text-(--upaint-text-muted)">
-    <input
-      class="m-0 h-4 w-4 accent-(--upaint-accent)"
-      type="checkbox"
-      checked={softInpaintingEnabled}
-      onchange={(event) => onSoftInpaintingChange(event.currentTarget.checked)}
-    />
-    Soft inpainting
-  </label>
+  <CheckboxField
+    label="Soft inpainting"
+    checked={softInpaintingEnabled}
+    onchange={(event) => onSoftInpaintingChange(event.currentTarget.checked)}
+  />
 {/if}
 
-<label class="flex cursor-pointer items-center gap-2 text-(--upaint-text-muted)">
-  <input
-    class="m-0 h-4 w-4 accent-(--upaint-accent)"
-    type="checkbox"
-    checked={inpaintControlNetEnabled}
-    onchange={(event) => onInpaintControlNetEnabledChange(event.currentTarget.checked)}
-  />
-  Inpaint ControlNet (Anima LLLite, etc.)
-</label>
+<CheckboxField
+  label="Inpaint ControlNet (Anima LLLite, etc.)"
+  checked={inpaintControlNetEnabled}
+  onchange={(event) => onInpaintControlNetEnabledChange(event.currentTarget.checked)}
+/>
 
 {#if inpaintControlNetEnabled}
   <label class="flex flex-col gap-1 text-(--upaint-text-muted)">
     Inpaint ControlNet model
-    <select
-      class="border bg-(--upaint-surface) px-2 py-1.5 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+    <Select
+      surface="base"
       value={inpaintControlNetModel}
       onchange={(event) =>
         onInpaintControlNetModelChange((event.currentTarget as HTMLSelectElement).value)}
@@ -158,7 +142,7 @@
       {#each controlModels as model (model)}
         <option value={model}>{model}</option>
       {/each}
-    </select>
+    </Select>
     <span class="text-[11px]">
       Uses the composited inpaint mask directly -- no control layer needed. Most models don't need
       this; a few (Anima's LLLite Inpaint Adapter) require it.

@@ -7,6 +7,9 @@
     fetchControlModules,
     preprocessControlImage,
   } from "./generation/controlnetApi";
+  import Button from "./lib/Button.svelte";
+  import CheckboxField from "./lib/CheckboxField.svelte";
+  import Select from "./lib/Select.svelte";
   import Slider from "./lib/Slider.svelte";
 
   interface Props {
@@ -84,9 +87,9 @@
   <div class="grid grid-cols-2 gap-1.5">
     <label class="flex flex-col gap-0.5">
       Model
-      <select
-        class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <Select
+        surface="base"
+        class="px-1 py-1 text-[11px]"
         value={layer.model}
         onchange={(event) =>
           layerStore.setControlParams(layer.id, {
@@ -99,14 +102,14 @@
         {#each catalog?.models ?? [] as model (model)}
           <option value={model}>{model}</option>
         {/each}
-      </select>
+      </Select>
     </label>
 
     <label class="flex flex-col gap-0.5">
       Preprocessor
-      <select
-        class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <Select
+        surface="base"
+        class="px-1 py-1 text-[11px]"
         value={layer.preprocessor}
         onchange={(event) =>
           layerStore.setControlParams(layer.id, {
@@ -119,7 +122,7 @@
         {#each catalog?.modules ?? [] as module (module)}
           <option value={module}>{module}</option>
         {/each}
-      </select>
+      </Select>
     </label>
   </div>
 
@@ -170,9 +173,9 @@
   <div class="grid grid-cols-2 gap-1.5">
     <label class="flex flex-col gap-0.5">
       Control mode
-      <select
-        class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <Select
+        surface="base"
+        class="px-1 py-1 text-[11px]"
         value={layer.controlMode}
         onchange={(event) =>
           layerStore.setControlParams(layer.id, {
@@ -182,14 +185,14 @@
         {#each CONTROL_MODES as mode (mode.value)}
           <option value={mode.value}>{mode.label}</option>
         {/each}
-      </select>
+      </Select>
     </label>
 
     <label class="flex flex-col gap-0.5">
       Resize mode
-      <select
-        class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <Select
+        surface="base"
+        class="px-1 py-1 text-[11px]"
         value={layer.resizeMode}
         onchange={(event) =>
           layerStore.setControlParams(layer.id, {
@@ -199,15 +202,15 @@
         {#each RESIZE_MODES as mode (mode.value)}
           <option value={mode.value}>{mode.label}</option>
         {/each}
-      </select>
+      </Select>
     </label>
   </div>
 
   <label class="flex flex-col gap-0.5">
     Mask layer (for Inpaint-tagged preprocessors)
-    <select
-      class="min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+    <Select
+      surface="base"
+      class="px-1 py-1 text-[11px]"
       value={layer.maskLayerId ?? ""}
       onchange={(event) => {
         const value = (event.currentTarget as HTMLSelectElement).value;
@@ -218,32 +221,27 @@
       {#each maskLayers as mask (mask.id)}
         <option value={mask.id}>{mask.name}</option>
       {/each}
-    </select>
+    </Select>
   </label>
 
-  <label class="flex items-center gap-1.5">
-    <input
-      type="checkbox"
-      class="cursor-pointer accent-(--upaint-accent)"
-      checked={layer.pixelPerfect}
-      onchange={(event) =>
-        layerStore.setControlParams(layer.id, {
-          pixelPerfect: (event.currentTarget as HTMLInputElement).checked,
-        })}
-    />
-    Pixel Perfect
-  </label>
+  <CheckboxField
+    label="Pixel Perfect"
+    checked={layer.pixelPerfect}
+    onchange={(event) =>
+      layerStore.setControlParams(layer.id, {
+        pixelPerfect: event.currentTarget.checked,
+      })}
+  />
 
   <div class="flex items-center gap-2">
-    <button
-      type="button"
-      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2 py-1 text-(--upaint-text) disabled:cursor-not-allowed disabled:opacity-50"
-      style="border-radius: var(--upaint-radius-sm);"
+    <Button
+      variant="primary"
+      size="sm"
       disabled={previewPending}
       onclick={() => void handlePreview()}
     >
       {previewPending ? "Previewing..." : "Preview preprocessor"}
-    </button>
+    </Button>
     {#if previewUrl}
       <img
         class="h-9 w-9 border object-contain"

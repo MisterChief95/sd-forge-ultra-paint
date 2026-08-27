@@ -2,9 +2,10 @@
   import { onDestroy, onMount } from "svelte";
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import Button from "./lib/Button.svelte";
 
-  let zoom = 1;
-  let gridVisible = true;
+  let zoom = $state(1);
+  let gridVisible = $state(true);
   let animationFrame: number | null = null;
 
   function updateCameraState(): void {
@@ -49,45 +50,38 @@
   role="toolbar"
   aria-label="Viewport controls"
 >
-  <button
-    type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] tabular-nums hover:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+  <Button
+    size="sm"
+    class="tabular-nums"
     aria-label={`Zoom: ${Math.round(zoom * 100)}% (reset to 100%)`}
     title="Reset zoom to 100%"
     onclick={resetZoom}
   >
     {Math.round(zoom * 100)}%
-  </button>
-  <button
-    type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+  </Button>
+  <Button
+    size="sm"
     aria-label="Fit boundary box to viewport"
     title="Fit boundary box to viewport"
     onclick={fitToBoundaryBox}
   >
     Fit
-  </button>
-  <button
-    type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+  </Button>
+  <Button
+    size="sm"
     aria-label="Scale boundary box to fit visible layers"
     title="Scale boundary box to fit visible layers (excludes masks)"
     onclick={fitBoundaryBoxToContent}
   >
     Fit BB
-  </button>
-  <button
-    type="button"
-    class="cursor-pointer rounded border px-2 py-1 text-[11px] hover:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); background: var(--upaint-surface-raised);"
+  </Button>
+  <Button
+    size="sm"
+    pressed={gridVisible}
     aria-label={gridVisible ? "Hide pixel grid" : "Show pixel grid"}
     title={gridVisible ? "Hide pixel grid" : "Show pixel grid"}
-    aria-pressed={gridVisible}
     onclick={toggleGrid}
   >
     Grid
-  </button>
+  </Button>
 </div>

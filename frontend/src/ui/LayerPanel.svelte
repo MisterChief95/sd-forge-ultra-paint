@@ -6,7 +6,9 @@
   import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
   import Accordion from "./lib/Accordion.svelte";
+  import Button from "./lib/Button.svelte";
   import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
+  import Select from "./lib/Select.svelte";
   import Slider from "./lib/Slider.svelte";
   import ControlLayerSettings from "./ControlLayerSettings.svelte";
 
@@ -551,13 +553,11 @@
       {/if}
 
       <div class="flex items-center gap-0.5">
-        <button
-          type="button"
-          class={`h-7 w-7 cursor-pointer border text-(--upaint-text) ${layer.locked ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        <Button
+          size="icon"
+          pressed={layer.locked}
           title={layer.locked ? "Unlock layer" : "Lock layer"}
           aria-label={`${layer.locked ? "Unlock" : "Lock"} "${layer.name}"`}
-          aria-pressed={layer.locked}
           onclick={() => toggleLocked(layer)}
         >
           <svg
@@ -571,16 +571,14 @@
             <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
             <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
           </svg>
-        </button>
-        <button
-          type="button"
-          class={`h-7 w-7 cursor-pointer border text-(--upaint-text) ${layer.preserveAlpha ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        </Button>
+        <Button
+          size="icon"
+          pressed={layer.preserveAlpha}
           title={layer.preserveAlpha
             ? "Stop preserving transparency"
             : "Preserve transparency (lock alpha)"}
           aria-label={`${layer.preserveAlpha ? "Stop preserving" : "Preserve"} transparency on "${layer.name}"`}
-          aria-pressed={layer.preserveAlpha}
           onclick={() => togglePreserveAlpha(layer)}
         >
           <svg class="mx-auto h-3 w-3" viewBox="0 0 16 16" aria-hidden="true">
@@ -589,30 +587,28 @@
             <rect x="1" y="9" width="6" height="6" fill="currentColor" opacity="0.35" />
             <rect x="9" y="9" width="6" height="6" fill="currentColor" opacity="0.9" />
           </svg>
-        </button>
+        </Button>
         {#if layer.kind === "control"}
-          <button
-            type="button"
-            class={`h-7 w-7 cursor-pointer border text-[10px] text-(--upaint-text) ${expandedControlId === layer.id ? "border-(--upaint-accent)" : "bg-(--upaint-surface)"}`}
-            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          <Button
+            size="icon"
+            pressed={expandedControlId === layer.id}
             title="ControlNet settings"
             aria-label={`Configure ${layer.name}`}
-            aria-pressed={expandedControlId === layer.id}
             onclick={() => (expandedControlId = expandedControlId === layer.id ? null : layer.id)}
           >
             ⚙
-          </button>
+          </Button>
         {/if}
-        <button
-          type="button"
-          class="h-7 w-7 cursor-pointer border bg-(--upaint-surface) text-base text-(--upaint-danger) hover:border-(--upaint-danger)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); transition: border-color var(--upaint-transition);"
+        <Button
+          size="icon"
+          variant="danger"
+          class="text-base"
           title="Delete layer"
           aria-label={`Delete ${layer.name}`}
           onclick={() => layerStore.removeLayer(layer.id)}
         >
           ×
-        </button>
+        </Button>
       </div>
 
       {#if layer.kind === "mask"}
@@ -649,16 +645,15 @@
     style="border-color: var(--upaint-border);"
   >
     <h2 class="m-0 mr-auto text-sm font-semibold">Layers &amp; Masks</h2>
-    <button
-      type="button"
-      class="cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-2.5 py-1 text-xs font-medium text-(--upaint-text) hover:bg-(--upaint-accent-muted)"
-      style="border-radius: var(--upaint-radius-sm); transition: background-color var(--upaint-transition);"
+    <Button
+      variant="primary"
+      size="sm"
       title="Add a layer"
       aria-label="Add a layer"
       onclick={openAddMenu}
     >
       +
-    </button>
+    </Button>
     <input
       id="upaint-control-file-input"
       class="hidden"
@@ -699,10 +694,10 @@
       </output>
     </div>
     <div class="flex min-w-[140px] flex-1 items-center gap-1.5">
-      <span class="w-12 shrink-0 text-(--upaint-text-muted)">Blend</span>
-      <select
-        class="w-full min-w-0 cursor-pointer border bg-(--upaint-surface) px-1 py-1 text-[11px] text-(--upaint-text) outline-none focus:border-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-50"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <span class="w-12 shrink-0 text-right text-(--upaint-text-muted)">Blend</span>
+      <Select
+        surface="base"
+        class="w-full px-1 py-1 text-[11px]"
         value={opacitySelection?.blendMode ?? "normal"}
         disabled={!opacitySelection}
         title="Blend mode of the selected layer"
@@ -712,7 +707,7 @@
         {#each BLEND_MODE_ORDER as mode (mode)}
           <option value={mode}>{prettyBlendMode(mode)}</option>
         {/each}
-      </select>
+      </Select>
     </div>
   </div>
 

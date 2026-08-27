@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Button from "./lib/Button.svelte";
+
   export type PasteLayerKind = "mask" | "raster" | "control";
 
   interface Props {
@@ -41,25 +43,21 @@
       onkeydown={(event) => event.stopPropagation()}
     >
       {#each quadrants as quadrant (quadrant.kind)}
-        <button
-          type="button"
+        <Button
           role="menuitem"
-          class="flex h-20 w-28 flex-col items-center justify-center gap-1 border bg-(--upaint-surface-raised) hover:border-(--upaint-accent)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          class="h-20 w-28 flex-col gap-1"
           onclick={() => onChoose(quadrant.kind)}
         >
           {quadrant.label}
-        </button>
+        </Button>
       {/each}
-      <button
-        type="button"
+      <Button
         role="menuitem"
-        class="flex h-20 w-28 flex-col items-center justify-center gap-1 border bg-(--upaint-surface-raised) text-(--upaint-text-muted) hover:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        class="h-20 w-28 flex-col gap-1 text-(--upaint-text-muted)"
         onclick={onCancel}
       >
         Cancel
-      </button>
+      </Button>
     </div>
   </div>
 {/if}

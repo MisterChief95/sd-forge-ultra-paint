@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Button from "../lib/Button.svelte";
+  import NumberInput from "../lib/NumberInput.svelte";
   import Slider from "../lib/Slider.svelte";
   import { fetchLoras, type LoraCatalogItem } from "./generationApi";
   import { clampLoraWeight, type SelectedLora } from "./lora";
@@ -60,14 +62,7 @@
 </script>
 
 <div class="flex flex-col gap-2">
-  <button
-    type="button"
-    class="self-start border bg-(--upaint-surface-raised) px-2 py-1 text-(--upaint-text) hover:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-    onclick={() => void openPicker()}
-  >
-    Add +
-  </button>
+  <Button size="sm" class="self-start" onclick={() => void openPicker()}>Add +</Button>
 
   {#if selectedLoras.length === 0}
     <p class="m-0 text-(--upaint-text-muted)">No LoRAs selected.</p>
@@ -80,33 +75,28 @@
         >
           <span class="truncate font-medium" title={lora.name}>{lora.name}</span>
 
-          <button
-            type="button"
-            class="border px-2 py-1 text-(--upaint-text-muted) aria-pressed:border-(--upaint-accent)"
-            style="border-color: var(--upaint-border); border-radius: 999px;"
+          <Button
+            size="sm"
+            pressed={lora.enabled}
             aria-label={`${lora.enabled ? "Disable" : "Enable"} ${lora.name}`}
-            aria-pressed={lora.enabled}
             onclick={() => updateLora(lora.promptName, { enabled: !lora.enabled })}
           >
             {lora.enabled ? "Enabled" : "Off"}
-          </button>
+          </Button>
 
-          <button
-            type="button"
-            class="border px-2 py-1 text-(--upaint-text-muted) enabled:hover:border-(--upaint-accent) enabled:hover:text-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-40"
-            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          <Button
+            size="sm"
             aria-label={`Add activation words for ${lora.name}`}
             title="Add activation words to positive prompt"
             disabled={!lora.activationText.trim()}
             onclick={() => onAddActivationWords(lora.activationText)}
           >
             {`{ }`}
-          </button>
+          </Button>
 
-          <button
-            type="button"
-            class="border p-1 text-(--upaint-text-muted) hover:border-(--upaint-danger) hover:text-(--upaint-danger)"
-            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+          <Button
+            size="icon"
+            variant="danger"
             aria-label={`Remove ${lora.name}`}
             title={`Remove ${lora.name}`}
             onclick={() =>
@@ -125,7 +115,7 @@
             >
               <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6" />
             </svg>
-          </button>
+          </Button>
 
           <label
             class="col-span-4 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2 text-(--upaint-text-muted)"
@@ -139,10 +129,8 @@
               ariaLabel={`Strength for ${lora.name}`}
               onValueInput={(value) => updateWeight(lora.promptName, value)}
             />
-            <input
-              class="min-w-0 border bg-(--upaint-surface-raised) px-2 py-1 text-right text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-              style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-              type="number"
+            <NumberInput
+              class="px-2 py-1"
               min={-10}
               max={10}
               step={0.05}
@@ -168,7 +156,7 @@
     <header class="flex items-center justify-between gap-2">
       <h3 id="upaint-lora-picker-title" class="m-0 text-sm font-semibold">Add LoRA</h3>
       <form method="dialog">
-        <button type="submit" class="px-2 py-1" aria-label="Close LoRA picker">Close</button>
+        <Button type="submit" size="sm" aria-label="Close LoRA picker">Close</Button>
       </form>
     </header>
 

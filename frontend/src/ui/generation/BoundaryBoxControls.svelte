@@ -4,6 +4,9 @@
   import { layerStore } from "../../state/layerStore.svelte";
   import { paintToolStore } from "../../state/paintToolStore.svelte";
   import type { Resolution } from "../../util/autoResolution";
+  import Button from "../lib/Button.svelte";
+  import NumberInput from "../lib/NumberInput.svelte";
+  import Select from "../lib/Select.svelte";
   import SliderNumberInput from "../lib/SliderNumberInput.svelte";
 
   interface Props {
@@ -42,8 +45,6 @@
     ["21:9", 21 / 9],
   ] as const;
 
-  const buttonClass =
-    "cursor-pointer border bg-(--upaint-surface) px-2 py-1.5 text-xs text-(--upaint-text) hover:border-(--upaint-accent)";
   let selectedRatio = $state("");
 
   function handleResize(event: SubmitEvent): void {
@@ -117,10 +118,9 @@
     <div class="grid grid-cols-[1fr_auto_1fr_auto_auto] items-end gap-1.5">
       <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
         Width
-        <input
-          class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-right tabular-nums text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-          type="number"
+        <NumberInput
+          surface="base"
+          class="px-1.5 py-1"
           name="boundary-width"
           min="1"
           max="16384"
@@ -133,10 +133,9 @@
       <span class="pb-1.5 text-(--upaint-text-muted)" aria-hidden="true">×</span>
       <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
         Height
-        <input
-          class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-right tabular-nums text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-          type="number"
+        <NumberInput
+          surface="base"
+          class="px-1.5 py-1"
           name="boundary-height"
           min="1"
           max="16384"
@@ -146,29 +145,28 @@
           oninput={(event) => syncLockedDimension(event, "height")}
         />
       </label>
-      <button
-        type="button"
-        class={`${buttonClass} ${paintToolStore.boundaryAspectRatio !== null ? "border-(--upaint-accent) bg-(--upaint-accent)" : "border-(--upaint-border)"}`}
-        style="border-radius: var(--upaint-radius-sm);"
+      <Button
+        size="icon"
+        pressed={paintToolStore.boundaryAspectRatio !== null}
         title="Lock boundary-box aspect ratio"
         aria-label="Lock boundary-box aspect ratio"
-        aria-pressed={paintToolStore.boundaryAspectRatio !== null}
         onclick={toggleAspectLock}
-        >{paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}</button
       >
-      <button
-        type="button"
-        class={buttonClass}
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        {paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}
+      </Button>
+      <Button
+        size="icon"
         title="Swap boundary-box width and height"
         aria-label="Swap boundary-box width and height"
-        onclick={swapDimensions}>⇄</button
+        onclick={swapDimensions}
       >
+        ⇄
+      </Button>
     </div>
     <div class="flex gap-2">
-      <select
-        class="min-w-0 flex-1 border bg-(--upaint-surface) px-2 py-1.5 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+      <Select
+        class="flex-1"
+        surface="base"
         bind:value={selectedRatio}
         aria-label="Boundary box aspect ratio"
         onchange={applyRatio}
@@ -177,29 +175,18 @@
         {#each ratios as [label, ratio] (label)}
           <option value={ratio}>{label}</option>
         {/each}
-      </select>
-      <button
-        type="submit"
-        class={buttonClass}
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-        title="Resize and center the boundary box">Resize</button
-      >
+      </Select>
+      <Button type="submit" title="Resize and center the boundary box">Resize</Button>
     </div>
   </form>
 
   <label class="flex flex-col gap-1 text-(--upaint-text-muted)">
     Resolution scale
-    <select
-      class="min-w-0 border bg-(--upaint-surface-raised) px-2 py-1.5 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-      value={scaleMode}
-      aria-label="Resolution scale mode"
-      onchange={updateScaleMode}
-    >
+    <Select value={scaleMode} aria-label="Resolution scale mode" onchange={updateScaleMode}>
       <option value="none">None</option>
       <option value="auto">Auto</option>
       <option value="manual">Manual</option>
-    </select>
+    </Select>
   </label>
 
   {#if scaleMode === "auto"}
@@ -229,10 +216,9 @@
     <div class="grid grid-cols-2 gap-2">
       <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
         Target width
-        <input
-          class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-right tabular-nums text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-          type="number"
+        <NumberInput
+          surface="base"
+          class="px-1.5 py-1"
           min="1"
           max="16384"
           step="1"
@@ -243,10 +229,9 @@
       </label>
       <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
         Target height
-        <input
-          class="min-w-0 border bg-(--upaint-surface) px-1.5 py-1 text-right tabular-nums text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-          style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-          type="number"
+        <NumberInput
+          surface="base"
+          class="px-1.5 py-1"
           min="1"
           max="16384"
           step="1"

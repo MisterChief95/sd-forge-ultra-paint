@@ -1,4 +1,5 @@
 <script lang="ts">
+  import NumberInput from "./NumberInput.svelte";
   import Slider from "./Slider.svelte";
 
   interface Props {
@@ -39,14 +40,12 @@
 <div class="flex w-full min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
   <div class="flex items-baseline justify-between gap-2">
     <span class="min-w-0">{label}</span>
-    <input
-      class="w-14.5 shrink-0 border bg-(--upaint-surface-raised) px-1.5 py-1 text-right text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent) [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-      type="number"
+    <NumberInput
+      class="w-14.5 shrink-0 px-1.5 py-1"
       {min}
       {max}
       step={numberStep}
-      {value}
+      bind:value
       {disabled}
       aria-label={ariaLabel}
       oninput={handleNumberInput}

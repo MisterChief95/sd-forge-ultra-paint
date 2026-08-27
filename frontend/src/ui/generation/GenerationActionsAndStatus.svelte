@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "../lib/Button.svelte";
   import type { ProgressResponse } from "./generationApi";
 
   interface Props {
@@ -30,32 +31,27 @@
 
 <!-- Keep cancel mounted so Generate retains the same width in both states. -->
 <div class="flex gap-2">
-  <button
-    type="button"
-    class="flex-1 cursor-pointer border border-(--upaint-accent) bg-(--upaint-accent) px-3 py-2 text-sm font-semibold text-(--upaint-text) hover:bg-(--upaint-accent-muted) disabled:cursor-wait disabled:opacity-60"
-    style="border-radius: var(--upaint-radius); transition: background-color var(--upaint-transition), opacity var(--upaint-transition);"
+  <Button
+    variant="primary"
+    class="flex-1 px-3 py-2 text-sm font-semibold disabled:cursor-wait"
     disabled={generating}
     onclick={onGenerate}
   >
     {generating ? "Generating…" : "Generate"}
-  </button>
+  </Button>
 
-  <button
-    type="button"
-    class="shrink-0 cursor-pointer border bg-(--upaint-surface-raised) px-3 py-2 text-sm font-semibold text-(--upaint-text) hover:border-(--upaint-accent) disabled:cursor-wait disabled:opacity-60"
-    style="border-color: var(--upaint-border); border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition), opacity var(--upaint-transition);"
+  <Button
+    class="px-3 py-2 text-sm font-semibold disabled:cursor-wait"
     disabled={saving}
     onclick={onSave}
   >
     {saving ? "Saving…" : "Save"}
-  </button>
+  </Button>
 
-  <button
-    type="button"
-    class="shrink-0 cursor-pointer border border-(--upaint-danger) bg-(--upaint-surface-raised) px-3 py-2 text-sm font-semibold text-(--upaint-danger) hover:bg-(--upaint-danger) hover:text-(--upaint-text) disabled:cursor-wait disabled:opacity-60"
-    style="border-radius: var(--upaint-radius); transition: background-color var(--upaint-transition), color var(--upaint-transition), opacity var(--upaint-transition); visibility: {generating
-      ? 'visible'
-      : 'hidden'};"
+  <Button
+    variant="danger"
+    class="px-3 py-2 text-sm font-semibold enabled:hover:bg-(--upaint-danger) enabled:hover:text-(--upaint-text) disabled:cursor-wait"
+    style="visibility: {generating ? 'visible' : 'hidden'};"
     disabled={interrupting || !generating}
     tabindex={generating ? 0 : -1}
     aria-hidden={!generating}
@@ -64,7 +60,7 @@
     onclick={onCancel}
   >
     ×
-  </button>
+  </Button>
 </div>
 
 {#if generating}
