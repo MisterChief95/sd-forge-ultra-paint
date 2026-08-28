@@ -28,18 +28,21 @@ def fake_controlnet(monkeypatch):
     @dataclass
     class ControlNetUnit:
         enabled: bool
-        module: str
         model: str
         weight: float
         image: dict
         resize_mode: str
-        processor_res: int
-        threshold_a: float
-        threshold_b: float
         guidance_start: float
         guidance_end: float
         pixel_perfect: bool
         control_mode: str
+        # Mirrors Forge's own `lib_controlnet.external_code.ControlNetUnit`
+        # defaults -- `apply_controlnet_units` now omits these kwargs
+        # entirely, relying on the always-passthrough defaults.
+        module: str = "None"
+        processor_res: int = -1
+        threshold_a: float = -1
+        threshold_b: float = -1
         save_detected_map: bool = True
 
     lib_controlnet = types.ModuleType("lib_controlnet")
@@ -62,17 +65,12 @@ def fake_controlnet(monkeypatch):
     return ControlNetUnit, shared
 
 
-def _layer(index=0, *, preprocessor="canny", mask=True):
-    return {
+def _layer(index=0, *, mask=False):
+    """A regular (post-refactor) control-layer dict -- no per-layer
+    preprocessor/threshold/mask fields, matching `ControlLayerRequest`."""
+    layer = {
         "image": Image.new("RGBA", (3, 2), (10 + index, 20, 30, 40)),
-        "mask_image": Image.new("RGBA", (3, 2), (0, 0, 0, 100 + index))
-        if mask
-        else None,
         "model": f"control-model-{index}",
-        "preprocessor": preprocessor,
-        "preprocessor_resolution": 512 + index,
-        "preprocessor_threshold_a": 10.5 + index,
-        "preprocessor_threshold_b": 20.5 + index,
         "weight": 0.75 + index,
         "guidance_start": 0.1,
         "guidance_end": 0.9,
@@ -81,6 +79,12 @@ def _layer(index=0, *, preprocessor="canny", mask=True):
         "resize_mode": ("resize", "crop", "fill")[index % 3],
         "enabled": True,
     }
+    if mask:
+        # Only the synthetic auto-injected inpaint-ControlNet dict
+        # (`ultra_paint/generation.py`) still carries `mask_image` --
+        # `apply_controlnet_units` must tolerate both shapes via `.get()`.
+        layer["mask_image"] = Image.new("RGBA", (3, 2), (0, 0, 0, 100 + index))
+    return layer
 
 
 def _processing(slot_count=3):
@@ -112,21 +116,20 @@ def test_builds_units_with_complete_field_and_image_mapping(fake_controlnet):
     ControlNetUnit, _shared = fake_controlnet
     p = _processing()
 
-    apply_controlnet_units(p, [_layer(0), _layer(1)])
+    # First layer carries a `mask_image` (the synthetic-inpaint-unit dict
+    # shape); second doesn't (the regular control-layer dict shape) -- both
+    # must work through the same `.get("mask_image")` lookup.
+    apply_controlnet_units(p, [_layer(0, mask=True), _layer(1)])
 
     first, second = p.script_args[1:3]
     assert isinstance(first, ControlNetUnit)
     assert isinstance(second, ControlNetUnit)
     assert (first.module, first.model, first.weight) == (
-        "canny",
+        "None",
         "control-model-0",
         0.75,
     )
-    assert (first.processor_res, first.threshold_a, first.threshold_b) == (
-        512,
-        10.5,
-        20.5,
-    )
+    assert (first.processor_res, first.threshold_a, first.threshold_b) == (-1, -1, -1)
     assert (first.guidance_start, first.guidance_end, first.pixel_perfect) == (
         0.1,
         0.9,
@@ -139,6 +142,7 @@ def test_builds_units_with_complete_field_and_image_mapping(fake_controlnet):
     assert first.image["mask"].shape == (2, 3)
     assert first.image["mask"].dtype == np.uint8
     assert first.image["mask"][0, 0] == 100
+    assert second.image["mask"] is None
     assert (second.control_mode, second.resize_mode) == (
         "My prompt is more important",
         "Crop and Resize",
@@ -160,16 +164,3 @@ def test_truncates_to_configured_slot_count(fake_controlnet, caplog):
         "control-model-1",
     ]
     assert "dropping 2 ControlNet layer(s)" in caplog.text
-
-
-def test_none_preprocessor_passes_pixels_through(fake_controlnet):
-    ControlNetUnit, _shared = fake_controlnet
-    p = _processing()
-
-    apply_controlnet_units(p, [_layer(preprocessor="none", mask=False)])
-
-    unit = p.script_args[1]
-    assert isinstance(unit, ControlNetUnit)
-    assert unit.module == "none"
-    assert unit.image["mask"] is None
-    assert np.array_equal(unit.image["image"][0, 0], [10, 20, 30])

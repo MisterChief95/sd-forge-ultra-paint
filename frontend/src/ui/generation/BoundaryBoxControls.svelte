@@ -3,7 +3,6 @@
   import type { ScaleMode } from "../../state/generationSettingsStore.svelte";
   import { layerStore } from "../../state/layerStore.svelte";
   import { paintToolStore } from "../../state/paintToolStore.svelte";
-  import type { Resolution } from "../../util/autoResolution";
   import Button from "../lib/Button.svelte";
   import NumberInput from "../lib/NumberInput.svelte";
   import Select from "../lib/Select.svelte";
@@ -14,7 +13,6 @@
     autoBaseWidth: number;
     manualWidth: number;
     manualHeight: number;
-    autoTargetResolution: Resolution | null;
     onScaleModeChange: (value: ScaleMode) => void;
     onAutoBaseWidthChange: (value: number) => void;
     onManualWidthChange: (value: number) => void;
@@ -26,7 +24,6 @@
     autoBaseWidth,
     manualWidth,
     manualHeight,
-    autoTargetResolution,
     onScaleModeChange,
     onAutoBaseWidthChange,
     onManualWidthChange,
@@ -192,28 +189,14 @@
   </label>
 
   {#if scaleMode === "auto"}
-    <div class="grid grid-cols-3 justify-between gap-2 text-(--upaint-text-muted)">
-      <div class="col-span-2">
-        <SliderNumberInput
-          label="Target resolution"
-          value={autoBaseWidth}
-          min={512}
-          max={2048}
-          sliderStep={64}
-          onValueInput={onAutoBaseWidthChange}
-        />
-      </div>
-      <div class="min-w-8">
-        <p>Adjusted</p>
-        <output aria-label="Auto target size" class="tabular-nums text-(--upaint-text)">
-          {#if autoTargetResolution}
-            Width: {autoTargetResolution.width} <br /> Height: {autoTargetResolution.height}
-          {:else}
-            Loading model profile…
-          {/if}
-        </output>
-      </div>
-    </div>
+    <SliderNumberInput
+      label="Target resolution"
+      value={autoBaseWidth}
+      min={512}
+      max={2048}
+      sliderStep={64}
+      onValueInput={onAutoBaseWidthChange}
+    />
   {:else if scaleMode === "manual"}
     <div class="grid grid-cols-2 gap-2">
       <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">

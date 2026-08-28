@@ -1,23 +1,16 @@
 <script lang="ts">
-  import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { layerStore } from "../state/layerStore.svelte";
-  import type { ControlLayer, ControlMode, ControlResizeMode, MaskLayer } from "../state/schema";
-  import {
-    fetchControlModels,
-    fetchControlModules,
-    preprocessControlImage,
-  } from "./generation/controlnetApi";
-  import Button from "./lib/Button.svelte";
+  import type { ControlLayer, ControlMode, ControlResizeMode } from "../state/schema";
+  import { fetchControlModels } from "./generation/controlnetApi";
   import CheckboxField from "./lib/CheckboxField.svelte";
   import Select from "./lib/Select.svelte";
   import Slider from "./lib/Slider.svelte";
 
   interface Props {
     layer: ControlLayer;
-    maskLayers: MaskLayer[];
   }
 
-  const { layer, maskLayers }: Props = $props();
+  const { layer }: Props = $props();
 
   const CONTROL_MODES: { value: ControlMode; label: string }[] = [
     { value: "balanced", label: "Balanced" },
@@ -32,99 +25,45 @@
 
   // Module-level cache: every open control-layer panel shares one catalog
   // fetch instead of re-requesting Forge's ControlNet routes per row.
-  let catalog = $state<{ models: string[]; modules: string[] } | null>(null);
+  let catalog = $state<{ models: string[] } | null>(null);
   let catalogFailed = $state(false);
 
   $effect(() => {
     if (catalog || catalogFailed) return;
     void (async () => {
-      const [models, modules] = await Promise.all([fetchControlModels(), fetchControlModules()]);
-      if (models.length === 0 && modules.length === 0) {
+      const models = await fetchControlModels();
+      if (models.length === 0) {
         catalogFailed = true;
         return;
       }
-      catalog = { models, modules };
+      catalog = { models };
     })();
   });
-
-  let previewUrl = $state<string | null>(null);
-  let previewPending = $state(false);
-  let previewError = $state<string | null>(null);
-
-  async function handlePreview(): Promise<void> {
-    const app = getActiveUltraPaintApp();
-    if (!app) return;
-    const source = app.layerSourceDataURL(layer.id);
-    if (!source) {
-      previewError = "Layer has no pixels to preview yet.";
-      return;
-    }
-    previewPending = true;
-    previewError = null;
-    try {
-      const result = await preprocessControlImage(
-        layer.preprocessor,
-        source,
-        layer.preprocessorResolution > 0 ? layer.preprocessorResolution : 512,
-        layer.preprocessorThresholdA >= 0 ? layer.preprocessorThresholdA : 64,
-        layer.preprocessorThresholdB >= 0 ? layer.preprocessorThresholdB : 64,
-      );
-      if (result === null) {
-        previewError = "Preview failed -- is ControlNet installed?";
-        return;
-      }
-      previewUrl = result;
-    } finally {
-      previewPending = false;
-    }
-  }
 </script>
 
 <div
   class="col-span-5 flex flex-col gap-1.5 border-t pt-1.5 text-[11px] text-(--upaint-text-muted)"
   style="border-color: var(--upaint-border);"
 >
-  <div class="grid grid-cols-2 gap-1.5">
-    <label class="flex flex-col gap-0.5">
-      Model
-      <Select
-        surface="base"
-        class="px-1 py-1 text-[11px]"
-        value={layer.model}
-        onchange={(event) =>
-          layerStore.setControlParams(layer.id, {
-            model: (event.currentTarget as HTMLSelectElement).value,
-          })}
-      >
-        {#if !catalog?.models.includes(layer.model)}
-          <option value={layer.model}>{layer.model}</option>
-        {/if}
-        {#each catalog?.models ?? [] as model (model)}
-          <option value={model}>{model}</option>
-        {/each}
-      </Select>
-    </label>
-
-    <label class="flex flex-col gap-0.5">
-      Preprocessor
-      <Select
-        surface="base"
-        class="px-1 py-1 text-[11px]"
-        value={layer.preprocessor}
-        onchange={(event) =>
-          layerStore.setControlParams(layer.id, {
-            preprocessor: (event.currentTarget as HTMLSelectElement).value,
-          })}
-      >
-        {#if !catalog?.modules.includes(layer.preprocessor)}
-          <option value={layer.preprocessor}>{layer.preprocessor}</option>
-        {/if}
-        {#each catalog?.modules ?? [] as module (module)}
-          <option value={module}>{module}</option>
-        {/each}
-      </Select>
-    </label>
-  </div>
+  <label class="flex flex-col gap-0.5">
+    Model
+    <Select
+      surface="base"
+      class="px-1 py-1 text-[11px]"
+      value={layer.model}
+      onchange={(event) =>
+        layerStore.setControlParams(layer.id, {
+          model: (event.currentTarget as HTMLSelectElement).value,
+        })}
+    >
+      {#if !catalog?.models.includes(layer.model)}
+        <option value={layer.model}>{layer.model}</option>
+      {/if}
+      {#each catalog?.models ?? [] as model (model)}
+        <option value={model}>{model}</option>
+      {/each}
+    </Select>
+  </label>
 
   {#if catalogFailed}
     <p class="m-0 text-(--upaint-danger)">
@@ -206,24 +145,6 @@
     </label>
   </div>
 
-  <label class="flex flex-col gap-0.5">
-    Mask layer (for Inpaint-tagged preprocessors)
-    <Select
-      surface="base"
-      class="px-1 py-1 text-[11px]"
-      value={layer.maskLayerId ?? ""}
-      onchange={(event) => {
-        const value = (event.currentTarget as HTMLSelectElement).value;
-        layerStore.setControlParams(layer.id, { maskLayerId: value || null });
-      }}
-    >
-      <option value="">None</option>
-      {#each maskLayers as mask (mask.id)}
-        <option value={mask.id}>{mask.name}</option>
-      {/each}
-    </Select>
-  </label>
-
   <CheckboxField
     label="Pixel Perfect"
     checked={layer.pixelPerfect}
@@ -232,26 +153,4 @@
         pixelPerfect: event.currentTarget.checked,
       })}
   />
-
-  <div class="flex items-center gap-2">
-    <Button
-      variant="primary"
-      size="sm"
-      disabled={previewPending}
-      onclick={() => void handlePreview()}
-    >
-      {previewPending ? "Previewing..." : "Preview preprocessor"}
-    </Button>
-    {#if previewUrl}
-      <img
-        class="h-9 w-9 border object-contain"
-        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-        src={previewUrl}
-        alt={`Preprocessed preview of "${layer.name}"`}
-      />
-    {/if}
-  </div>
-  {#if previewError}
-    <p class="m-0 text-(--upaint-danger)">{previewError}</p>
-  {/if}
 </div>

@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 class ControlNetDetectRequest(BaseModel):
     module: str
     image: str
-    resolution: int
     threshold_a: float
     threshold_b: float
 
@@ -115,9 +114,14 @@ def detect_controlnet(request: ControlNetDetectRequest) -> ControlNetDetectRespo
         if processor_module is None:
             return ControlNetDetectResponse(image=None)
         image = _decode_data_url(request.image)
+        # Every preprocessor runs "pixel perfect": Forge's own
+        # `resize_image_with_pad` (modules_forge/utils.py) scales the
+        # SHORTER edge to `resolution`, so passing the layer's width keeps
+        # the detected map at the layer's own size -- no separate resolution
+        # input for the user to get wrong.
         result = processor_module(
             np.array(image).astype("uint8"),
-            resolution=request.resolution,
+            resolution=image.width,
             slider_1=request.threshold_a,
             slider_2=request.threshold_b,
             json_pose_callback=lambda _json: None,

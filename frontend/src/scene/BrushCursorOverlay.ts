@@ -97,7 +97,8 @@ export class BrushCursorOverlay {
     const isPaintTool = tool === "brush" || tool === "eraser";
     const selectedId = this.store.getSelectedLayerId();
     const selected = selectedId ? this.store.getLayer(selectedId) : undefined;
-    const isPaintable = selected?.kind === "raster" || selected?.kind === "mask";
+    const isPaintable =
+      selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control";
 
     const visible = this.hovering && isPaintTool && isPaintable;
     this.container.visible = visible;

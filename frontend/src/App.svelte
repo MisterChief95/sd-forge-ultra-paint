@@ -24,6 +24,8 @@
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
+  import BoundaryInfoOverlay from "./ui/BoundaryInfoOverlay.svelte";
+  import FilterBar from "./ui/FilterBar.svelte";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
   import GenerationPreviewBar from "./ui/GenerationPreviewBar.svelte";
   import LayerPanel from "./ui/LayerPanel.svelte";
@@ -163,8 +165,10 @@
     </div>
     <div class="relative min-h-0 flex-1">
       <div id="upaint-root" class="h-full w-full"></div>
+      <BoundaryInfoOverlay />
       <ViewportControls />
       <GenerationPreviewBar />
+      <FilterBar />
       <PasteMenu open={pasteFile !== null} onChoose={handlePasteChoice} onCancel={closePasteMenu} />
     </div>
   </div>

@@ -39,6 +39,7 @@ import {
 import { Compositor } from "../scene/Compositor";
 import { BoundaryBoxOverlay } from "../scene/BoundaryBoxOverlay";
 import { BrushCursorOverlay } from "../scene/BrushCursorOverlay";
+import { FilterPreviewOverlay } from "../scene/FilterPreviewOverlay";
 import { GenerationPreviewOverlay } from "../scene/GenerationPreviewOverlay";
 import { MagnifierOverlay } from "../scene/MagnifierOverlay";
 import { PixelGrid } from "../scene/PixelGrid";
@@ -140,6 +141,9 @@ export class UltraPaintApp {
 
   /** Unapplied generation preview shown over the document, above masks. */
   private generationPreviewOverlay: GenerationPreviewOverlay | null = null;
+
+  /** Pending filter preview shown through its target layer's existing node. */
+  private filterPreviewOverlay: FilterPreviewOverlay | null = null;
 
   /** Pointer-following brush/eraser size ring, above all document content. */
   private brushCursorOverlay: BrushCursorOverlay | null = null;
@@ -259,6 +263,7 @@ export class UltraPaintApp {
       this.boundaryBoxOverlay,
     );
     this.world.addChild(this.generationPreviewOverlay.container);
+    this.filterPreviewOverlay = new FilterPreviewOverlay(this.store, this.tree);
     this.brushCursorOverlay = new BrushCursorOverlay(
       app,
       app.canvas,
@@ -714,13 +719,19 @@ export class UltraPaintApp {
    * so `resolution` actually downsamples on the GPU instead of extracting
    * at full size and letting the caller shrink it.
    */
-  public getLayerThumbnail(id: LayerId, maxSize: number): string | null {
+  public getLayerThumbnail(id: LayerId, maxSize: number, maskColor?: string): string | null {
     const app = this.app;
     const texture = this.store.getTexture(id);
     if (!app || !texture || texture.width <= 0 || texture.height <= 0) return null;
 
     const resolution = Math.min(1, maxSize / Math.max(texture.width, texture.height));
     const sprite = new Sprite(texture);
+    const filter = maskColor ? new ColorMatrixFilter() : undefined;
+    if (filter) {
+      const { red, green, blue } = new Color(maskColor);
+      filter.matrix = [0, 0, 0, 0, red, 0, 0, 0, 0, green, 0, 0, 0, 0, blue, 0, 0, 0, 1, 0];
+      sprite.filters = [filter];
+    }
     try {
       const canvas = app.renderer.extract.canvas({ target: sprite, resolution });
       return (canvas as HTMLCanvasElement).toDataURL("image/png");
@@ -728,6 +739,7 @@ export class UltraPaintApp {
       console.warn("[ultra-paint] thumbnail extraction failed:", error);
       return null;
     } finally {
+      filter?.destroy();
       sprite.destroy({ texture: false, textureSource: false });
     }
   }
@@ -1141,6 +1153,92 @@ export class UltraPaintApp {
     return id;
   }
 
+  /** Bake a pending ControlNet preprocessor result into one control layer. */
+  public async acceptFilterResult(layerId: LayerId, dataUrl: string): Promise<void> {
+    await this.ready;
+    const app = this.app;
+    const history = this.history;
+    const layer = this.store.getLayer(layerId);
+    const target = this.store.getTexture(layerId);
+    if (!app || !history || layer?.kind !== "control" || !target) {
+      throw new Error(`[ultra-paint] cannot accept a filter result for layer "${layerId}"`);
+    }
+
+    const response = await fetch(dataUrl);
+    const decoded = await decodeToTexture(await response.blob());
+    let replacement: RenderTexture | null = null;
+    let sprite: Sprite | null = null;
+    try {
+      replacement = RenderTexture.create({
+        width: target.width,
+        height: target.height,
+        resolution: target.source.resolution,
+        antialias: target.source.antialias,
+        format: target.source.format,
+        alphaMode: target.source.alphaMode,
+      });
+      sprite = new Sprite({ texture: decoded });
+      sprite.width = target.width;
+      sprite.height = target.height;
+      app.renderer.render({
+        container: sprite,
+        target: replacement,
+        clear: true,
+        clearColor: [0, 0, 0, 0],
+      });
+    } catch (error) {
+      replacement?.destroy(true);
+      throw error;
+    } finally {
+      sprite?.destroy({ texture: false, textureSource: false });
+      decoded.destroy(true);
+    }
+
+    if (!replacement) {
+      throw new Error(`[ultra-paint] could not render a filter result for layer "${layerId}"`);
+    }
+
+    const pending = history.beginPixelChange(layerId);
+    if (!pending) {
+      replacement.destroy(true);
+      throw new Error(`[ultra-paint] could not begin filter history for layer "${layerId}"`);
+    }
+
+    let adopted = false;
+    try {
+      const previous = this.store.replaceLayerTexture(
+        layerId,
+        target,
+        replacement,
+        layer.transform,
+      );
+      if (previous !== target) {
+        throw new Error(`[ultra-paint] filter target layer "${layerId}" changed`);
+      }
+      adopted = true;
+      this.tree?.getNode(layerId)?.setTexture(replacement);
+      history.commitPixelChange(pending);
+      target.destroy(true);
+    } catch (error) {
+      history.discardPixelChange(pending);
+      if (adopted) {
+        const rolledBack = this.store.replaceLayerTexture(
+          layerId,
+          replacement,
+          target,
+          layer.transform,
+        );
+        if (rolledBack === replacement) {
+          this.tree?.getNode(layerId)?.setTexture(target);
+          replacement.destroy(true);
+        }
+      } else {
+        replacement.destroy(true);
+      }
+      throw error;
+    }
+  }
+
   /**
    * Create a transparent, paintable raster layer at the current document
    * dimensions. Resolves with the new layer's id.
@@ -1193,6 +1291,11 @@ export class UltraPaintApp {
     if (selected.length < 2) {
       throw new Error("Select at least two raster or group layers to merge");
     }
+    // Snapshot the stack order before adding the merged layer -- `doc` is a
+    // live reference, and `addRasterLayer` below mutates `doc.layerOrder` in
+    // place (it unshifts the new id), which would shift every index read
+    // from it afterward and place the merged layer one slot too low.
+    const preOrder = [...doc.layerOrder];
 
     const texture = this.flattenSelectedToTexture(selected);
     let adopted = false;
@@ -1200,7 +1303,7 @@ export class UltraPaintApp {
       const id = this.store.addRasterLayer(texture, `Merged ${selected.length} layers`, "paint");
       adopted = true;
       this.store.setTransform(id, { x: doc.boundaryBox.x, y: doc.boundaryBox.y });
-      this.store.reorderLayer(id, Math.min(...selected.map((sid) => doc.layerOrder.indexOf(sid))));
+      this.store.reorderLayer(id, Math.min(...selected.map((sid) => preOrder.indexOf(sid))));
       this.store.setSelectedLayerId(id);
       return id;
     } catch (error) {
@@ -1232,6 +1335,9 @@ export class UltraPaintApp {
     if (selected.length < 2) {
       throw new Error("Show at least two mask layers to merge");
     }
+    // See the matching comment in mergeLayersToNewLayer: snapshot the order
+    // now, since adding the merged layer below mutates `doc.layerOrder` in place.
+    const preOrder = [...doc.layerOrder];
 
     const texture = this.flattenSelectedToTexture(selected);
     let adopted = false;
@@ -1239,7 +1345,7 @@ export class UltraPaintApp {
       const id = this.store.addMaskLayerFromTexture(texture, `Merged ${selected.length} masks`);
       adopted = true;
       this.store.setTransform(id, { x: doc.boundaryBox.x, y: doc.boundaryBox.y });
-      this.store.reorderLayer(id, Math.min(...selected.map((sid) => doc.layerOrder.indexOf(sid))));
+      this.store.reorderLayer(id, Math.min(...selected.map((sid) => preOrder.indexOf(sid))));
       this.store.setSelectedLayerId(id);
       return id;
     } catch (error) {
@@ -1312,7 +1418,7 @@ export class UltraPaintApp {
         ? parent.getChildIndex(this.pixelGrid.container) + 1
         : 0;
     const maskVisibility = doc.layers
-      .filter((layer) => layer.kind === "mask")
+      .filter((layer) => layer.kind === "mask" || layer.kind === "control")
       .map((layer) => {
         const node = tree.getNode(layer.id);
         return node ? { node, visible: node.container.visible } : null;
@@ -1487,6 +1593,9 @@ export class UltraPaintApp {
     this.generationPreviewOverlay?.destroy();
     this.generationPreviewOverlay = null;
 
+    this.filterPreviewOverlay?.destroy();
+    this.filterPreviewOverlay = null;
+
     this.boundaryBoxOverlay?.destroy();
     this.boundaryBoxOverlay = null;
 
@@ -1654,7 +1763,22 @@ interface StateHistoryEntry {
   recordedAt: number;
 }
 
-type HistoryEntry = PixelHistoryEntry | StateHistoryEntry;
+/** Undo step for an "add-layer" mutation: the layer still lives in the store. */
+interface AddLayerHistoryEntry {
+  kind: "add-layer";
+  layerId: LayerId;
+}
+
+/** Redo step for an undone "add-layer": the layer's full snapshot, held outside the store. */
+interface RemovedLayerHistoryEntry {
+  kind: "removed-layer";
+  layer: Layer;
+  index: number;
+  texture: RenderTexture | undefined;
+}
+
+type HistoryEntry =
+  PixelHistoryEntry | StateHistoryEntry | AddLayerHistoryEntry | RemovedLayerHistoryEntry;
 
 class HistoryStrokeSession implements StrokeSession {
   public readonly spacing: number;
@@ -1711,7 +1835,11 @@ class UndoHistory {
   public beginPixelChange(layerId: LayerId): PendingPixelChange | null {
     const target = this.store.getTexture(layerId);
     const layer = this.store.getLayer(layerId);
-    if (!target || !layer || (layer.kind !== "raster" && layer.kind !== "mask")) {
+    if (
+      !target ||
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
+    ) {
       return null;
     }
 
@@ -1729,7 +1857,11 @@ class UndoHistory {
     if (!this.finishPending(pending)) return;
     const target = this.store.getTexture(pending.layerId);
     const layer = this.store.getLayer(pending.layerId);
-    if (!target || !layer || (layer.kind !== "raster" && layer.kind !== "mask")) {
+    if (
+      !target ||
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
+    ) {
       pending.snapshot.destroy(true);
       this.clear();
       return;
@@ -1757,6 +1889,11 @@ class UndoHistory {
       this.restorePixelEntry(entry, this.undoStack, this.redoStack);
       return;
     }
+    if (entry.kind === "add-layer") {
+      this.undoAddLayer(entry);
+      return;
+    }
+    if (entry.kind !== "state") return;
 
     try {
       this.replaying = true;
@@ -1779,6 +1916,11 @@ class UndoHistory {
       this.restorePixelEntry(entry, this.redoStack, this.undoStack);
       return;
     }
+    if (entry.kind === "removed-layer") {
+      this.redoAddLayer(entry);
+      return;
+    }
+    if (entry.kind !== "state") return;
 
     try {
       this.replaying = true;
@@ -1787,6 +1929,27 @@ class UndoHistory {
     } catch (error) {
       this.redoStack.push(entry);
       throw error;
+    } finally {
+      this.replaying = false;
+    }
+  }
+
+  private undoAddLayer(entry: AddLayerHistoryEntry): void {
+    try {
+      this.replaying = true;
+      const extracted = this.store.extractLayerForUndo(entry.layerId);
+      if (extracted) this.redoStack.push({ kind: "removed-layer", ...extracted });
+      else this.undoStack.push(entry);
+    } finally {
+      this.replaying = false;
+    }
+  }
+
+  private redoAddLayer(entry: RemovedLayerHistoryEntry): void {
+    try {
+      this.replaying = true;
+      this.store.restoreLayerForUndo(entry.layer, entry.index, entry.texture);
+      this.undoStack.push({ kind: "add-layer", layerId: entry.layer.id });
     } finally {
       this.replaying = false;
     }
@@ -1804,12 +1967,14 @@ class UndoHistory {
 
   private readonly recordStoreMutation = (mutation: LayerStoreMutation): void => {
     if (this.replaying) return;
-    if (
-      mutation.kind === "add-layer" ||
-      mutation.kind === "remove-layer" ||
-      mutation.kind === "clear"
-    ) {
+    if (mutation.kind === "remove-layer" || mutation.kind === "clear") {
       this.clear();
+      return;
+    }
+    if (mutation.kind === "add-layer") {
+      this.destroyStack(this.redoStack);
+      this.undoStack.push({ kind: "add-layer", layerId: mutation.layerId });
+      this.trimUndoStack();
       return;
     }
 
@@ -1848,7 +2013,11 @@ class UndoHistory {
   ): void {
     const target = this.store.getTexture(entry.layerId);
     const layer = this.store.getLayer(entry.layerId);
-    if (!target || !layer || (layer.kind !== "raster" && layer.kind !== "mask")) {
+    if (
+      !target ||
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
+    ) {
       entry.snapshot.destroy(true);
       this.clear();
       return;
@@ -2022,5 +2191,6 @@ class UndoHistory {
 
   private destroyEntry(entry: HistoryEntry): void {
     if (entry.kind === "pixels") entry.snapshot.destroy(true);
+    if (entry.kind === "removed-layer") entry.texture?.destroy(true);
   }
 }

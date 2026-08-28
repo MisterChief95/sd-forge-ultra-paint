@@ -2,6 +2,7 @@
   import { tick } from "svelte";
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import { filterStore } from "../state/filterStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { previewStore } from "../state/previewStore.svelte";
   import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
@@ -16,7 +17,7 @@
   const THUMB_SIZE = 34;
   const THUMBNAIL_DEBOUNCE_MS = 1000;
   let thumbnailUrls = $state<Record<LayerId, string | null>>({});
-  const thumbnailVersions = new Map<LayerId, number>();
+  const thumbnailVersions = new Map<LayerId, string>();
   const thumbnailTimers = new Map<LayerId, ReturnType<typeof setTimeout>>();
 
   let editingId = $state<LayerId | null>(null);
@@ -62,8 +63,13 @@
    * preview is being compared against (see UltraPaintApp/GenerationPreviewOverlay). */
   const isPreviewing = $derived(previewStore.selected !== null && previewStore.visible);
 
+  /** True while a control layer's Filter mode is open -- locks out layer-panel
+   * controls the same way isPreviewing does, since the canvas is showing an
+   * unapplied preview override for the target layer (see FilterPreviewOverlay). */
+  const isFiltering = $derived(filterStore.active);
+
   $effect(() => {
-    if (isPreviewing) contextMenuOpen = false;
+    if (isPreviewing || isFiltering) contextMenuOpen = false;
   });
 
   $effect(() => {
@@ -90,13 +96,24 @@
   }
 
   /** Debounced GPU-side downsample of a layer's render texture, so a burst of quick strokes samples once. */
-  function scheduleThumbnail(id: LayerId): void {
+  function thumbnailVersion(layer: Layer): string {
+    return `${layerStore.getTextureVersion(layer.id)}:${layer.kind === "mask" ? layer.color : ""}`;
+  }
+
+  function scheduleThumbnail(layer: Layer): void {
+    const { id } = layer;
     if (thumbnailTimers.has(id)) return;
     const timer = setTimeout(() => {
       thumbnailTimers.delete(id);
-      const version = layerStore.getTextureVersion(id);
-      const url = getActiveUltraPaintApp()?.getLayerThumbnail(id, THUMB_SIZE) ?? null;
-      thumbnailVersions.set(id, version);
+      const current = layerStore.getLayer(id);
+      if (!current) return;
+      const url =
+        getActiveUltraPaintApp()?.getLayerThumbnail(
+          id,
+          THUMB_SIZE,
+          current.kind === "mask" ? current.color : undefined,
+        ) ?? null;
+      thumbnailVersions.set(id, thumbnailVersion(current));
       thumbnailUrls = { ...thumbnailUrls, [id]: url };
     }, THUMBNAIL_DEBOUNCE_MS);
     thumbnailTimers.set(id, timer);
@@ -104,8 +121,8 @@
 
   function thumbnailFor(layer: Layer): string | null {
     if (layer.kind === "group") return null;
-    if (thumbnailVersions.get(layer.id) !== layerStore.getTextureVersion(layer.id)) {
-      scheduleThumbnail(layer.id);
+    if (thumbnailVersions.get(layer.id) !== thumbnailVersion(layer)) {
+      scheduleThumbnail(layer);
     }
     return thumbnailUrls[layer.id] ?? null;
   }
@@ -231,7 +248,10 @@
     const single = selected.length === 1 ? selected[0] : undefined;
     const mergeable = accordionBucket(layer) === "layers" && selected.length > 1;
     const copyable = single !== undefined && single.kind !== "group";
-    const convertible = single !== undefined && single.kind === "raster" && !isPreviewing;
+    const convertible =
+      single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
+    const filterable =
+      single !== undefined && single.kind === "control" && !isPreviewing && !isFiltering;
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
     contextMenuItems = [
@@ -240,14 +260,14 @@
         label: allVisible ? "Hide selected" : "Show selected",
         action: () =>
           selected.forEach((candidate) => layerStore.setVisible(candidate.id, !allVisible)),
-        disabled: isPreviewing,
+        disabled: isPreviewing || isFiltering,
       },
       ...(mergeable
         ? [
             {
               label: "Merge selected into new layer",
               action: () => mergeSelected(selected),
-              disabled: isPreviewing,
+              disabled: isPreviewing || isFiltering,
             },
           ]
         : []),
@@ -268,6 +288,7 @@
             { label: "Convert to Control Layer", action: () => convertLayerToControl(single) },
           ]
         : []),
+      ...(filterable ? [{ label: "Filter...", action: () => filterStore.begin(single.id) }] : []),
       {
         label: showControlOnly ? "Show all layers" : "Show Control layers only",
         action: () => (showControlOnly = !showControlOnly),
@@ -561,8 +582,8 @@
         class="m-0 cursor-pointer accent-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-50"
         type="checkbox"
         checked={layer.visible}
-        disabled={isPreviewing}
-        title={isPreviewing
+        disabled={isPreviewing || isFiltering}
+        title={isPreviewing || isFiltering
           ? "Visibility is locked while previewing a generation"
           : layer.visible
             ? "Hide layer"
@@ -711,7 +732,7 @@
       </div>
 
       {#if layer.kind === "control" && expandedControlId === layer.id}
-        <ControlLayerSettings {layer} {maskLayers} />
+        <ControlLayerSettings {layer} />
       {/if}
     </div>
   {/each}
@@ -729,9 +750,11 @@
     <Button
       variant="primary"
       size="sm"
-      title={isPreviewing ? "Adding layers is disabled while previewing a generation" : "Add a layer"}
+      title={isPreviewing || isFiltering
+        ? "Adding layers is disabled while previewing a generation"
+        : "Add a layer"}
       aria-label="Add a layer"
-      disabled={isPreviewing}
+      disabled={isPreviewing || isFiltering}
       onclick={openAddMenu}
     >
       +
@@ -742,7 +765,7 @@
       type="file"
       accept="image/*"
       multiple
-      disabled={isPreviewing}
+      disabled={isPreviewing || isFiltering}
       onchange={(event) => void handleControlFiles(event)}
     />
     <input
@@ -751,7 +774,7 @@
       type="file"
       accept="image/*"
       multiple
-      disabled={isPreviewing}
+      disabled={isPreviewing || isFiltering}
       onchange={(event) => void handleFiles(event)}
     />
   </header>
@@ -783,7 +806,7 @@
         surface="base"
         class="w-full px-1 py-1 text-[11px]"
         value={opacitySelection?.blendMode ?? "normal"}
-        disabled={!opacitySelection}
+        disabled={!opacitySelection || opacitySelection.kind === "control"}
         title="Blend mode of the selected layer"
         aria-label="Blend mode of the selected layer"
         onchange={(event) => opacitySelection && handleBlendChange(event, opacitySelection.id)}
@@ -807,11 +830,13 @@
         {#snippet headerActions()}
           <Button
             size="icon"
-            title={isPreviewing
+            title={isPreviewing || isFiltering
               ? "Merging is disabled while previewing a generation"
               : "Merge visible layers into a new layer"}
             aria-label="Merge visible layers into a new layer"
-            disabled={isPreviewing || regularLayers.filter((layer) => layer.visible).length < 2}
+            disabled={isPreviewing ||
+              isFiltering ||
+              regularLayers.filter((layer) => layer.visible).length < 2}
             onclick={mergeVisibleLayers}
           >
             ⧉
@@ -832,11 +857,13 @@
         {#snippet headerActions()}
           <Button
             size="icon"
-            title={isPreviewing
+            title={isPreviewing || isFiltering
               ? "Merging is disabled while previewing a generation"
               : "Merge visible masks into a new mask"}
             aria-label="Merge visible masks into a new mask"
-            disabled={isPreviewing || visibleMaskLayers.filter((layer) => layer.visible).length < 2}
+            disabled={isPreviewing ||
+              isFiltering ||
+              visibleMaskLayers.filter((layer) => layer.visible).length < 2}
             onclick={mergeVisibleMasks}
           >
             ⧉

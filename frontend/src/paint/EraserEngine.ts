@@ -20,7 +20,11 @@ export class EraserEngine {
   public beginStroke(layerId: LayerId, settings: Readonly<BrushSettings>): StrokeSession | null {
     const texture = this.store.getTexture(layerId);
     const node = this.tree.getNode(layerId);
-    if (!texture || !node || (node.kind !== "raster" && node.kind !== "mask")) {
+    if (
+      !texture ||
+      !node ||
+      (node.kind !== "raster" && node.kind !== "mask" && node.kind !== "control")
+    ) {
       return null;
     }
 

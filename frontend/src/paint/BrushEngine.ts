@@ -21,7 +21,12 @@ export class BrushEngine {
     const texture = this.store.getTexture(layerId);
     const node = this.tree.getNode(layerId);
     const layer = this.store.getLayer(layerId);
-    if (!texture || !node || !layer || (node.kind !== "raster" && node.kind !== "mask")) {
+    if (
+      !texture ||
+      !node ||
+      !layer ||
+      (node.kind !== "raster" && node.kind !== "mask" && node.kind !== "control")
+    ) {
       return null;
     }
 

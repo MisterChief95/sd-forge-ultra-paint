@@ -80,21 +80,11 @@ def _data_url(generate_api, color=(255, 0, 0, 255)):
 def test_control_layers_are_decoded_and_forwarded(fake_forge_modules):
     generate_api, calls, _generation_calls = fake_forge_modules
     image_url = _data_url(generate_api)
-    mask_url = _data_url(generate_api, (0, 0, 0, 255))
     request = generate_api.GenerateRequest(
         composite_image=image_url,
         control_layers=[
-            generate_api.ControlLayerRequest(
-                image=image_url,
-                mask_image=mask_url,
-                model="control-model-a",
-                preprocessor="canny",
-            ),
-            generate_api.ControlLayerRequest(
-                image=image_url,
-                model="control-model-b",
-                preprocessor="depth",
-            ),
+            generate_api.ControlLayerRequest(image=image_url, model="control-model-a"),
+            generate_api.ControlLayerRequest(image=image_url, model="control-model-b"),
         ],
     )
 
@@ -106,12 +96,7 @@ def test_control_layers_are_decoded_and_forwarded(fake_forge_modules):
     assert len(layers) == 2
     assert set(layers[0]) == {
         "image",
-        "mask_image",
         "model",
-        "preprocessor",
-        "preprocessor_resolution",
-        "preprocessor_threshold_a",
-        "preprocessor_threshold_b",
         "weight",
         "guidance_start",
         "guidance_end",
@@ -121,11 +106,8 @@ def test_control_layers_are_decoded_and_forwarded(fake_forge_modules):
         "enabled",
     }
     assert isinstance(layers[0]["image"], Image.Image)
-    assert isinstance(layers[0]["mask_image"], Image.Image)
     assert layers[0]["image"].size == (4, 4)
-    assert layers[0]["mask_image"].size == (4, 4)
     assert isinstance(layers[1]["image"], Image.Image)
-    assert layers[1]["mask_image"] is None
     assert len(response.images) == 1
 
 
@@ -146,11 +128,7 @@ def test_malformed_control_layer_image_returns_400_without_generation(
     request = generate_api.GenerateRequest(
         composite_image=_data_url(generate_api),
         control_layers=[
-            generate_api.ControlLayerRequest(
-                image="not-a-data-url",
-                model="control-model",
-                preprocessor="canny",
-            )
+            generate_api.ControlLayerRequest(image="not-a-data-url", model="control-model")
         ],
     )
 
@@ -171,10 +149,6 @@ def test_control_layer_value_shape_passes_through_unchanged(fake_forge_modules):
             generate_api.ControlLayerRequest(
                 image=image_url,
                 model="custom-model",
-                preprocessor="custom-preprocessor",
-                preprocessor_resolution=768,
-                preprocessor_threshold_a=12.5,
-                preprocessor_threshold_b=34.75,
                 weight=0.625,
                 guidance_start=0.15,
                 guidance_end=0.85,
@@ -189,14 +163,8 @@ def test_control_layer_value_shape_passes_through_unchanged(fake_forge_modules):
     generate_api.generate(request)
 
     layer = calls[0][1]["control_layers"][0]
-    assert {
-        key: value for key, value in layer.items() if key not in {"image", "mask_image"}
-    } == {
+    assert {key: value for key, value in layer.items() if key != "image"} == {
         "model": "custom-model",
-        "preprocessor": "custom-preprocessor",
-        "preprocessor_resolution": 768,
-        "preprocessor_threshold_a": 12.5,
-        "preprocessor_threshold_b": 34.75,
         "weight": 0.625,
         "guidance_start": 0.15,
         "guidance_end": 0.85,

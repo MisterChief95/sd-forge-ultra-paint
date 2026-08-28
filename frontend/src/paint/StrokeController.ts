@@ -108,7 +108,12 @@ export class StrokeController {
 
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
-    if (!layerId || !layer || (layer.kind !== "raster" && layer.kind !== "mask") || layer.locked) {
+    if (
+      !layerId ||
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
+      layer.locked
+    ) {
       return;
     }
 
@@ -252,7 +257,8 @@ export class StrokeController {
     const selected = selectedId ? this.store.getLayer(selectedId) : undefined;
     const isPaintTool =
       this.tools.getState().activeTool === "brush" || this.tools.getState().activeTool === "eraser";
-    const isPaintable = selected?.kind === "raster" || selected?.kind === "mask";
+    const isPaintable =
+      selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control";
     // The BrushCursorOverlay draws a size-accurate ring for this case;
     // the system cursor would just be a redundant second indicator.
     this.canvas.style.cursor = isPaintTool && isPaintable ? "none" : "";

@@ -14,7 +14,7 @@ interface BoundaryBox {
 interface TestLayer {
   id?: string;
   name: string;
-  kind?: "raster" | "group" | "mask";
+  kind?: "raster" | "group" | "mask" | "control";
   color?: string;
   visible?: boolean;
   image?: { source: string };
@@ -28,11 +28,17 @@ interface UltraPaintTestHook {
     flattenMaskToDataURL(): string | null;
     layerSourceDataURL(id: string): string | null;
     addBlankLayer(): Promise<string>;
+    convertLayerToControl(id: string): string;
+    acceptFilterResult(id: string, dataUrl: string): Promise<void>;
     resizeBoundaryBox(width: number, height: number): void;
     undo(): void;
     getZoom(): number;
     isGridVisible(): boolean;
   } | null;
+  filterStore: {
+    readonly active: boolean;
+    readonly targetLayerId: string | null;
+  };
   layerStore: {
     document: {
       boundaryBox: BoundaryBox;
@@ -1005,7 +1011,7 @@ test("live mask brush preview is tinted and hatched before commit", async ({ pag
   expect(Math.max(...red) - Math.min(...red)).toBeGreaterThan(40);
 });
 
-test("boundary-box corner drag updates the store and snaps to the 8px grid", async ({ page }) => {
+test("boundary-box corner drag updates the store and snaps to the 32px grid", async ({ page }) => {
   await routeOptions(page);
   await openApp(page);
   await page.evaluate(() => {
@@ -1023,8 +1029,40 @@ test("boundary-box corner drag updates the store and snaps to the 8px grid", asy
   const southeastY = bounds.y + bounds.height / 2 + 80;
   await page.mouse.move(southeastX, southeastY);
   await page.mouse.down();
+  await page.mouse.move(southeastX + 20, southeastY + 44, { steps: 4 });
+  await page.mouse.up();
+
+  const boundaryBox = await page.evaluate(() => {
+    const box = (window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox;
+    if (!box) throw new Error("Ultra Paint test hook is unavailable");
+    return { ...box };
+  });
+  expect(boundaryBox).toEqual({ x: 0, y: 0, width: 192, height: 192 });
+  expect(Object.values(boundaryBox).every((value) => value % 32 === 0)).toBe(true);
+});
+
+test("boundary-box corner drag snaps to the 8px grid while Control is held", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(160, 160);
+  });
+  await page.getByRole("button", { name: "Boundary Box", exact: true }).click();
+
+  const canvas = page.locator("#upaint-root canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const southeastX = bounds.x + bounds.width / 2 + 80;
+  const southeastY = bounds.y + bounds.height / 2 + 80;
+  await page.mouse.move(southeastX, southeastY);
+  await page.mouse.down();
+  await page.keyboard.down("Control");
   await page.mouse.move(southeastX + 13, southeastY + 19, { steps: 4 });
   await page.mouse.up();
+  await page.keyboard.up("Control");
 
   const boundaryBox = await page.evaluate(() => {
     const box = (window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox;
@@ -1062,7 +1100,7 @@ test("boundary-box body drag commits one undoable mutation", async ({ page }) =>
         ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
       })),
     )
-    .toEqual({ x: 24, y: 16, width: 160, height: 160 });
+    .toEqual({ x: 32, y: 32, width: 160, height: 160 });
 
   await page.evaluate(() => {
     const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
@@ -1105,7 +1143,7 @@ test("boundary-box drag survives leaving the canvas and native pointer cancellat
     ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
   }));
   expect(outsideDragBox.x).toBeGreaterThan(0);
-  expect(outsideDragBox.x % 8).toBe(0);
+  expect(outsideDragBox.x % 32).toBe(0);
 
   await page.evaluate(() => {
     const hook = (window as TestWindow).__ultraPaintTest;
@@ -1134,11 +1172,11 @@ test("boundary-box drag survives leaving the canvas and native pointer cancellat
         ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
       })),
     )
-    .toEqual({ x: 24, y: 0, width: 160, height: 160 });
+    .toEqual({ x: 32, y: 0, width: 160, height: 160 });
 
-  await page.mouse.move(centerX + 24, centerY);
+  await page.mouse.move(centerX + 32, centerY);
   await page.mouse.down();
-  await page.mouse.move(centerX + 40, centerY, { steps: 3 });
+  await page.mouse.move(centerX + 64, centerY, { steps: 3 });
   await page.mouse.up();
   await expect
     .poll(() =>
@@ -1146,7 +1184,7 @@ test("boundary-box drag survives leaving the canvas and native pointer cancellat
         ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
       })),
     )
-    .toEqual({ x: 40, y: 0, width: 160, height: 160 });
+    .toEqual({ x: 64, y: 0, width: 160, height: 160 });
 });
 
 test("locked boundary resize preserves its captured ratio for inputs and corner drag", async ({
@@ -1179,8 +1217,10 @@ test("locked boundary resize preserves its captured ratio for inputs and corner 
   const southeastY = bounds.y + bounds.height / 2 + 96;
   await page.mouse.move(southeastX, southeastY);
   await page.mouse.down();
+  await page.keyboard.down("Control");
   await page.mouse.move(southeastX + 77, southeastY + 5, { steps: 6 });
   await page.mouse.up();
+  await page.keyboard.up("Control");
 
   const box = await page.evaluate(() => {
     const boundaryBox = (window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox;
@@ -1786,4 +1826,96 @@ test("mask-only canvas uses txt2img and omits the mask", async ({ page }) => {
   await expect.poll(() => requestBody).not.toBeNull();
   expect(requestBody?.generation_mode).toBe("txt2img");
   expect(requestBody).not.toHaveProperty("mask_image");
+});
+
+/** Fully opaque 1x1 black PNG, distinct from a freshly-created blank layer's
+ * transparent pixels -- stands in for a ControlNet preprocessor's output. */
+const FILTER_RESULT_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+test("Filter mode bakes a preprocessor result into a control layer, undoably, and Cancel leaves it untouched", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/controlnet/module_list", (route) =>
+    route.fulfill({ json: { module_list: ["lineart"] } }),
+  );
+  await page.route("**/ultra_paint/api/controlnet/detect", (route) =>
+    route.fulfill({ json: { image: FILTER_RESULT_PNG } }),
+  );
+  await openApp(page);
+  await addBlankLayer(page);
+
+  const controlLayerId = await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    const layer = hook?.layerStore.document.layers.find((candidate) => candidate.kind === "raster");
+    if (!app || !layer?.id) throw new Error("Blank raster layer is unavailable");
+    return app.convertLayerToControl(layer.id);
+  });
+
+  const originalDataUrl = await page.evaluate(
+    (id) =>
+      (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id) ??
+      null,
+    controlLayerId,
+  );
+  expect(originalDataUrl).not.toBeNull();
+
+  await page.locator(`[data-layer-id="${controlLayerId}"]`).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Filter...", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as TestWindow).__ultraPaintTest?.filterStore.active))
+    .toBe(true);
+
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Accept", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Accept", exact: true }).click();
+
+  await expect
+    .poll(() => page.evaluate(() => (window as TestWindow).__ultraPaintTest?.filterStore.active))
+    .toBe(false);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          (window as TestWindow).__ultraPaintTest
+            ?.getActiveUltraPaintApp()
+            ?.layerSourceDataURL(id) ?? null,
+        controlLayerId,
+      ),
+    )
+    .not.toBe(originalDataUrl);
+
+  await page.keyboard.press("Control+Z");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          (window as TestWindow).__ultraPaintTest
+            ?.getActiveUltraPaintApp()
+            ?.layerSourceDataURL(id) ?? null,
+        controlLayerId,
+      ),
+    )
+    .toBe(originalDataUrl);
+
+  // A second Preview -> Cancel round trip must leave the layer's pixels
+  // byte-for-byte unchanged (Cancel never touches the real layer).
+  await page.locator(`[data-layer-id="${controlLayerId}"]`).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Filter...", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Accept", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await expect
+    .poll(() => page.evaluate(() => (window as TestWindow).__ultraPaintTest?.filterStore.active))
+    .toBe(false);
+  const afterCancel = await page.evaluate(
+    (id) =>
+      (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id) ??
+      null,
+    controlLayerId,
+  );
+  expect(afterCancel).toBe(originalDataUrl);
 });

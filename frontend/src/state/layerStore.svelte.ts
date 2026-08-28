@@ -600,18 +600,12 @@ export class LayerStore {
         height: texture.height,
       },
       model: "None",
-      preprocessor: "None",
-      preprocessorResolution: -1,
-      preprocessorThresholdA: -1,
-      preprocessorThresholdB: -1,
       weight: 1,
       guidanceStart: 0,
       guidanceEnd: 1,
       controlMode: "balanced",
       pixelPerfect: false,
       resizeMode: "resize",
-      maskLayerId: null,
-      preview: null,
     };
 
     this._textures.set(id, texture);
@@ -623,26 +617,20 @@ export class LayerStore {
   }
 
   /**
-   * Patch a control layer's ControlNet settings (model, preprocessor,
-   * weight, guidance range, mode, mask reference...). Not undoable, same as
-   * {@link setMaskColor} -- these are cosmetic/config fields, not pixel or
-   * structural document state.
+   * Patch a control layer's ControlNet settings. Not undoable, same as
+   * {@link setMaskColor} -- these are config fields, not pixel or structural
+   * document state.
    */
   public setControlParams(
     id: LayerId,
     patch: Partial<{
       model: string;
-      preprocessor: string;
-      preprocessorResolution: number;
-      preprocessorThresholdA: number;
-      preprocessorThresholdB: number;
       weight: number;
       guidanceStart: number;
       guidanceEnd: number;
       controlMode: ControlMode;
       pixelPerfect: boolean;
       resizeMode: ControlResizeMode;
-      maskLayerId: LayerId | null;
     }>,
   ): void {
     const layer = this.getLayer(id);
@@ -651,11 +639,52 @@ export class LayerStore {
     this.emit();
   }
 
-  /** Cache (or clear) a control layer's on-canvas preprocessor preview. */
-  public setControlPreview(id: LayerId, preview: ImageRef | null): void {
+  /**
+   * Remove a single non-group layer for undo/redo of an "add-layer"
+   * mutation only. Unlike {@link removeLayer}, the texture is NOT destroyed
+   * (the caller -- UndoHistory -- keeps it alive to support redo) and no
+   * subtree is collected, since app operations that need this (merge,
+   * layer conversion, ...) only ever undo the single top-level layer they
+   * just created. Returns the removed layer, its texture (if any), and its
+   * former index within its sibling list so {@link restoreLayerForUndo} can
+   * put it back exactly where it was.
+   */
+  public extractLayerForUndo(
+    id: LayerId,
+  ): { layer: Layer; index: number; texture: RenderTexture | undefined } | undefined {
     const layer = this.getLayer(id);
-    if (!layer || layer.kind !== "control") return;
-    layer.preview = preview;
+    const siblings = this.getSiblingOrder(id);
+    if (!layer || !siblings) return undefined;
+
+    const index = siblings.indexOf(id);
+    if (index === -1) return undefined;
+
+    siblings.splice(index, 1);
+    this._document.layers = this._document.layers.filter((candidate) => candidate.id !== id);
+    const texture = this._textures.get(id);
+    this._textures.delete(id);
+
+    this._selectedLayerIds = this._selectedLayerIds.filter((selected) => selected !== id);
+    if (this._selectedLayerId === id) {
+      this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
+    }
+
+    this.emit();
+    return { layer, index, texture };
+  }
+
+  /** Reinsert a layer previously removed by {@link extractLayerForUndo}, at the same sibling index. */
+  public restoreLayerForUndo(
+    layer: Layer,
+    index: number,
+    texture: RenderTexture | undefined,
+  ): void {
+    if (texture) this._textures.set(layer.id, texture);
+    this._document.layers.push(layer);
+    const siblings = this.getSiblingOrder(layer.id);
+    if (siblings) {
+      siblings.splice(Math.max(0, Math.min(index, siblings.length)), 0, layer.id);
+    }
     this.emit();
   }
 

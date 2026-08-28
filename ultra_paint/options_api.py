@@ -12,12 +12,13 @@ gate), which is not guaranteed. This route always mounts, the same way
 `ultra_paint/generate_api.py`'s route does.
 
 Phase 3 (2026-08-24): also reports the loaded model's native resolution,
-video-model status, and Forge's configured resolution step, so the frontend's
+video-model status, and Ultra Paint's own resolution step, so the frontend's
 boundary-box "Auto" scale mode (`model_profile.native_resolution_for`,
-`resolution_step.resolution_step_for`) doesn't need to duplicate either the
-architecture table or the `res_step` setting lookup in TypeScript, and so the
-UI can warn about an unsupported (video) model before the developer ever
-clicks Generate rather than only finding out from a failed request.
+`resolution_step.resolution_step_for`) doesn't need to duplicate the
+architecture table in TypeScript, and so the UI can warn about an unsupported
+(video) model before the developer ever clicks Generate rather than only
+finding out from a failed request. `resolution_step` is a fixed constant, not
+read from Forge's `res_step` setting -- see `resolution_step.py`'s docstring.
 """
 
 import os

@@ -10,6 +10,49 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Codex repo audit — gaps found, roadmap additions — 2026-08-27
+
+A Codex pass (analysis only, no code changes) confirmed the architecture described
+in §4 and the current-status summary in §3 match the actual code, and flagged a
+few items not yet tracked anywhere in this document:
+
+- **Clean-clone bootstrap gap.** `/data/` is gitignored (`.gitignore:200`), which
+  covers both `data/tags.csv` (Phase 1 autocomplete's dataset, see entry above —
+  already documented there as "hand-written placeholder") and
+  `data/generation-settings.json` (Python-persisted panel state). A fresh clone
+  has neither: autocomplete silently has nothing to search, and settings
+  persistence starts from empty rather than missing. Not a bug in either
+  feature's own logic — just means first-run behavior on a clean clone hasn't
+  been exercised. Worth a one-line README/PLAN callout or a committed
+  `data/.gitkeep`-plus-placeholder rather than a code fix.
+- **No document (canvas/layers) save/load.** Generation *settings* persist
+  (§ Python-backed Generation-panel persistence, above) but the actual
+  document — layers, pixels, boundary box, masks — does not survive a reload;
+  confirmed intentional for Phase 1 (§4, "nothing is actually persisted/
+  serialized yet") but never revisited since. Distinct from and additive to
+  Phase 5 (§7): worth its own roadmap slot rather than folding into Phase 5's
+  transform/group/selection scope.
+- **Structural undo is pixel/lightweight-state only.** §3's Phase 2 note
+  already says this precisely ("bounded undo/redo for pixels plus lightweight
+  layer/document state changes") — flagging here only to confirm it's still
+  the case and worth widening once Phase 5's group/transform UI lands (more
+  structural operations to cover).
+- **Batches are pinned to one image.** `generation.py`'s `GEN_PARAM_DEFAULTS`
+  (§4) pins `batch_size`/`n_iter` to 1 — by design per that section, but means
+  there's no way to generate multiple variations from one Generate click other
+  than re-queuing manually through the frontend FIFO queue.
+- **Real Forge integration testing remains the standing gap.** §3's
+  "live-verified" note already says this in detail (no working Forge server
+  available in any session so far) — repeating here only because it's the
+  single biggest correctness risk across every phase's build-only
+  verification, not a new finding.
+
+Roadmap bullets added to §7 for the genuinely new items (document persistence);
+the rest are cross-referenced to existing phases/sections above rather than
+duplicated.
+
+---
+
 ## Prompt tag autocomplete — Phase 1 shipped, Phase 2-4 roadmap — 2026-08-27
 
 **Phase 1 (plain tag/alias matching): COMPLETE, live-verified.** The Prompt and
@@ -347,10 +390,11 @@ federation note immediately above. The real (non-stubbed) FastAPI/Forge generati
 path remains outside Playwright coverage.
 
 **Mask layer thumbnails: IMPLEMENTED (2026-08-27).** Mask layers now use the same
-GPU-generated pixel thumbnail path as raster layers. Their thumbnail border follows
-the mask display color, and the thumbnail itself is the display-color picker; the
-separate display-color row was removed. Focused Playwright coverage verifies the
-rendered PNG thumbnail and color-matched border.
+GPU-generated pixel thumbnail path as raster layers, solidly tinted with their
+display color (without the canvas's diagonal hatch pattern). Their thumbnail border
+follows the mask display color, and the thumbnail itself is the display-color
+picker; the separate display-color row was removed. Focused Playwright coverage
+verifies the rendered PNG thumbnail and color-matched border.
 
 **What "live-verified" means above:** Playwright's `webServer` runs the real Vite
 dev server and a real installed Chromium, and the brush/boundary-box tests do real
@@ -1171,6 +1215,11 @@ Generate in isolation (no other changes bundled) before moving on.
   logic, just no UI yet); interactive move/scale/rotate gizmos on the existing
   per-layer `Transform`; marquee/lasso selection; basic vector shapes (reserved
   `"shape"` `LayerKind`).
+- **Phase 6 — Document (canvas/layer) persistence.** Save/load the actual
+  document — layers, pixels, boundary box, mask layers — as a project file,
+  analogous to how `ultra_paint/settings_api.py` already persists the
+  generation-panel snapshot. Flagged by the 2026-08-27 Codex audit (above);
+  distinct from Phase 5's transform/selection scope.
 
 Each phase should get its own detailed task breakdown (like Phase 1's T1-T6) written
 into this document (or a dated section/subfile) when that phase actually starts —

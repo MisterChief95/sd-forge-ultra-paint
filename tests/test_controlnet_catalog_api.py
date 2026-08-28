@@ -67,12 +67,45 @@ def test_installed_catalog_endpoints(monkeypatch):
         api.ControlNetDetectRequest(
             module="canny",
             image=image_url,
-            resolution=512,
             threshold_a=1.5,
             threshold_b=2.5,
         )
     )
     assert response.image.startswith("data:image/png;base64,")
+
+
+def test_detect_always_runs_pixel_perfect(monkeypatch):
+    """The preprocessor's resolution is always the source image's own width
+    -- Forge's `resize_image_with_pad` scales the SHORTER edge to
+    `resolution`, so this keeps the detected map at the layer's own size
+    without a separate resolution input for the user to get wrong."""
+    captured = {}
+
+    def fake_preprocessor(image, **kwargs):
+        captured.update(kwargs)
+        return Image.fromarray(image)
+
+    fake_module = types.ModuleType("lib_controlnet")
+    fake_module.global_state = types.SimpleNamespace(
+        get_preprocessor=lambda module: fake_preprocessor
+    )
+    monkeypatch.setitem(sys.modules, "lib_controlnet", fake_module)
+    monkeypatch.delitem(
+        sys.modules, "ultra_paint.controlnet_catalog_api", raising=False
+    )
+    import ultra_paint.controlnet_catalog_api as api
+
+    image = Image.new("RGB", (3, 7), "blue")
+    api.detect_controlnet(
+        api.ControlNetDetectRequest(
+            module="canny",
+            image=api._encode_data_url(image),
+            threshold_a=1,
+            threshold_b=2,
+        )
+    )
+
+    assert captured["resolution"] == 3
 
 
 def test_missing_controlnet_degrades_gracefully(monkeypatch):
@@ -86,7 +119,6 @@ def test_missing_controlnet_degrades_gracefully(monkeypatch):
         api.ControlNetDetectRequest(
             module="canny",
             image="malformed",
-            resolution=512,
             threshold_a=1,
             threshold_b=2,
         )
@@ -102,7 +134,6 @@ def test_unknown_module_and_malformed_image_return_null(monkeypatch):
             api.ControlNetDetectRequest(
                 module="missing",
                 image="malformed",
-                resolution=512,
                 threshold_a=1,
                 threshold_b=2,
             )

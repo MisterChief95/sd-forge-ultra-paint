@@ -4,6 +4,8 @@
  * are notifications over the same $state object, never a second copy of state.
  */
 
+import type { BoundaryBox } from "./schema";
+
 /** Available paint-canvas tools. Only brush and eraser create stroke sessions. */
 export type PaintTool = "brush" | "eraser" | "eyedropper" | "boundary-box";
 
@@ -31,6 +33,8 @@ export interface PaintToolState {
   secondaryColor: string;
   /** Captured boundary-box width/height ratio, or null when unlocked. */
   boundaryAspectRatio: number | null;
+  /** In-progress drag/resize box, updated every pointermove; null when not dragging. */
+  liveBoundaryBox: BoundaryBox | null;
 }
 
 export type PaintToolListener = (state: Readonly<PaintToolState>) => void;
@@ -39,6 +43,7 @@ export type PaintToolUnsubscribe = () => void;
 const DEFAULT_STATE: PaintToolState = {
   activeTool: "brush",
   boundaryAspectRatio: null,
+  liveBoundaryBox: null,
   secondaryColor: "#000000",
   brush: {
     radius: 20,
@@ -78,6 +83,16 @@ export class PaintToolStore {
   /** Ratio captured when the boundary-box aspect lock was enabled. */
   public get boundaryAspectRatio(): number | null {
     return this._state.boundaryAspectRatio;
+  }
+
+  /** In-progress drag/resize box for real-time display; null when not dragging. */
+  public get liveBoundaryBox(): BoundaryBox | null {
+    return this._state.liveBoundaryBox;
+  }
+
+  public setLiveBoundaryBox(box: BoundaryBox | null): void {
+    this._state.liveBoundaryBox = box;
+    this.emit();
   }
 
   /** Convenience reactive getter for the secondary-color swatch. */

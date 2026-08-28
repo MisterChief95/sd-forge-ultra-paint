@@ -11,6 +11,7 @@ interface GenerationRuntimeState {
   current: number;
   total: number;
   progress: GenerationProgress | null;
+  resolutionStep: number | null;
 }
 
 const INITIAL_STATE: GenerationRuntimeState = {
@@ -20,6 +21,7 @@ const INITIAL_STATE: GenerationRuntimeState = {
   current: 0,
   total: 0,
   progress: null,
+  resolutionStep: null,
 };
 
 export class GenerationRuntimeStore {
@@ -49,6 +51,10 @@ export class GenerationRuntimeStore {
     return this._state.progress;
   }
 
+  public get resolutionStep(): number | null {
+    return this._state.resolutionStep;
+  }
+
   public get progressPercent(): number {
     const total = this._state.progress?.sampling_steps ?? 0;
     const current = this._state.progress?.sampling_step ?? 0;
@@ -75,6 +81,10 @@ export class GenerationRuntimeStore {
 
   public setProgress(value: GenerationProgress | null): void {
     this._state.progress = value;
+  }
+
+  public setResolutionStep(value: number | null): void {
+    this._state.resolutionStep = value;
   }
 
   public resetBatch(): void {

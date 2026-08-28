@@ -1,7 +1,8 @@
 """Unit tests for `ultra_paint.options_api` (Phase 3 additions: native_resolution
 /is_video_model/resolution_step fields, added so the frontend's boundary-box
-scale modes don't need to duplicate `model_profile.py`'s architecture table or
-`resolution_step.py`'s `res_step` lookup in TypeScript).
+scale modes don't need to duplicate `model_profile.py`'s architecture table in
+TypeScript). `resolution_step` is a fixed constant, deliberately independent
+of Forge's `res_step` setting -- see `resolution_step.py`'s docstring.
 """
 
 import sys
@@ -149,10 +150,12 @@ def test_resolution_step_defaults_to_64(fake_forge_modules):
     assert options.resolution_step == 64
 
 
-def test_resolution_step_reflects_configured_forge_setting(fake_forge_modules):
+def test_resolution_step_ignores_configured_forge_setting(fake_forge_modules):
+    # Ultra Paint deliberately does not let Forge's `res_step` setting
+    # influence its own Auto-scale target -- see resolution_step.py's docstring.
     options_api, fake_shared = fake_forge_modules
     fake_shared.opts = _FakeOpts(data={"res_step": 32})
 
     options = options_api.get_generation_options()
 
-    assert options.resolution_step == 32
+    assert options.resolution_step == 64

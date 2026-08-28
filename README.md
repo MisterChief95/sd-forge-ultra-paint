@@ -47,6 +47,28 @@ continuously-updated status and roadmap.
   with zoom-tiered spacing.
 - Generated images land back in the canvas as new layers, not a separate gallery.
 
+## Roadmap
+
+Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary box,
+Playwright e2e coverage) are complete. Phase 3 (masking/inpainting, auto-scale to
+native resolution) has substantially landed alongside generation-panel persistence,
+model/LoRA controls, the generation queue, and prompt-tag autocomplete (Phase 1 of
+that sub-feature; see `PLAN.md`). Ahead:
+
+- **Phase 4 — Multi-layer ControlNet**: assign any layer to a ControlNet unit slot.
+- **Phase 5 — Groups, transforms, selection, shape tools**: interactive gizmos,
+  marquee/lasso selection, basic vector shapes.
+- **Phase 6 — Document persistence**: save/load the actual canvas (layers, pixels,
+  boundary box, masks) as a project file, not just generation settings.
+- Known gaps: a clean clone has no `data/tags.csv` or `data/generation-settings.json`
+  (`/data/` is gitignored) so autocomplete and settings persistence start empty until
+  first configured; generations are pinned to one image per Generate click; no run
+  so far has exercised a real Forge server, so "build/typecheck-verified" work
+  throughout the project still awaits live confirmation.
+
+`PLAN.md` is the living, continuously-updated source of truth for status, phase
+task breakdowns, and architecture decisions — read it before making changes.
+
 ## Installation
 
 Drop this directory into `extensions/` of a `sd-webui-forge-classic` install, then

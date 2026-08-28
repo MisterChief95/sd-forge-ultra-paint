@@ -13,6 +13,7 @@ import { mount } from "svelte";
 import "./app.css";
 import App from "./App.svelte";
 import { getActiveUltraPaintApp } from "./app/UltraPaintApp";
+import { filterStore } from "./state/filterStore.svelte";
 import { layerStore } from "./state/layerStore.svelte";
 import { paintToolStore } from "./state/paintToolStore.svelte";
 
@@ -32,6 +33,7 @@ if (import.meta.env.DEV) {
     getActiveUltraPaintApp,
     layerStore,
     paintToolStore,
+    filterStore,
   };
 }
 

@@ -19,6 +19,7 @@ import type { Texture } from "pixi.js";
 
 import type { Layer, LayerId, LayerKind } from "../state/schema";
 import { toPixiBlendMode } from "../util/blendModes";
+import { ControlLayerDisplayFilter } from "./ControlLayerDisplayFilter";
 import { MaskHatchFilter } from "./MaskHatchFilter";
 
 export class LayerNode {
@@ -29,10 +30,18 @@ export class LayerNode {
 
   public readonly kind: LayerKind;
 
-  /** Present for paintable raster and mask layers. */
+  /** Present for paintable raster, mask, and control layers. */
   private sprite: Sprite | null = null;
 
+  private texture: Texture | null = null;
+
+  private previewOverride: Texture | null = null;
+
+  private lastLayer: Layer | null = null;
+
   private maskHatchFilter: MaskHatchFilter | null = null;
+
+  private controlDisplayFilter: ControlLayerDisplayFilter | null = null;
 
   private destroyed = false;
 
@@ -55,6 +64,7 @@ export class LayerNode {
           texture,
           label: `sprite:${layer.id}`,
         });
+        this.texture = texture;
         this.container.addChild(this.sprite);
         break;
       case "group":
@@ -77,38 +87,60 @@ export class LayerNode {
    */
   public update(layer: Layer): void {
     if (this.destroyed) return;
+    this.lastLayer = layer;
 
     const c = this.container;
 
     c.visible = layer.visible;
     c.alpha = layer.opacity;
-    c.blendMode = toPixiBlendMode(layer.blendMode);
+    c.blendMode = layer.kind === "control" ? "normal" : toPixiBlendMode(layer.blendMode);
 
     const t = layer.transform;
     c.position.set(t.x, t.y);
     c.scale.set(t.scaleX, t.scaleY);
     c.rotation = t.rotation;
 
+    if (this.previewOverride) return;
+    if (this.sprite && this.texture) this.sprite.texture = this.texture;
+    this.applyDisplayTreatment(layer);
+  }
+
+  private applyDisplayTreatment(layer: Layer): void {
+    const c = this.container;
     switch (layer.kind) {
       case "mask":
         if (!this.maskHatchFilter) {
           this.maskHatchFilter = new MaskHatchFilter(layer.color);
-          // Filter the owning container so temporary live-preview
-          // siblings inherit the same mask display treatment as the
-          // persistent sprite. The paint engines remain mask-agnostic.
-          c.filters = [this.maskHatchFilter];
         } else {
           this.maskHatchFilter.setColor(layer.color);
         }
+        // Filter the owning container so temporary live-preview siblings
+        // inherit the same mask display treatment as the persistent sprite.
+        // Reassign after a preview override temporarily cleared the list.
+        c.filters = [this.maskHatchFilter];
         break;
-      case "raster":
-      case "group":
       case "control":
         if (this.maskHatchFilter) {
-          c.filters = null;
           this.maskHatchFilter.destroy();
           this.maskHatchFilter = null;
         }
+        if (!this.controlDisplayFilter) {
+          this.controlDisplayFilter = new ControlLayerDisplayFilter();
+        }
+        c.blendMode = "normal";
+        c.filters = [this.controlDisplayFilter];
+        break;
+      case "raster":
+      case "group":
+        if (this.maskHatchFilter) {
+          this.maskHatchFilter.destroy();
+          this.maskHatchFilter = null;
+        }
+        if (this.controlDisplayFilter) {
+          this.controlDisplayFilter.destroy();
+          this.controlDisplayFilter = null;
+        }
+        c.filters = null;
         break;
       default: {
         const exhaustive: never = layer;
@@ -118,12 +150,26 @@ export class LayerNode {
   }
 
   /**
-   * Swap the texture of a raster layer (repaint, regenerate, upscale...).
+   * Swap the texture of a paintable layer (repaint, regenerate, upscale...).
    * No-op for groups.
    */
   public setTexture(texture: Texture): void {
     if (this.destroyed || !this.sprite) return;
-    this.sprite.texture = texture;
+    this.texture = texture;
+    if (!this.previewOverride) this.sprite.texture = texture;
+  }
+
+  /** Temporarily display an undecorated filter result without changing store-owned pixels. */
+  public setPreviewOverride(texture: Texture | null): void {
+    if (this.destroyed || !this.sprite) return;
+    this.previewOverride = texture;
+    if (texture) {
+      this.sprite.texture = texture;
+      this.container.filters = null;
+      return;
+    }
+    if (this.texture) this.sprite.texture = this.texture;
+    if (this.lastLayer) this.applyDisplayTreatment(this.lastLayer);
   }
 
   /**
@@ -142,6 +188,11 @@ export class LayerNode {
     this.container.filters = null;
     this.maskHatchFilter?.destroy();
     this.maskHatchFilter = null;
+    this.controlDisplayFilter?.destroy();
+    this.controlDisplayFilter = null;
+    this.previewOverride = null;
+    this.lastLayer = null;
+    this.texture = null;
     this.sprite?.destroy({ texture: false, textureSource: false });
     this.sprite = null;
     this.container.destroy({ children: false });

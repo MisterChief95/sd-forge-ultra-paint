@@ -44,8 +44,8 @@ export async function fetchControlModules(): Promise<string[]> {
 /**
  * `GET /controlnet/control_types` -- preprocessor/model tags (e.g. "Inpaint",
  * "Canny"), each pre-filtered to the models and modules that apply to it, plus
- * Forge's own suggested default pick. Use the "Inpaint" tag's `moduleList` to
- * populate the mask-consuming preprocessors for `ControlLayer.maskLayerId`.
+ * Forge's own suggested default pick. Used to populate the Filter tool's
+ * module picker.
  */
 export async function fetchControlTypes(): Promise<Record<string, ControlType>> {
   const body = await getJson(CONTROL_TYPES_URL);
@@ -67,16 +67,18 @@ export async function fetchControlTypes(): Promise<Record<string, ControlType>> 
 /**
  * `POST /ultra_paint/api/controlnet/detect` -- runs one preprocessor over one
  * image, without running generation. `imageDataUrl` is a
- * `data:image/...;base64,...` URL (e.g. from `Compositor.flattenToDataURL()`);
- * the response is the same shape, suitable for a `ControlLayer.preview`
- * thumbnail. Returns `null` on any failure (module unavailable, ControlNet not
- * installed, bad image) -- callers should treat a `null` preview as "couldn't
- * preview", not an error that blocks the rest of the layer's settings.
+ * `data:image/...;base64,...` URL (e.g. from `UltraPaintApp.layerSourceDataURL()`);
+ * the response is the same shape, used by the Filter tool's on-canvas
+ * preview. Always runs "pixel perfect" -- the backend derives the
+ * preprocessor's resolution from the source image itself, so the result
+ * always comes back at the same size as the layer being processed. Returns
+ * `null` on any failure (module unavailable, ControlNet not installed, bad
+ * image) -- callers should treat a `null` result as "couldn't preview", not
+ * an error.
  */
 export async function preprocessControlImage(
   module: string,
   imageDataUrl: string,
-  resolution = 512,
   thresholdA = 64,
   thresholdB = 64,
 ): Promise<string | null> {
@@ -87,7 +89,6 @@ export async function preprocessControlImage(
       body: JSON.stringify({
         module,
         image: imageDataUrl,
-        resolution,
         threshold_a: thresholdA,
         threshold_b: thresholdB,
       }),

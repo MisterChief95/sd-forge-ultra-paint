@@ -100,6 +100,7 @@
         : value.selectedModules;
       modelOptionsLoaded = true;
       resolutionStep = value.resolutionStep;
+      generationRuntimeStore.setResolutionStep(value.resolutionStep);
       isVideoModel = value.isVideoModel;
     },
   });
@@ -383,7 +384,6 @@
           autoBaseWidth={generationSettingsStore.autoBaseWidth}
           manualWidth={generationSettingsStore.manualWidth}
           manualHeight={generationSettingsStore.manualHeight}
-          {autoTargetResolution}
           onScaleModeChange={(value) => generationSettingsStore.setScaleMode(value)}
           onAutoBaseWidthChange={(value) => generationSettingsStore.setAutoBaseWidth(value)}
           onManualWidthChange={(value) => generationSettingsStore.setManualWidth(value)}

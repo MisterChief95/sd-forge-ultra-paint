@@ -26,6 +26,8 @@ interface BoundaryHandle {
 
 const HANDLE_VISUAL_SIZE_PX = 10;
 const HANDLE_HIT_RADIUS_PX = 10;
+const SNAP_NORMAL_PX = 32;
+const SNAP_FINE_PX = 8;
 
 export class BoundaryBoxOverlay {
   public readonly container = new Container({ label: "ultra-paint:boundary-box" });
@@ -140,8 +142,9 @@ export class BoundaryBoxOverlay {
     if (!active || active.pointerId !== event.pointerId) return;
 
     event.preventDefault();
-    this.liveBox = this.dragBox(active, this.toDocumentPoint(event));
+    this.liveBox = this.dragBox(active, this.toDocumentPoint(event), event.ctrlKey);
     this.redraw(this.liveBox);
+    this.toolStore.setLiveBoundaryBox(this.liveBox);
   };
 
   private readonly handlePointerEnd = (event: FederatedPointerEvent): void => {
@@ -164,6 +167,7 @@ export class BoundaryBoxOverlay {
     if (!this.active) return;
     this.active = null;
     this.store.setBoundaryBox(this.liveBox);
+    this.toolStore.setLiveBoundaryBox(null);
   }
 
   private refreshInteractivity(): void {
@@ -177,28 +181,30 @@ export class BoundaryBoxOverlay {
     return this.documentPoint;
   }
 
-  private dragBox(active: ActiveDrag, point: Point): BoundaryBox {
+  private dragBox(active: ActiveDrag, point: Point, fineSnap: boolean): BoundaryBox {
     const { mode, startBox, startPoint } = active;
     const dx = point.x - startPoint.x;
     const dy = point.y - startPoint.y;
     if (mode === "move") {
       return {
         ...startBox,
-        x: this.snap(startBox.x + dx),
-        y: this.snap(startBox.y + dy),
+        x: this.snap(startBox.x + dx, fineSnap),
+        y: this.snap(startBox.y + dy, fineSnap),
       };
     }
-    let left = this.snap(mode === "nw" || mode === "sw" ? startBox.x + dx : startBox.x);
-    let top = this.snap(mode === "nw" || mode === "ne" ? startBox.y + dy : startBox.y);
+    let left = this.snap(mode === "nw" || mode === "sw" ? startBox.x + dx : startBox.x, fineSnap);
+    let top = this.snap(mode === "nw" || mode === "ne" ? startBox.y + dy : startBox.y, fineSnap);
     let right = this.snap(
       mode === "ne" || mode === "se"
         ? startBox.x + startBox.width + dx
         : startBox.x + startBox.width,
+      fineSnap,
     );
     let bottom = this.snap(
       mode === "sw" || mode === "se"
         ? startBox.y + startBox.height + dy
         : startBox.y + startBox.height,
+      fineSnap,
     );
     if (mode === "nw" || mode === "sw") left = Math.min(left, right - 8);
     else right = Math.max(right, left + 8);
@@ -213,11 +219,11 @@ export class BoundaryBoxOverlay {
       const verticalChange = Math.abs(height / startBox.height - 1);
 
       if (horizontalChange >= verticalChange) {
-        const lockedHeight = Math.max(8, this.snap(width / lockedRatio));
+        const lockedHeight = Math.max(8, this.snap(width / lockedRatio, fineSnap));
         if (mode === "nw" || mode === "ne") top = bottom - lockedHeight;
         else bottom = top + lockedHeight;
       } else {
-        const lockedWidth = Math.max(8, this.snap(height * lockedRatio));
+        const lockedWidth = Math.max(8, this.snap(height * lockedRatio, fineSnap));
         if (mode === "nw" || mode === "sw") left = right - lockedWidth;
         else right = left + lockedWidth;
       }
@@ -285,7 +291,8 @@ export class BoundaryBoxOverlay {
     return Math.max(0.0001, this.documentRoot.parent?.scale.x ?? 1);
   }
 
-  private snap(value: number): number {
-    return Math.round(value / 8) * 8;
+  private snap(value: number, fine: boolean): number {
+    const grid = fine ? SNAP_FINE_PX : SNAP_NORMAL_PX;
+    return Math.round(value / grid) * grid;
   }
 }
