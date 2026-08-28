@@ -10,7 +10,7 @@ Ultra Paint is a work-in-progress extension that adds a layer-based painting tab
 similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces - 
 paint, mask and ControlNet layers - wired directly into Forge's existing generation pipelines.
 
-<img width="1814" height="992" alt="image" src="https://github.com/user-attachments/assets/11139467-5399-4195-97fa-cefef7738253" />
+<img width="1740" height="919" alt="image" src="https://github.com/user-attachments/assets/e564ad75-18ff-4c07-a8a9-4f6f83ea202b" />
 
 **Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
