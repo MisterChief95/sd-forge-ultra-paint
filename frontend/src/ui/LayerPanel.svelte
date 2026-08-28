@@ -3,6 +3,7 @@
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { layerStore } from "../state/layerStore.svelte";
+  import { previewStore } from "../state/previewStore.svelte";
   import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
   import Accordion from "./lib/Accordion.svelte";
@@ -55,6 +56,15 @@
       ? layerStore.getLayer(layerStore.selectedLayerIds[0]!)
       : undefined,
   );
+
+  /** True while an unapplied generation preview is on screen -- locks out
+   * layer-panel controls that could disturb the canvas/layer stack the
+   * preview is being compared against (see UltraPaintApp/GenerationPreviewOverlay). */
+  const isPreviewing = $derived(previewStore.selected !== null && previewStore.visible);
+
+  $effect(() => {
+    if (isPreviewing) contextMenuOpen = false;
+  });
 
   $effect(() => {
     const liveIds = new Set(layerStore.document.layers.map((layer) => layer.id));
@@ -221,6 +231,7 @@
     const single = selected.length === 1 ? selected[0] : undefined;
     const mergeable = accordionBucket(layer) === "layers" && selected.length > 1;
     const copyable = single !== undefined && single.kind !== "group";
+    const convertible = single !== undefined && single.kind === "raster" && !isPreviewing;
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
     contextMenuItems = [
@@ -229,9 +240,16 @@
         label: allVisible ? "Hide selected" : "Show selected",
         action: () =>
           selected.forEach((candidate) => layerStore.setVisible(candidate.id, !allVisible)),
+        disabled: isPreviewing,
       },
       ...(mergeable
-        ? [{ label: "Merge selected into new layer", action: () => mergeSelected(selected) }]
+        ? [
+            {
+              label: "Merge selected into new layer",
+              action: () => mergeSelected(selected),
+              disabled: isPreviewing,
+            },
+          ]
         : []),
       ...(copyable
         ? [
@@ -242,6 +260,12 @@
               action: () => void copyLayer(single),
               disabled: !clipboardSupported(),
             },
+          ]
+        : []),
+      ...(convertible
+        ? [
+            { label: "Convert to Mask Layer", action: () => convertLayerToMask(single) },
+            { label: "Convert to Control Layer", action: () => convertLayerToControl(single) },
           ]
         : []),
       {
@@ -265,6 +289,56 @@
       actionMessage = `Merged ${selected.length} layers into a new layer.`;
     } catch (error) {
       actionMessage = `Could not merge layers: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function mergeVisibleLayers(): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      app.mergeVisibleLayersToNewLayer();
+      actionMessage = "Merged visible layers into a new layer.";
+    } catch (error) {
+      actionMessage = `Could not merge visible layers: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function mergeVisibleMasks(): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      app.mergeVisibleMasksToNewMask();
+      actionMessage = "Merged visible masks into a new mask.";
+    } catch (error) {
+      actionMessage = `Could not merge visible masks: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function toggleMasksHidden(): void {
+    layerStore.setMasksHidden(!layerStore.masksHidden);
+  }
+
+  function convertLayerToMask(layer: Layer): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      const id = app.convertLayerToMask(layer.id);
+      layerStore.setSelectedLayerId(id);
+      masksOpen = true;
+    } catch (error) {
+      actionMessage = `Could not convert to a mask: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function convertLayerToControl(layer: Layer): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      const id = app.convertLayerToControl(layer.id);
+      layerStore.setSelectedLayerId(id);
+      controlsOpen = true;
+    } catch (error) {
+      actionMessage = `Could not convert to a control layer: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
@@ -484,10 +558,15 @@
       </div>
 
       <input
-        class="m-0 cursor-pointer accent-(--upaint-accent)"
+        class="m-0 cursor-pointer accent-(--upaint-accent) disabled:cursor-not-allowed disabled:opacity-50"
         type="checkbox"
         checked={layer.visible}
-        title={layer.visible ? "Hide layer" : "Show layer"}
+        disabled={isPreviewing}
+        title={isPreviewing
+          ? "Visibility is locked while previewing a generation"
+          : layer.visible
+            ? "Hide layer"
+            : "Show layer"}
         aria-label={`Toggle "${layer.name}" visible`}
         onchange={(event) =>
           layerStore.setVisible(layer.id, (event.currentTarget as HTMLInputElement).checked)}
@@ -650,8 +729,9 @@
     <Button
       variant="primary"
       size="sm"
-      title="Add a layer"
+      title={isPreviewing ? "Adding layers is disabled while previewing a generation" : "Add a layer"}
       aria-label="Add a layer"
+      disabled={isPreviewing}
       onclick={openAddMenu}
     >
       +
@@ -662,6 +742,7 @@
       type="file"
       accept="image/*"
       multiple
+      disabled={isPreviewing}
       onchange={(event) => void handleControlFiles(event)}
     />
     <input
@@ -670,6 +751,7 @@
       type="file"
       accept="image/*"
       multiple
+      disabled={isPreviewing}
       onchange={(event) => void handleFiles(event)}
     />
   </header>
@@ -722,6 +804,19 @@
         id="upaint-regular-layer-list"
         data-layer-section="layers"
       >
+        {#snippet headerActions()}
+          <Button
+            size="icon"
+            title={isPreviewing
+              ? "Merging is disabled while previewing a generation"
+              : "Merge visible layers into a new layer"}
+            aria-label="Merge visible layers into a new layer"
+            disabled={isPreviewing || regularLayers.filter((layer) => layer.visible).length < 2}
+            onclick={mergeVisibleLayers}
+          >
+            ⧉
+          </Button>
+        {/snippet}
         {@render layerRows(regularLayers)}
       </Accordion>
     {/if}
@@ -734,6 +829,61 @@
         id="upaint-mask-layer-list"
         data-layer-section="masks"
       >
+        {#snippet headerActions()}
+          <Button
+            size="icon"
+            title={isPreviewing
+              ? "Merging is disabled while previewing a generation"
+              : "Merge visible masks into a new mask"}
+            aria-label="Merge visible masks into a new mask"
+            disabled={isPreviewing || visibleMaskLayers.filter((layer) => layer.visible).length < 2}
+            onclick={mergeVisibleMasks}
+          >
+            ⧉
+          </Button>
+          <Button
+            size="icon"
+            pressed={layerStore.masksHidden}
+            title={layerStore.masksHidden
+              ? "Show masks on canvas (still active for generation)"
+              : "Hide masks from canvas (stays active for generation)"}
+            aria-label={layerStore.masksHidden ? "Show masks on canvas" : "Hide masks from canvas"}
+            onclick={toggleMasksHidden}
+          >
+            {#if layerStore.masksHidden}
+              <svg
+                class="mx-auto h-3.5 w-3.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z"
+                  stroke-linejoin="round"
+                />
+                <circle cx="8" cy="8" r="2" />
+                <path d="M2 2l12 12" stroke-linecap="round" />
+              </svg>
+            {:else}
+              <svg
+                class="mx-auto h-3.5 w-3.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z"
+                  stroke-linejoin="round"
+                />
+                <circle cx="8" cy="8" r="2" />
+              </svg>
+            {/if}
+          </Button>
+        {/snippet}
         {@render layerRows(visibleMaskLayers)}
       </Accordion>
     {/if}

@@ -1016,33 +1016,67 @@ export class UltraPaintApp {
     const { pixels, width, height } = app.renderer.extract.pixels({ target: texture });
     texture.destroy(true);
 
-    const coverage = new Uint8ClampedArray(pixels.length);
-    for (let i = 0; i < pixels.length; i += 4) {
-      const r = pixels[i] ?? 0;
-      const g = pixels[i + 1] ?? 0;
-      const b = pixels[i + 2] ?? 0;
-      const a = pixels[i + 3] ?? 255;
-      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-      coverage[i] = 255;
-      coverage[i + 1] = 255;
-      coverage[i + 2] = 255;
-      coverage[i + 3] = Math.round((luminance * a) / 255);
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("[ultra-paint] could not create a 2D canvas context");
-    }
-    ctx.putImageData(new ImageData(coverage, width, height), 0, 0);
-
+    const canvas = luminanceCoverageCanvas(pixels, width, height);
     const name = file instanceof File ? file.name : undefined;
     return this.store.addMaskLayerFromTexture(
       this.createPaintableTexture(Texture.from(canvas)),
       name,
     );
+  }
+
+  /**
+   * Copy an existing raster layer's pixels into a new mask layer via an
+   * alpha (luminance-as-coverage) conversion, same as {@link addMaskLayerFromFile}.
+   * The source layer is left untouched.
+   */
+  public convertLayerToMask(id: LayerId): LayerId {
+    const app = this.app;
+    const layer = this.store.getLayer(id);
+    const texture = this.store.getTexture(id);
+    if (!app || !layer || layer.kind !== "raster" || !texture) {
+      throw new Error("[ultra-paint] only a raster layer can be converted to a mask");
+    }
+
+    const { pixels, width, height } = app.renderer.extract.pixels({ target: texture });
+    const canvas = luminanceCoverageCanvas(pixels, width, height);
+    const converted = this.createPaintableTexture(Texture.from(canvas));
+    let adopted = false;
+    try {
+      const newId = this.store.addMaskLayerFromTexture(converted, `${layer.name} (Mask)`);
+      adopted = true;
+      this.store.setTransform(newId, layer.transform);
+      this.store.setSelectedLayerId(newId);
+      return newId;
+    } catch (error) {
+      if (!adopted) converted.destroy(true);
+      throw error;
+    }
+  }
+
+  /**
+   * Copy an existing raster layer's pixels as-is into a new control
+   * (ControlNet) layer. No pixel processing -- a preprocessor filter is
+   * applied later by the ControlNet panel. The source layer is left untouched.
+   */
+  public convertLayerToControl(id: LayerId): LayerId {
+    const layer = this.store.getLayer(id);
+    const texture = this.store.getTexture(id);
+    if (!layer || layer.kind !== "raster" || !texture) {
+      throw new Error("[ultra-paint] only a raster layer can be converted to a control layer");
+    }
+
+    const copy = this.cloneTexture(texture);
+    let adopted = false;
+    try {
+      const newId = this.store.addControlLayer(copy, `${layer.name} (Control)`);
+      adopted = true;
+      this.store.setTransform(newId, layer.transform);
+      this.store.setSelectedLayerId(newId);
+      return newId;
+    } catch (error) {
+      if (!adopted) copy.destroy(true);
+      throw error;
+    }
   }
 
   /**
@@ -1151,12 +1185,6 @@ export class UltraPaintApp {
 
   /** Rasterize selected top-level regular layers into a new document-space layer. */
   public mergeLayersToNewLayer(ids: readonly LayerId[]): LayerId {
-    const app = this.app;
-    const tree = this.tree;
-    if (!app || !tree) {
-      throw new Error("[ultra-paint] cannot merge layers before the app is ready");
-    }
-
     const doc = this.store.getDocument();
     const selected = [...new Set(ids)].filter((id) => {
       const layer = this.store.getLayer(id);
@@ -1166,40 +1194,96 @@ export class UltraPaintApp {
       throw new Error("Select at least two raster or group layers to merge");
     }
 
-    const selectedSet = new Set(selected);
-    const topIndex = Math.min(...selected.map((id) => doc.layerOrder.indexOf(id)));
-    const renderable = doc.layerOrder
-      .map((id) => {
-        const node = tree.getNode(id);
-        return node ? { node, value: node.container.renderable } : null;
-      })
-      .filter((entry) => entry !== null);
-
-    for (const entry of renderable) {
-      entry.node.container.renderable = selectedSet.has(entry.node.id);
-    }
-
-    let texture: RenderTexture;
-    try {
-      texture = Compositor.flattenToTexture(app, tree.root, doc.boundaryBox);
-    } finally {
-      for (const entry of renderable) entry.node.container.renderable = entry.value;
-    }
-
+    const texture = this.flattenSelectedToTexture(selected);
     let adopted = false;
     try {
       const id = this.store.addRasterLayer(texture, `Merged ${selected.length} layers`, "paint");
       adopted = true;
-      this.store.setTransform(id, {
-        x: doc.boundaryBox.x,
-        y: doc.boundaryBox.y,
-      });
-      this.store.reorderLayer(id, topIndex);
+      this.store.setTransform(id, { x: doc.boundaryBox.x, y: doc.boundaryBox.y });
+      this.store.reorderLayer(id, Math.min(...selected.map((sid) => doc.layerOrder.indexOf(sid))));
       this.store.setSelectedLayerId(id);
       return id;
     } catch (error) {
       if (!adopted) texture.destroy(true);
       throw error;
+    }
+  }
+
+  /** Merge every effectively visible top-level raster/group layer into one new raster layer. */
+  public mergeVisibleLayersToNewLayer(): LayerId {
+    const doc = this.store.getDocument();
+    const ids = doc.layers
+      .filter(
+        (layer) =>
+          layer.parentId === null &&
+          (layer.kind === "raster" || layer.kind === "group") &&
+          layer.visible,
+      )
+      .map((layer) => layer.id);
+    return this.mergeLayersToNewLayer(ids);
+  }
+
+  /** Merge every visible top-level mask layer into one new mask layer. */
+  public mergeVisibleMasksToNewMask(): LayerId {
+    const doc = this.store.getDocument();
+    const selected = doc.layers
+      .filter((layer) => layer.kind === "mask" && layer.parentId === null && layer.visible)
+      .map((layer) => layer.id);
+    if (selected.length < 2) {
+      throw new Error("Show at least two mask layers to merge");
+    }
+
+    const texture = this.flattenSelectedToTexture(selected);
+    let adopted = false;
+    try {
+      const id = this.store.addMaskLayerFromTexture(texture, `Merged ${selected.length} masks`);
+      adopted = true;
+      this.store.setTransform(id, { x: doc.boundaryBox.x, y: doc.boundaryBox.y });
+      this.store.reorderLayer(id, Math.min(...selected.map((sid) => doc.layerOrder.indexOf(sid))));
+      this.store.setSelectedLayerId(id);
+      return id;
+    } catch (error) {
+      if (!adopted) texture.destroy(true);
+      throw error;
+    }
+  }
+
+  /** Flatten just `ids` (temporarily hiding every other layer) into a fresh `RenderTexture`. */
+  private flattenSelectedToTexture(ids: readonly LayerId[]): RenderTexture {
+    const app = this.app;
+    const tree = this.tree;
+    if (!app || !tree) {
+      throw new Error("[ultra-paint] cannot merge layers before the app is ready");
+    }
+
+    const doc = this.store.getDocument();
+    const selectedSet = new Set(ids);
+    // Force both `renderable` and `visible` for the selected set: a mask can
+    // be document-visible but still forced off-screen by the "hide all
+    // masks" toggle or an active generation preview (GenerationPreviewOverlay
+    // sets container.visible directly), and Pixi skips rendering either way.
+    const saved = doc.layerOrder
+      .map((id) => {
+        const node = tree.getNode(id);
+        return node
+          ? { node, renderable: node.container.renderable, visible: node.container.visible }
+          : null;
+      })
+      .filter((entry) => entry !== null);
+
+    for (const entry of saved) {
+      const include = selectedSet.has(entry.node.id);
+      entry.node.container.renderable = include;
+      if (include) entry.node.container.visible = true;
+    }
+
+    try {
+      return Compositor.flattenToTexture(app, tree.root, doc.boundaryBox);
+    } finally {
+      for (const entry of saved) {
+        entry.node.container.renderable = entry.renderable;
+        entry.node.container.visible = entry.visible;
+      }
     }
   }
 
@@ -1431,6 +1515,31 @@ export class UltraPaintApp {
     this.app = null;
   }
 
+  /** Copy a live texture into a fresh, independent `RenderTexture`. Does not destroy `source`. */
+  private cloneTexture(source: RenderTexture): RenderTexture {
+    const renderer = this.app?.renderer;
+    if (!renderer) {
+      throw new Error("[ultra-paint] cannot clone a texture before the renderer is ready");
+    }
+
+    const copy = RenderTexture.create({
+      width: source.width,
+      height: source.height,
+      resolution: source.source.resolution,
+      antialias: source.source.antialias,
+    });
+    const sprite = new Sprite({ texture: source });
+    try {
+      renderer.render({ container: sprite, target: copy, clear: true, clearColor: [0, 0, 0, 0] });
+      return copy;
+    } catch (error) {
+      copy.destroy(true);
+      throw error;
+    } finally {
+      sprite.destroy({ texture: false, textureSource: false });
+    }
+  }
+
   /** Copy a decoded image into the paintable backing for a raster layer. */
   private createPaintableTexture(sourceTexture: Texture): RenderTexture {
     const renderer = this.app?.renderer;
@@ -1493,6 +1602,36 @@ async function decodeToTexture(blob: Blob): Promise<Texture> {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/** White RGB, alpha = luminance*alpha -- turns an opaque image into mask coverage. */
+function luminanceCoverageCanvas(
+  pixels: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+): HTMLCanvasElement {
+  const coverage = new Uint8ClampedArray(pixels.length);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const r = pixels[i] ?? 0;
+    const g = pixels[i + 1] ?? 0;
+    const b = pixels[i + 2] ?? 0;
+    const a = pixels[i + 3] ?? 255;
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    coverage[i] = 255;
+    coverage[i + 1] = 255;
+    coverage[i + 2] = 255;
+    coverage[i + 3] = Math.round((luminance * a) / 255);
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("[ultra-paint] could not create a 2D canvas context");
+  }
+  ctx.putImageData(new ImageData(coverage, width, height), 0, 0);
+  return canvas;
 }
 
 interface PendingPixelChange {

@@ -261,6 +261,13 @@ export class LayerStore {
   /** Bumped by {@link touchTexture} whenever a layer's pixels change in place, for thumbnail cache invalidation. */
   private _textureVersions = $state<Record<LayerId, number>>({});
 
+  /**
+   * Display-only "hide all masks" toggle. Independent of each mask's own
+   * `visible` flag: a mask hidden this way still participates in generation
+   * (see `Compositor.flattenMask`, which filters on `layer.visible` only).
+   */
+  private _masksHidden = $state(false);
+
   constructor(width = 1024, height = 1024) {
     this._document = createEmptyDocument(width, height);
   }
@@ -280,6 +287,18 @@ export class LayerStore {
   /** Reactive multi-selection getter for layer-panel consumers. */
   public get selectedLayerIds(): readonly LayerId[] {
     return this._selectedLayerIds;
+  }
+
+  /** Reactive getter for the "hide all masks" display toggle. */
+  public get masksHidden(): boolean {
+    return this._masksHidden;
+  }
+
+  /** Toggle whether masks are hidden from the canvas without deactivating them. */
+  public setMasksHidden(hidden: boolean): void {
+    if (this._masksHidden === hidden) return;
+    this._masksHidden = hidden;
+    this.emit();
   }
 
   /** Whether an effectively visible raster layer has positive-area BB overlap. */

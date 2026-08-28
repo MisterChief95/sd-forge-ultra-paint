@@ -1,8 +1,13 @@
 /**
  * Shows the currently selected, unapplied generation preview as a sprite
  * over the document, matching the boundary box. While a preview is shown,
- * the boundary box guide and mask layers are hidden so the viewer sees a
- * clean A/B comparison.
+ * the boundary box guide is hidden. As long as a preview is *selected*
+ * (whether currently shown or toggled off for an A/B look at the canvas),
+ * every mask/control layer stays hidden too -- each layer's own `visible`
+ * flag is left untouched and only restored once the preview is discarded
+ * or applied (see `setGuideLayersHidden`). This same pass also enforces the
+ * standalone "hide all masks" toggle (`LayerStore.masksHidden`), which
+ * stays in effect regardless of preview.
  */
 
 import { Container, Sprite, Texture } from "pixi.js";
@@ -46,7 +51,7 @@ export class GenerationPreviewOverlay {
     this.unsubscribeStore = null;
     this.unsubscribePreview?.();
     this.unsubscribePreview = null;
-    this.setMaskLayersHidden(false);
+    this.setGuideLayersHidden(false);
     this.boundaryBoxOverlay.container.visible = true;
     for (const texture of this.textureCache.values()) texture.destroy(true);
     this.textureCache.clear();
@@ -55,9 +60,13 @@ export class GenerationPreviewOverlay {
 
   private applyState(): void {
     const preview = previewStore.selected;
-    const active = preview !== null && previewStore.visible;
+    // Guide layers stay hidden for the whole review (toggling the preview
+    // off to compare against the canvas shouldn't pop masks back in) --
+    // only restored once the preview is discarded or applied.
+    const pending = preview !== null;
+    const active = pending && previewStore.visible;
 
-    this.setMaskLayersHidden(active);
+    this.setGuideLayersHidden(pending);
     this.boundaryBoxOverlay.container.visible = !active;
     this.evictStaleTextures();
 
@@ -87,11 +96,19 @@ export class GenerationPreviewOverlay {
     }
   }
 
-  private setMaskLayersHidden(hidden: boolean): void {
+  /** Force mask/control containers hidden while `previewPending` (a
+   * generation is selected for review, shown or not), or while
+   * `LayerStore.masksHidden` is set (masks only) -- without touching the
+   * layer's own `visible` flag, so it's restored exactly as it was once
+   * neither condition applies. */
+  private setGuideLayersHidden(previewPending: boolean): void {
     for (const layer of this.store.getDocument().layers) {
-      if (layer.kind !== "mask") continue;
+      if (layer.kind !== "mask" && layer.kind !== "control") continue;
       const node = this.tree.getNode(layer.id);
-      if (node) node.container.visible = hidden ? false : layer.visible;
+      if (!node) continue;
+      const forcedHidden =
+        previewPending || (layer.kind === "mask" && this.store.masksHidden);
+      node.container.visible = forcedHidden ? false : layer.visible;
     }
   }
 
