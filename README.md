@@ -4,16 +4,13 @@
   <img src="https://img.shields.io/badge/powered%20by-Codex-080808" alt="Powered by Codex" />
   &nbsp;&nbsp;
   <img src="https://img.shields.io/badge/powered%20by-Claude-da7756" alt="Powered by Claude" />
-  &nbsp;&nbsp;
-  <img src="https://img.shields.io/badge/powered%20by-Copilot-8534F3" alt="Powered by Copilot" />
 </p>
 
-Ultra Paint adds a layer-based painting tab to Forge Classic, similar to InvokeAI's
-canvas. It's a real GPU-accelerated multi-layer paint surface — paint, mask and
-reference layers composited with PixiJS v8 — wired directly into Forge's existing
-img2img/inpaint/ControlNet pipeline instead of round-tripping through separate tabs.
+Ultra Paint is a work-in-progress extension that adds a layer-based painting tab to Forge Neo,
+similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces - 
+paint, mask and ControlNet layers - wired directly into Forge's existing generation pipelines.
 
-<img width="1814" height="992" alt="image" src="https://github.com/user-attachments/assets/11139467-5399-4195-97fa-cefef7738253" />
+<img width="1740" height="919" alt="image" src="https://github.com/user-attachments/assets/e564ad75-18ff-4c07-a8a9-4f6f83ea202b" />
 
 **Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
@@ -33,19 +30,39 @@ continuously-updated status and roadmap.
   preview; flattened and sent to Forge's inpainting pipeline at generate time.
 - **Boundary box**: an interactive, draggable/resizable operating region (like
   InvokeAI's canvas bounds) that scopes Fill, Generate export, and new blank layers.
-- **Auto-scale to native resolution**: the boundary box can auto-scale to the loaded
-  model's recommended resolution (SD1/SDXL/Flux/etc., detected via
-  [`ultra_paint/model_profile.py`](ultra_paint/model_profile.py)) and respects
-  Forge's configured resolution step.
-- **Generation panel**: prompt/negative prompt, sampler/scheduler (pulled live from
-  Forge), steps/CFG/denoise, a frontend FIFO queue, in-button progress with a live
-  preview image, and current/remaining/all cancellation through Forge's interrupt
-  mechanism.
+- **Generation panel**: model and text encoder/VAE selection, prompt/negative prompt,
+  sampler/scheduler (pulled live from Forge), steps/CFG/denoise, a frontend FIFO queue,
+  in-button progress with a live preview image, and current/remaining/all cancellation
+  through Forge's interrupt mechanism.
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
   with zoom-tiered spacing.
-- Generated images land back in the canvas as new layers, not a separate gallery.
+
+## Roadmap (WIP)
+
+### Complete ✅
+
+- Brush engine with hardness and opacity
+- Pressure sensitivity-enabled Brush and Eraser
+- Layer masks
+- Inpainting
+    - Forge-native Soft Inpainting
+    - Coherence Pass
+- ControlNet Integration
+    - Layer-based
+    - Canvas-wide Inpaint ControlNets
+ 
+### In-Progress 🏗️
+
+- Tag autocompletion in prompt boxes
+- Tag weighting adjustment via keyboard
+
+### Planned ✏️
+
+- Pre-built single-page app bundle that gets installed on extension load
+- Outpainting with Lama/Patch match
+- Registering other extensions in Generation Options
 
 ## Roadmap
 
