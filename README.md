@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/powered%20by-Claude-da7756" alt="Powered by Claude" />
 </p>
 
-Ultra Paint is a work-in-progress extension that adds a layer-based painting tab to Forge Classic,
+Ultra Paint is a work-in-progress extension that adds a layer-based painting tab to Forge Neo,
 similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces - 
 paint, mask and ControlNet layers - wired directly into Forge's existing generation pipelines.
 
