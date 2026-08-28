@@ -215,6 +215,12 @@ export class UltraPaintApp {
       antialias: true,
       autoDensity: true,
       resolution: this.options.resolution ?? window.devicePixelRatio ?? 1,
+      eventFeatures: {
+        click: true,
+        move: true,
+        globalMove: true,
+        wheel: false,
+      },
       // REQUIRED for advanced blend modes (overlay / color-burn /
       // color-dodge / hard-light) on the WebGL renderer -- without it
       // they silently fall back to `normal`.
@@ -241,7 +247,6 @@ export class UltraPaintApp {
     this.world.addChild(this.tree.root);
 
     this.boundaryBoxOverlay = new BoundaryBoxOverlay(
-      app,
       app.canvas,
       this.tree.root,
       this.store,

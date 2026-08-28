@@ -21,6 +21,7 @@ export class PixelGrid {
     // sites remain source-compatible while the grid no longer depends on state.
     ..._unused: unknown[]
   ) {
+    this.container.eventMode = "none";
     this.container.addChild(this.lines);
     this.spacing = this.spacingForZoom();
     this.redraw(this.spacing);

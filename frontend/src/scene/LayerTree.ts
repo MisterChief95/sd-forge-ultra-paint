@@ -37,6 +37,7 @@ export class LayerTree {
   constructor(store: LayerStore) {
     this.store = store;
     this.root = new Container({ label: "ultra-paint:document-root" });
+    this.root.eventMode = "none";
 
     this.unsubscribe = store.subscribe((doc) => this.reconcile(doc));
     // Adopt whatever is already in the store (non-empty on re-mount).

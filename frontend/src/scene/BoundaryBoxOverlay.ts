@@ -1,13 +1,14 @@
 /** Interactive, unmasked operating-region guide drawn above document content. */
 
-import { Container, Graphics, Point } from "pixi.js";
-import type { Application } from "pixi.js";
+import { Circle, Container, Graphics, Point, Rectangle } from "pixi.js";
+import type { FederatedPointerEvent } from "pixi.js";
 
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
-import type { PaintToolStore } from "../state/paintToolStore.svelte";
+import type { PaintToolStore, PaintToolUnsubscribe } from "../state/paintToolStore.svelte";
 import type { BoundaryBox } from "../state/schema";
 
 type DragMode = "move" | "nw" | "ne" | "se" | "sw";
+type ResizeMode = Exclude<DragMode, "move">;
 
 interface ActiveDrag {
   pointerId: number;
@@ -16,138 +17,164 @@ interface ActiveDrag {
   startBox: BoundaryBox;
 }
 
+interface BoundaryHandle {
+  mode: ResizeMode;
+  container: Container;
+  visual: Graphics;
+  hitArea: Circle;
+}
+
+const HANDLE_VISUAL_SIZE_PX = 10;
+const HANDLE_HIT_RADIUS_PX = 10;
+
 export class BoundaryBoxOverlay {
   public readonly container = new Container({ label: "ultra-paint:boundary-box" });
 
+  private readonly body = new Container({ label: "ultra-paint:boundary-body" });
+  private readonly bodyHitArea = new Rectangle();
   private readonly border = new Graphics();
-  private readonly handles = new Graphics();
-  private readonly screenPoint = new Point();
+  private readonly handles: BoundaryHandle[];
   private readonly documentPoint = new Point();
-  private unsubscribe: Unsubscribe | null = null;
-  private canvas: HTMLCanvasElement | null = null;
+  private unsubscribeStore: Unsubscribe | null = null;
+  private unsubscribeTools: PaintToolUnsubscribe | null = null;
   private active: ActiveDrag | null = null;
   private liveBox: BoundaryBox;
   private lastScale = -1;
 
   public constructor(
-    private readonly app: Application,
     private readonly canvasElement: HTMLCanvasElement,
     private readonly documentRoot: Container,
     private readonly store: LayerStore,
     private readonly toolStore: PaintToolStore,
   ) {
     this.liveBox = { ...store.getDocument().boundaryBox };
-    this.container.addChild(this.border, this.handles);
+
+    this.body.eventMode = "static";
+    this.body.cursor = "move";
+    this.body.hitArea = this.bodyHitArea;
+    this.body.on("pointerdown", this.handleBodyPointerDown);
+
+    this.border.eventMode = "none";
+    this.handles = [
+      this.createHandle("nw", "nwse-resize"),
+      this.createHandle("ne", "nesw-resize"),
+      this.createHandle("se", "nwse-resize"),
+      this.createHandle("sw", "nesw-resize"),
+    ];
+
+    this.container.addChild(
+      this.body,
+      this.border,
+      ...this.handles.map((handle) => handle.container),
+    );
+    this.container.on("globalpointermove", this.handlePointerMove);
+    this.container.on("pointerup", this.handlePointerEnd);
+    this.container.on("pointerupoutside", this.handlePointerEnd);
+    this.container.on("pointercancel", this.handlePointerEnd);
     this.container.onRender = () => this.refreshZoom();
     this.redraw(this.liveBox);
-    this.unsubscribe = store.subscribe((doc) => {
+    this.refreshInteractivity();
+    this.unsubscribeStore = store.subscribe((doc) => {
       if (!this.active) {
         this.liveBox = { ...doc.boundaryBox };
         this.redraw(this.liveBox);
       }
     });
-    this.mount();
+    this.unsubscribeTools = toolStore.subscribe(() => this.refreshInteractivity());
+
+    // PixiJS 8.20 does not map native pointercancel into the federated event
+    // boundary, so keep this narrow lifecycle fallback for interrupted drags.
+    canvasElement.addEventListener("pointercancel", this.handleNativePointerCancel);
   }
 
   public destroy(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
-    const canvas = this.canvas;
-    if (canvas) {
-      canvas.removeEventListener("pointerdown", this.handlePointerDown);
-      canvas.removeEventListener("pointermove", this.handlePointerMove);
-      canvas.removeEventListener("pointerup", this.handlePointerEnd);
-      canvas.removeEventListener("pointercancel", this.handlePointerEnd);
-      canvas.removeEventListener("lostpointercapture", this.handlePointerEnd);
-    }
-    this.canvas = null;
+    this.unsubscribeStore?.();
+    this.unsubscribeStore = null;
+    this.unsubscribeTools?.();
+    this.unsubscribeTools = null;
+    this.canvasElement.removeEventListener("pointercancel", this.handleNativePointerCancel);
     this.active = null;
     this.container.onRender = null;
     this.container.destroy({ children: true });
   }
 
-  private mount(): void {
-    this.canvas = this.canvasElement;
-    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.addEventListener("pointermove", this.handlePointerMove);
-    this.canvas.addEventListener("pointerup", this.handlePointerEnd);
-    this.canvas.addEventListener("pointercancel", this.handlePointerEnd);
-    this.canvas.addEventListener("lostpointercapture", this.handlePointerEnd);
+  private createHandle(mode: ResizeMode, cursor: string): BoundaryHandle {
+    const hitArea = new Circle(0, 0, 1);
+    const visual = new Graphics();
+    visual.eventMode = "none";
+
+    const container = new Container({ label: `ultra-paint:boundary-handle:${mode}` });
+    container.eventMode = "static";
+    container.cursor = cursor;
+    container.hitArea = hitArea;
+    container.addChild(visual);
+    container.on("pointerdown", (event) => {
+      event.stopPropagation();
+      this.beginDrag(mode, event);
+    });
+
+    return { mode, container, visual, hitArea };
   }
 
-  private readonly handlePointerDown = (event: PointerEvent): void => {
+  private readonly handleBodyPointerDown = (event: FederatedPointerEvent): void => {
+    event.stopPropagation();
+    this.beginDrag("move", event);
+  };
+
+  private beginDrag(mode: DragMode, event: FederatedPointerEvent): void {
     if (event.button !== 0 || this.active) return;
     if (this.toolStore.activeTool !== "boundary-box") return;
-    const point = this.toDocumentPoint(event);
-    if (!point) return;
-    const mode = this.hitTest(point);
-    if (!mode) return;
 
-    event.stopImmediatePropagation();
     event.preventDefault();
+    const point = this.toDocumentPoint(event);
     this.active = {
       pointerId: event.pointerId,
       mode,
       startPoint: point.clone(),
       startBox: { ...this.liveBox },
     };
-    this.canvas?.setPointerCapture(event.pointerId);
-  };
+  }
 
-  private readonly handlePointerMove = (event: PointerEvent): void => {
+  private readonly handlePointerMove = (event: FederatedPointerEvent): void => {
     const active = this.active;
     if (!active || active.pointerId !== event.pointerId) return;
-    const point = this.toDocumentPoint(event);
-    if (!point) return;
-    event.stopImmediatePropagation();
+
     event.preventDefault();
-    this.liveBox = this.dragBox(active, point);
+    this.liveBox = this.dragBox(active, this.toDocumentPoint(event));
     this.redraw(this.liveBox);
   };
 
-  private readonly handlePointerEnd = (event: PointerEvent): void => {
+  private readonly handlePointerEnd = (event: FederatedPointerEvent): void => {
     const active = this.active;
     if (!active || active.pointerId !== event.pointerId) return;
-    event.stopImmediatePropagation();
+
     event.preventDefault();
-    this.active = null;
-    if (this.canvas?.hasPointerCapture(event.pointerId)) {
-      this.canvas.releasePointerCapture(event.pointerId);
-    }
-    this.store.setBoundaryBox(this.liveBox);
+    this.finishDrag();
   };
 
-  private toDocumentPoint(event: PointerEvent): Point | null {
-    const canvas = this.canvas;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    this.screenPoint.set(
-      ((event.clientX - rect.left) * this.app.screen.width) / rect.width,
-      ((event.clientY - rect.top) * this.app.screen.height) / rect.height,
-    );
-    this.documentRoot.toLocal(this.screenPoint, undefined, this.documentPoint);
-    return this.documentPoint;
+  private readonly handleNativePointerCancel = (event: PointerEvent): void => {
+    const active = this.active;
+    if (!active || active.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    this.finishDrag();
+  };
+
+  private finishDrag(): void {
+    if (!this.active) return;
+    this.active = null;
+    this.store.setBoundaryBox(this.liveBox);
   }
 
-  private hitTest(point: Point): DragMode | null {
-    const box = this.liveBox;
-    const radius = this.handleRadius();
-    const corners: Array<[DragMode, number, number]> = [
-      ["nw", box.x, box.y],
-      ["ne", box.x + box.width, box.y],
-      ["se", box.x + box.width, box.y + box.height],
-      ["sw", box.x, box.y + box.height],
-    ];
-    for (const [mode, x, y] of corners) {
-      if (Math.hypot(point.x - x, point.y - y) <= radius) return mode;
-    }
-    return point.x >= box.x &&
-      point.x <= box.x + box.width &&
-      point.y >= box.y &&
-      point.y <= box.y + box.height
-      ? "move"
-      : null;
+  private refreshInteractivity(): void {
+    const interactive = this.toolStore.activeTool === "boundary-box";
+    if (!interactive) this.finishDrag();
+    this.container.eventMode = interactive ? "static" : "none";
+  }
+
+  private toDocumentPoint(event: FederatedPointerEvent): Point {
+    this.documentRoot.toLocal(event.global, undefined, this.documentPoint);
+    return this.documentPoint;
   }
 
   private dragBox(active: ActiveDrag, point: Point): BoundaryBox {
@@ -204,25 +231,35 @@ export class BoundaryBoxOverlay {
   }
 
   private redraw(box: BoundaryBox): void {
-    const dash = 8 / this.worldScale();
+    const scale = this.worldScale();
+    const dash = 8 / scale;
     this.border.clear();
     this.dashedLine(box.x, box.y, box.x + box.width, box.y, dash);
     this.dashedLine(box.x + box.width, box.y, box.x + box.width, box.y + box.height, dash);
     this.dashedLine(box.x + box.width, box.y + box.height, box.x, box.y + box.height, dash);
     this.dashedLine(box.x, box.y + box.height, box.x, box.y, dash);
-    this.border.stroke({ width: 1 / this.worldScale(), color: 0x5b8def, alpha: 0.95 });
+    this.border.stroke({ width: 1 / scale, color: 0x5b8def, alpha: 0.95 });
 
-    const radius = this.handleRadius();
-    this.handles.clear();
-    const corners: Array<readonly [number, number]> = [
-      [box.x, box.y],
-      [box.x + box.width, box.y],
-      [box.x + box.width, box.y + box.height],
-      [box.x, box.y + box.height],
-    ];
-    for (const [x, y] of corners) {
-      this.handles
-        .rect(x - radius / 2, y - radius / 2, radius, radius)
+    this.bodyHitArea.x = box.x;
+    this.bodyHitArea.y = box.y;
+    this.bodyHitArea.width = box.width;
+    this.bodyHitArea.height = box.height;
+
+    const visualSize = HANDLE_VISUAL_SIZE_PX / scale;
+    const hitRadius = HANDLE_HIT_RADIUS_PX / scale;
+    const corners: Record<ResizeMode, readonly [number, number]> = {
+      nw: [box.x, box.y],
+      ne: [box.x + box.width, box.y],
+      se: [box.x + box.width, box.y + box.height],
+      sw: [box.x, box.y + box.height],
+    };
+    for (const handle of this.handles) {
+      const [x, y] = corners[handle.mode];
+      handle.container.position.set(x, y);
+      handle.hitArea.radius = hitRadius;
+      handle.visual
+        .clear()
+        .rect(-visualSize / 2, -visualSize / 2, visualSize, visualSize)
         .fill({ color: 0x5b8def, alpha: 1 });
     }
   }
@@ -246,10 +283,6 @@ export class BoundaryBoxOverlay {
 
   private worldScale(): number {
     return Math.max(0.0001, this.documentRoot.parent?.scale.x ?? 1);
-  }
-
-  private handleRadius(): number {
-    return 10 / this.worldScale();
   }
 
   private snap(value: number): number {

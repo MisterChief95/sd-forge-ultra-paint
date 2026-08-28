@@ -99,6 +99,14 @@ export class GenerationPreviewOverlay {
     const live = new Set(previewStore.previews.map((preview) => preview.id));
     for (const [id, texture] of this.textureCache) {
       if (live.has(id)) continue;
+      // The sprite can still be pointing at this texture (e.g. right after
+      // `discardAll()` clears every preview while this one was on screen).
+      // Destroying it out from under the sprite leaves `sprite.texture`
+      // referencing a Texture whose `.source` is now null -- the next
+      // render throws mid-frame and permanently stalls Pixi's ticker,
+      // since it only reschedules the next `requestAnimationFrame` after
+      // a clean `update()` (see Ticker._tick).
+      if (this.sprite.texture === texture) this.sprite.texture = Texture.EMPTY;
       texture.destroy(true);
       this.textureCache.delete(id);
     }
