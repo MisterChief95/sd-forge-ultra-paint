@@ -25,6 +25,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/ultra_paint/api": BACKEND_ORIGIN,
+      "/ultra_paint/data": BACKEND_ORIGIN,
     },
   },
   build: {

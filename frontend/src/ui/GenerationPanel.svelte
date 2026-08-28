@@ -2,7 +2,9 @@
   import { onDestroy, onMount } from "svelte";
 
   import { generationSettingsStore } from "../state/generationSettingsStore.svelte";
+  import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
+  import { toastStore } from "../state/toastStore.svelte";
   import { registerGenerationActions } from "../input/actionMap";
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
@@ -18,7 +20,6 @@
     fetchPersistedGenerationSettings,
     persistGenerationSettings,
     type GenerationOptions,
-    type ProgressResponse,
   } from "./generation/generationApi";
   import { buildLoraPrompt, type SelectedLora } from "./generation/lora";
 
@@ -40,12 +41,6 @@
   let steps = $state(20);
   let cfgScale = $state(7);
   let denoisingStrength = $state(0.75);
-  let generating = $state(false);
-  let saving = $state(false);
-  let interrupting = $state(false);
-  let errorMessage = $state<string | null>(null);
-  let saveMessage = $state<string | null>(null);
-  let progress = $state<ProgressResponse | null>(null);
   let selectedLoras = $state<SelectedLora[]>([]);
   let persistenceReady = $state(false);
   let restoredPersistedSettings = false;
@@ -54,13 +49,6 @@
   let saveInFlight = false;
 
   const enabledLoraCount = $derived(selectedLoras.filter((lora) => lora.enabled).length);
-
-  const progressPercent = $derived.by(() => {
-    const total = progress?.sampling_steps ?? 0;
-    const current = progress?.sampling_step ?? 0;
-    if (total <= 0) return 0;
-    return Math.max(0, Math.min(100, Math.round((current / total) * 100)));
-  });
 
   const autoTargetResolution = $derived.by((): Resolution | null => {
     if (resolutionStep === null) return null;
@@ -95,32 +83,8 @@
   });
 
   const controller = createGenerationController({
-    get generating() {
-      return generating;
-    },
-    get saving() {
-      return saving;
-    },
-    get interrupting() {
-      return interrupting;
-    },
-    setGenerating(value) {
-      generating = value;
-    },
-    setSaving(value) {
-      saving = value;
-    },
-    setInterrupting(value) {
-      interrupting = value;
-    },
-    setErrorMessage(value) {
-      errorMessage = value;
-    },
-    setSaveMessage(value) {
-      saveMessage = value;
-    },
-    setProgress(value) {
-      progress = value;
+    notify(kind, message) {
+      toastStore[kind](message);
     },
     setOptions(value: GenerationOptions) {
       samplers = value.samplers;
@@ -143,9 +107,12 @@
   onMount(() => {
     void initialiseSettings();
     return registerGenerationActions({
-      isGenerating: () => generating,
+      isGenerating: () => generationRuntimeStore.generating,
       generate,
-      cancel: () => void controller.cancelGeneration(),
+      save: () => void controller.saveImage(),
+      cancelCurrent: () => void controller.cancelCurrent(),
+      cancelRemaining: () => controller.cancelRemaining(),
+      cancelAll: () => void controller.cancelAll(),
     });
   });
 
@@ -384,16 +351,16 @@
   {/if}
 
   <GenerationActionsAndStatus
-    {generating}
-    {saving}
-    {interrupting}
-    {progress}
-    {progressPercent}
-    {saveMessage}
-    {errorMessage}
+    generating={generationRuntimeStore.generating}
+    interrupting={generationRuntimeStore.interrupting}
+    current={generationRuntimeStore.current}
+    total={generationRuntimeStore.total}
+    progress={generationRuntimeStore.progress}
+    progressPercent={generationRuntimeStore.progressPercent}
     onGenerate={generate}
-    onSave={() => void controller.saveImage()}
-    onCancel={() => void controller.cancelGeneration()}
+    onCancelCurrent={() => void controller.cancelCurrent()}
+    onCancelRemaining={() => controller.cancelRemaining()}
+    onCancelAll={() => void controller.cancelAll()}
   />
 
   <p class="m-0 text-(--upaint-text-muted)" role="status">

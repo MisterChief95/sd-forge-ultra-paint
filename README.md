@@ -38,8 +38,9 @@ continuously-updated status and roadmap.
   [`ultra_paint/model_profile.py`](ultra_paint/model_profile.py)) and respects
   Forge's configured resolution step.
 - **Generation panel**: prompt/negative prompt, sampler/scheduler (pulled live from
-  Forge), steps/CFG/denoise, progress polling with a live preview image, and a
-  cancel button that hits Forge's interrupt mechanism.
+  Forge), steps/CFG/denoise, a frontend FIFO queue, in-button progress with a live
+  preview image, and current/remaining/all cancellation through Forge's interrupt
+  mechanism.
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle

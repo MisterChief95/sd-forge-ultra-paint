@@ -29,6 +29,7 @@
   import LayerPanel from "./ui/LayerPanel.svelte";
   import PaintToolbar from "./ui/PaintToolbar.svelte";
   import PasteMenu, { type PasteLayerKind } from "./ui/PasteMenu.svelte";
+  import ToastViewport from "./ui/ToastViewport.svelte";
   import ViewportControls from "./ui/ViewportControls.svelte";
 
   let ultraPaintApp: UltraPaintApp | null = null;
@@ -185,3 +186,5 @@
     <LayerPanel />
   </aside>
 </div>
+
+<ToastViewport />

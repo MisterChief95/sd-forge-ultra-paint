@@ -10,6 +10,97 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Prompt tag autocomplete — Phase 1 shipped, Phase 2-4 roadmap — 2026-08-27
+
+**Phase 1 (plain tag/alias matching): COMPLETE, live-verified.** The Prompt and
+Negative prompt textareas in `PromptFields.svelte` now autocomplete against a
+TAC-format (`sd-webui-tagcomplete-neo`-compatible) CSV: `name,category,count,
+"alias1,alias2"`. Ultra Paint runs in its own iframe document, separate from the
+Gradio page tagcomplete-neo attaches to, so this is a small self-contained
+reimplementation using our own data file rather than reaching across the iframe
+boundary into that extension's internals.
+
+`scripts/ultra_paint_api.py` mounts `data/` at `/ultra_paint/data` (same
+`StaticFiles` pattern already used for `frontend/dist/`); `data/tags.csv` ships a
+small hand-written placeholder (not a scraped dataset — drop in a real TAC tag
+file such as `danbooru.csv` for the full list).
+`frontend/src/ui/generation/tagAutocomplete.ts` lazily fetches and parses the CSV
+once, builds a 3-char-prefix index (chunked with a `setTimeout(0)` yield every
+5000 rows so a large dropped-in CSV doesn't block the UI thread), and searches
+by name/alias substring sorted by count.
+`frontend/src/ui/generation/TagAutocompleteDropdown.svelte` renders results,
+styled like `ui/lib/ContextMenu.svelte`. `PromptFields.svelte` wires both
+textareas independently (separate open/selected/debounce state per field, 150ms
+debounce), with arrow-key navigation, Enter/Tab/click to insert, and Escape/blur
+to close. `frontend/vite.config.ts`'s dev proxy now also covers
+`/ultra_paint/data`.
+
+Verified live against a running webui (browser-driven, not just build/typecheck):
+dropdown opens within the debounce window and doesn't block typing, matches are
+count-sorted, arrow keys/Enter/Tab/click all insert correctly with the current
+comma-segment replaced and the rest of the prompt untouched, Escape and blur
+close it, and the two textareas' dropdown state don't bleed into each other.
+
+**Explicitly deferred (not built in Phase 1):**
+- **Phase 2 — category color-coding, weight-syntax awareness (`(tag:1.2)`),
+  refined comma/space insertion edge cases.** Pure frontend, no new data source;
+  natural next step once Phase 1 has seen real use.
+- **Phase 3 — wildcards, embeddings, LoRA/LyCO keyword insertion, frequency-based
+  usage sorting, live translation.** Each needs its own data source (wildcard
+  files, embedding/LoRA catalogs already partly available via
+  `ultra_paint/lora_api.py`, a usage-count store) — scope one at a time rather
+  than as a single block; frequency sort in particular needs a small persistence
+  layer analogous to `settings_api.py`'s pattern.
+- **Phase 4 — user-configurable tag file.** A settings-panel control to point at
+  a different CSV path (or upload one) instead of requiring users to overwrite
+  `data/tags.csv` by hand; natural pairing with the existing generation-settings
+  persistence (`ultra_paint/settings_api.py`).
+
+Files changed: `scripts/ultra_paint_api.py`, `data/tags.csv` (new),
+`frontend/src/ui/generation/tagAutocomplete.ts` (new),
+`frontend/src/ui/generation/TagAutocompleteDropdown.svelte` (new),
+`frontend/src/ui/generation/PromptFields.svelte`, `frontend/vite.config.ts`.
+
+---
+
+## Frontend generation queue, in-button progress, toolbar Save, and toasts — 2026-08-27
+
+Generation now uses a frontend-owned FIFO queue while continuing to send exactly
+one request at a time through Forge's existing `/ultra_paint/api/generate` route.
+Every Generate click snapshots the composite, mask, visible ControlNet inputs,
+seed behavior, and all generation parameters before enqueueing, so later canvas or
+control changes do not mutate waiting jobs. Failures surface as toast notifications
+and do not stop later jobs. Cancel Current interrupts the active request and
+continues, Cancel Remaining drops only waiting jobs, and Cancel All combines both.
+Intentional interruption errors are suppressed.
+
+The Generate button remains clickable while active and reads
+`Generating… (current/total)`. Its background fill is the current Forge sampling
+progress; the separate progress bar, job text, and step counter are removed. A
+compact hover/focus/click queue menu appears beside it while active. The live preview
+image remains. Ctrl/Cmd+Enter now enqueues during an active run and Escape cancels
+only the current generation.
+
+The Boundary Box tool moved beside Eyedropper with a divider. Save moved from the
+Generation panel to a disk-icon button at the toolbar's far right. A shared,
+dependency-free toast viewport now handles generation/queue/save information,
+successes, and errors with keyed, bounded, dismissible notifications and appropriate
+live-region priority. Persistent control-specific warnings remain inline.
+
+Files added/changed for this work include
+`frontend/src/state/generationRuntimeStore.svelte.ts`,
+`frontend/src/state/toastStore.svelte.ts`, `frontend/src/ui/ToastViewport.svelte`,
+`frontend/src/ui/generation/generationController.svelte.ts`,
+`frontend/src/ui/generation/GenerationActionsAndStatus.svelte`,
+`frontend/src/ui/GenerationPanel.svelte`, `frontend/src/ui/PaintToolbar.svelte`,
+`frontend/src/input/actionMap.ts`, `frontend/src/App.svelte`, and focused Playwright
+coverage. Svelte autofix reports no actionable issues on the changed components;
+`npm run lint`, `npm run typecheck`, `npm run build`, and the full Chromium suite
+(37/37) pass. Validation is frontend/browser-only; no live Forge/GPU generation was
+run, and no backend code changed.
+
+---
+
 ## Python-backed Generation-panel persistence — 2026-08-27
 
 Generation-panel user choices now survive iframe/tab/window reloads and Forge

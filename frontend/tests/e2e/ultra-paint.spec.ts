@@ -1329,9 +1329,7 @@ test("generation panel settings survive a page reload", async ({ page }) => {
     if (!hook) throw new Error("Ultra Paint test hook is unavailable");
     hook.layerStore.setBoundaryBox({ x: 64, y: 80, width: 320, height: 192 });
   });
-  await expect
-    .poll(() => persisted.value.prompt)
-    .toBe("persistent prompt");
+  await expect.poll(() => persisted.value.prompt).toBe("persistent prompt");
 
   await page.reload();
   await page.waitForFunction(() =>
@@ -1578,14 +1576,11 @@ test("video-model options show an inline generation warning", async ({ page }) =
   );
 });
 
-test("cancel button interrupts generation without resizing the Generate button", async ({
+test("generation progress fills the active button and Save lives in the toolbar", async ({
   page,
 }) => {
-  let interrupted = false;
   let releaseGenerate: (() => void) | null = null;
-  const generateGate = new Promise<void>((resolve) => {
-    releaseGenerate = resolve;
-  });
+  let savedImage: string | null = null;
 
   await routeOptions(page);
   await page.route("**/ultra_paint/api/progress", (route) =>
@@ -1593,41 +1588,156 @@ test("cancel button interrupts generation without resizing the Generate button",
       json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 4 },
     }),
   );
-  await page.route("**/ultra_paint/api/interrupt", async (route) => {
-    interrupted = true;
-    await route.fulfill({ json: { interrupted: true } });
-    releaseGenerate?.();
-  });
   await page.route("**/ultra_paint/api/generate", async (route) => {
-    await generateGate;
+    await new Promise<void>((resolve) => {
+      releaseGenerate = resolve;
+    });
     await route.fulfill({ json: { images: [] } });
+  });
+  await page.route("**/ultra_paint/api/interrupt", async (route) => {
+    releaseGenerate?.();
+    await route.fulfill({ json: { interrupted: true } });
+  });
+  await page.route("**/ultra_paint/api/save", async (route) => {
+    savedImage = (route.request().postDataJSON() as { image?: string }).image ?? null;
+    await route.fulfill({ json: { path: "outputs/ultra-paint-test.png" } });
   });
   await openApp(page);
 
-  // Matches both "Generate" (idle) and "Generating…" (active) -- the
-  // button's own accessible name/text changes while a request is in
-  // flight, so an exact "Generate" match would stop resolving mid-test.
-  const generateButton = page.getByRole("button", { name: /^Generat/ });
+  const generateButton = page.getByRole("button", { name: "Generate", exact: true });
   const idleBox = await generateButton.boundingBox();
   expect(idleBox).not.toBeNull();
-
   await generateButton.click();
-  const cancelButton = page.getByRole("button", { name: "Cancel generation" });
-  await expect(cancelButton).toBeVisible();
 
-  const generatingBox = await generateButton.boundingBox();
-  expect(generatingBox).not.toBeNull();
-  // The X button appearing must not resize Generate -- it always occupies
-  // its row slot (toggled via visibility, not conditional rendering).
-  expect(generatingBox?.width).toBeCloseTo(idleBox?.width ?? -1, 0);
+  const activeButton = page.getByRole("button", { name: /Generating 1 of 1, 25% complete/ });
+  await expect(activeButton).toBeVisible();
+  await expect(activeButton).toContainText("Generating… (1/1)");
+  await expect(activeButton.locator('span[aria-hidden="true"]')).toHaveCSS("width", /[1-9]/);
+  await expect(page.getByRole("button", { name: "Generation queue actions" })).toBeVisible();
+  expect((await activeButton.boundingBox())?.width).toBeLessThan(idleBox?.width ?? 0);
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
 
-  await cancelButton.click();
-  await expect.poll(() => interrupted).toBe(true);
-  await expect(cancelButton).not.toBeVisible();
-  await expect(generateButton).toBeEnabled();
+  await page.getByRole("button", { name: "Generation queue actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Cancel Current" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Cancel Remaining" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Cancel All" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Cancel Current" }).click();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
 
-  const settledBox = await generateButton.boundingBox();
-  expect(settledBox?.width).toBeCloseTo(idleBox?.width ?? -1, 0);
+  const toolbar = page.getByRole("toolbar", { name: "Painting tools" });
+  const saveButton = toolbar.getByRole("button", { name: "Save canvas" });
+  await expect(saveButton).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save canvas" })).toHaveCount(1);
+  await saveButton.click();
+  await expect.poll(() => savedImage).toMatch(/^data:image\/png;base64,/);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved to outputs/ultra-paint-test.png" }),
+  ).toBeVisible();
+});
+
+test("queued generations capture prompts sequentially and Cancel Current continues", async ({
+  page,
+}) => {
+  const prompts: string[] = [];
+  const releases: Array<() => void> = [];
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+  let interrupts = 0;
+
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 4 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    const body = route.request().postDataJSON() as { gen_params?: { prompt?: string } };
+    prompts.push(body.gen_params?.prompt ?? "");
+    activeRequests += 1;
+    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    activeRequests -= 1;
+    await route.fulfill({ json: { images: [] } });
+  });
+  await page.route("**/ultra_paint/api/interrupt", async (route) => {
+    interrupts += 1;
+    releases.shift()?.();
+    await route.fulfill({ json: { interrupted: true } });
+  });
+  await openApp(page);
+
+  const prompt = page.getByPlaceholder("Describe what to generate");
+  await prompt.fill("first queued prompt");
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(() => prompts).toEqual(["first queued prompt"]);
+
+  await prompt.fill("second queued prompt");
+  await page.getByRole("button", { name: /^Generating/ }).click();
+  await expect(page.getByRole("button", { name: /Generating 1 of 2/ })).toBeVisible();
+  await page.getByRole("button", { name: "Generation queue actions" }).click();
+  await page.getByRole("menuitem", { name: "Cancel Current" }).click();
+
+  await expect.poll(() => prompts).toEqual(["first queued prompt", "second queued prompt"]);
+  await expect(page.getByRole("button", { name: /Generating 2 of 2/ })).toBeVisible();
+  expect(interrupts).toBe(1);
+  expect(maxActiveRequests).toBe(1);
+  releases.shift()?.();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
+});
+
+test("Cancel Remaining preserves the active job and Cancel All clears and interrupts", async ({
+  page,
+}) => {
+  let requests = 0;
+  let interrupts = 0;
+  let releaseCurrent: (() => void) | null = null;
+
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 4 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    requests += 1;
+    await new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    await route.fulfill({ json: { images: [] } });
+  });
+  await page.route("**/ultra_paint/api/interrupt", async (route) => {
+    interrupts += 1;
+    releaseCurrent?.();
+    await route.fulfill({ json: { interrupted: true } });
+  });
+  await openApp(page);
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(() => requests).toBe(1);
+  await page.getByRole("button", { name: /^Generating/ }).click();
+  await page.getByRole("button", { name: /^Generating/ }).click();
+  await expect(page.getByRole("button", { name: /Generating 1 of 3/ })).toBeVisible();
+  await page.getByRole("button", { name: "Generation queue actions" }).click();
+  await page.getByRole("menuitem", { name: "Cancel Remaining" }).click();
+  await expect(page.getByRole("button", { name: /Generating 1 of 1/ })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Removed 2 queued generations." }),
+  ).toBeVisible();
+  expect(interrupts).toBe(0);
+  releaseCurrent?.();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
+  expect(requests).toBe(1);
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(() => requests).toBe(2);
+  await page.getByRole("button", { name: /^Generating/ }).click();
+  await page.getByRole("button", { name: /^Generating/ }).click();
+  await page.getByRole("button", { name: "Generation queue actions" }).click();
+  await page.getByRole("menuitem", { name: "Cancel All" }).click();
+  await expect.poll(() => interrupts).toBe(1);
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Removed 2 queued generations; cancelling the current generation." }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
+  expect(requests).toBe(2);
 });
 
 test("generate includes mask_image when a visible mask is present", async ({ page }) => {

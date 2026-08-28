@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from gradio import Blocks
 
 from modules import script_callbacks, shared
-from ultra_paint.config import FRONTEND_DIST_DIR
+from ultra_paint.config import DATA_DIR, FRONTEND_DIST_DIR
 
 PROGRESS_ROUTE = "/ultra_paint/api/progress"
 
@@ -46,6 +46,13 @@ def on_app_started(_demo: Blocks | None, app: FastAPI) -> None:
         "/ultra_paint/app",
         StaticFiles(directory=FRONTEND_DIST_DIR, html=True, check_dir=False),
         name="ultra_paint_app",
+    )
+    # Serves data/tags.csv (and any other static data files) for the prompt
+    # autocomplete feature to fetch directly from the iframe.
+    app.mount(
+        "/ultra_paint/data",
+        StaticFiles(directory=DATA_DIR, check_dir=False),
+        name="ultra_paint_data",
     )
 
 

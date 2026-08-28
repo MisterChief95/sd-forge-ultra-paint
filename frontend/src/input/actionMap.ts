@@ -35,7 +35,10 @@ export interface InputAction {
 interface GenerationActions {
   isGenerating(): boolean;
   generate(): void;
-  cancel(): void;
+  save(): void;
+  cancelCurrent(): void;
+  cancelRemaining(): void;
+  cancelAll(): void;
 }
 
 let generationActions: GenerationActions | null = null;
@@ -46,6 +49,12 @@ export function registerGenerationActions(actions: GenerationActions): () => voi
   return () => {
     if (generationActions === actions) generationActions = null;
   };
+}
+
+export function saveGeneration(): boolean {
+  if (!generationActions) return false;
+  generationActions.save();
+  return true;
 }
 
 function key(
@@ -148,7 +157,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Ctrl/Cmd+Enter",
     matches: (event) => primaryKey("enter")(event),
     run: () => {
-      if (!generationActions || generationActions.isGenerating()) return false;
+      if (!generationActions) return false;
       generationActions.generate();
       return true;
     },
@@ -160,7 +169,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     matches: key("escape"),
     run: () => {
       if (!generationActions?.isGenerating()) return false;
-      generationActions.cancel();
+      generationActions.cancelCurrent();
       return true;
     },
   },

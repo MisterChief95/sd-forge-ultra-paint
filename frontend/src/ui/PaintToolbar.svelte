@@ -1,5 +1,7 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import { saveGeneration } from "../input/actionMap";
+  import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
   import brushIcon from "./img/brush-tool-svgrepo-com.svg";
   import eraserIcon from "./img/eraser-svgrepo-com.svg";
@@ -101,6 +103,27 @@
         />
         <path d="M8.4 5.9 10.1 7.6" />
       </svg>
+    </Button>
+    <span class="mx-0.5 h-5 w-px bg-(--upaint-border)" aria-hidden="true"></span>
+    <Button
+      class="gap-1.5"
+      pressed={paintToolStore.activeTool === "boundary-box"}
+      title="Move or resize the boundary box"
+      aria-label="Boundary Box"
+      onclick={() => paintToolStore.setActiveTool("boundary-box")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        aria-hidden="true"
+      >
+        <rect x="2.25" y="2.25" width="11.5" height="11.5" />
+        <path d="M5 2.25v11.5M11 2.25v11.5M2.25 5h11.5M2.25 11h11.5" opacity="0.45" />
+      </svg>
+      Boundary Box
     </Button>
   </div>
 
@@ -229,10 +252,12 @@
   </div>
 
   <Button
-    class="ml-auto gap-1.5"
-    pressed={paintToolStore.activeTool === "boundary-box"}
-    title="Move or resize the boundary box"
-    onclick={() => paintToolStore.setActiveTool("boundary-box")}
+    size="icon"
+    class="ml-auto"
+    disabled={generationRuntimeStore.saving}
+    title={generationRuntimeStore.saving ? "Saving canvas" : "Save canvas"}
+    aria-label={generationRuntimeStore.saving ? "Saving canvas" : "Save canvas"}
+    onclick={() => saveGeneration()}
   >
     <svg
       class="h-3.5 w-3.5"
@@ -242,10 +267,9 @@
       stroke-width="1.5"
       aria-hidden="true"
     >
-      <rect x="2.25" y="2.25" width="11.5" height="11.5" />
-      <path d="M5 2.25v11.5M11 2.25v11.5M2.25 5h11.5M2.25 11h11.5" opacity="0.45" />
+      <path d="M2.5 2.5h8.75l2.25 2.25V13.5h-11z" stroke-linejoin="round" />
+      <path d="M5 2.5v4h5.5v-4M5 13.5V9h6v4.5" stroke-linejoin="round" />
     </svg>
-    Boundary Box
   </Button>
 </div>
 

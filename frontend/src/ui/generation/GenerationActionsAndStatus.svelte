@@ -1,120 +1,125 @@
 <script lang="ts">
   import Button from "../lib/Button.svelte";
-  import type { ProgressResponse } from "./generationApi";
+  import type { GenerationProgress } from "../../state/generationRuntimeStore.svelte";
 
   interface Props {
     generating: boolean;
-    saving: boolean;
     interrupting: boolean;
-    progress: ProgressResponse | null;
+    current: number;
+    total: number;
+    progress: GenerationProgress | null;
     progressPercent: number;
-    saveMessage: string | null;
-    errorMessage: string | null;
     onGenerate: () => void;
-    onSave: () => void;
-    onCancel: () => void;
+    onCancelCurrent: () => void;
+    onCancelRemaining: () => void;
+    onCancelAll: () => void;
   }
 
   let {
     generating,
-    saving,
     interrupting,
+    current,
+    total,
     progress,
     progressPercent,
-    saveMessage,
-    errorMessage,
     onGenerate,
-    onSave,
-    onCancel,
+    onCancelCurrent,
+    onCancelRemaining,
+    onCancelAll,
   }: Props = $props();
+
+  let menuOpen = $state(false);
+
+  function choose(action: () => void): void {
+    menuOpen = false;
+    action();
+  }
 </script>
 
-<!-- Keep cancel mounted so Generate retains the same width in both states. -->
-<div class="flex gap-2">
+<div class="flex gap-1.5">
   <Button
-    variant="primary"
-    class="flex-1 px-3 py-2 text-sm font-semibold disabled:cursor-wait"
-    disabled={generating}
+    variant={generating ? "default" : "primary"}
+    class="relative min-w-0 flex-1 overflow-hidden px-3 py-2 text-sm font-semibold"
+    aria-label={generating
+      ? `Generating ${current} of ${total}, ${progressPercent}% complete. Click to queue another generation.`
+      : "Generate"}
     onclick={onGenerate}
   >
-    {generating ? "Generating…" : "Generate"}
+    {#if generating}
+      <span
+        class="pointer-events-none absolute inset-y-0 left-0 bg-(--upaint-accent)"
+        style:width={`${progressPercent}%`}
+        style:transition="width var(--upaint-transition)"
+        aria-hidden="true"
+      ></span>
+    {/if}
+    <span class="relative z-1 truncate">
+      {generating ? `Generating… (${current}/${total})` : "Generate"}
+    </span>
   </Button>
 
-  <Button
-    class="px-3 py-2 text-sm font-semibold disabled:cursor-wait"
-    disabled={saving}
-    onclick={onSave}
-  >
-    {saving ? "Saving…" : "Save"}
-  </Button>
+  {#if generating}
+    <div class="group relative shrink-0">
+      <Button
+        class="h-full px-2.5"
+        disabled={interrupting}
+        aria-label="Generation queue actions"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title="Generation queue actions"
+        onclick={() => (menuOpen = !menuOpen)}
+      >
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          aria-hidden="true"
+        >
+          <path d="m4 6 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </Button>
 
-  <Button
-    variant="danger"
-    class="px-3 py-2 text-sm font-semibold enabled:hover:bg-(--upaint-danger) enabled:hover:text-(--upaint-text) disabled:cursor-wait"
-    style="visibility: {generating ? 'visible' : 'hidden'};"
-    disabled={interrupting || !generating}
-    tabindex={generating ? 0 : -1}
-    aria-hidden={!generating}
-    title="Cancel generation"
-    aria-label="Cancel generation"
-    onclick={onCancel}
-  >
-    ×
-  </Button>
+      <div
+        class={[
+          "absolute right-0 top-full z-40 mt-1 min-w-40 flex-col overflow-hidden border bg-(--upaint-surface) p-1 shadow-lg",
+          menuOpen ? "flex" : "hidden group-hover:flex group-focus-within:flex",
+        ]}
+        style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
+        role="menu"
+        aria-label="Generation queue actions"
+        tabindex="-1"
+        onmouseleave={() => (menuOpen = false)}
+      >
+        <button
+          type="button"
+          class="rounded px-2 py-1.5 text-left text-xs hover:bg-(--upaint-surface-raised) focus-visible:outline-2 focus-visible:outline-(--upaint-accent)"
+          role="menuitem"
+          onclick={() => choose(onCancelCurrent)}>Cancel Current</button
+        >
+        <button
+          type="button"
+          class="rounded px-2 py-1.5 text-left text-xs hover:bg-(--upaint-surface-raised) focus-visible:outline-2 focus-visible:outline-(--upaint-accent)"
+          role="menuitem"
+          onclick={() => choose(onCancelAll)}>Cancel All</button
+        >
+        <button
+          type="button"
+          class="rounded px-2 py-1.5 text-left text-xs hover:bg-(--upaint-surface-raised) focus-visible:outline-2 focus-visible:outline-(--upaint-accent)"
+          role="menuitem"
+          onclick={() => choose(onCancelRemaining)}>Cancel Remaining</button
+        >
+      </div>
+    </div>
+  {/if}
 </div>
 
-{#if generating}
-  <div
-    class="flex flex-col gap-2 border bg-(--upaint-surface-raised) p-2"
-    style="border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
-    aria-live="polite"
-  >
-    <div class="flex justify-between text-[11px] text-(--upaint-text-muted)">
-      <span>{progress?.job || "Generating"}</span>
-      {#if (progress?.sampling_steps ?? 0) > 0}
-        <span>Step {progress?.sampling_step ?? 0} / {progress?.sampling_steps ?? 0}</span>
-      {/if}
-    </div>
-    <div
-      class="h-2 overflow-hidden bg-(--upaint-surface)"
-      style="border-radius: var(--upaint-radius-sm);"
-      role="progressbar"
-      aria-valuemin="0"
-      aria-valuemax="100"
-      aria-valuenow={progressPercent}
-    >
-      <div
-        class="h-full bg-(--upaint-accent)"
-        style={`width: ${progressPercent}%; transition: width var(--upaint-transition);`}
-      ></div>
-    </div>
-    {#if progress?.current_image}
-      <img
-        class="max-h-52 w-full object-contain"
-        style="border-radius: var(--upaint-radius-sm);"
-        src={progress.current_image}
-        alt="Live generation preview"
-      />
-    {/if}
-  </div>
-{/if}
-
-{#if saveMessage}
-  <p
-    class="m-0 border px-2 py-1.5 text-xs text-(--upaint-text)"
-    style="border-color: var(--upaint-accent); border-radius: var(--upaint-radius-sm);"
-    role="status"
-  >
-    {saveMessage}
-  </p>
-{/if}
-
-{#if errorMessage}
-  <p
-    class="m-0 border px-2 py-1.5 text-xs text-(--upaint-danger)"
-    style="border-color: var(--upaint-danger); border-radius: var(--upaint-radius-sm);"
-    role="alert"
-  >
-    {errorMessage}
-  </p>
+{#if generating && progress?.current_image}
+  <img
+    class="max-h-52 w-full object-contain"
+    style="border-radius: var(--upaint-radius-sm);"
+    src={progress.current_image}
+    alt="Live generation preview"
+  />
 {/if}
