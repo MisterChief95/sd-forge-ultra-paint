@@ -26,12 +26,7 @@ function collectControlLayers(app: UltraPaintApp): ControlLayerPayload[] {
     if (!image) continue;
     payloads.push({
       image,
-      maskImage: layer.maskLayerId ? app.layerSourceDataURL(layer.maskLayerId) : null,
       model: layer.model,
-      preprocessor: layer.preprocessor,
-      preprocessorResolution: layer.preprocessorResolution,
-      preprocessorThresholdA: layer.preprocessorThresholdA,
-      preprocessorThresholdB: layer.preprocessorThresholdB,
       weight: layer.weight,
       guidanceStart: layer.guidanceStart,
       guidanceEnd: layer.guidanceEnd,

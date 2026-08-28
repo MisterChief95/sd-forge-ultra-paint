@@ -30,12 +30,7 @@ export interface LoraCatalogItem {
 /** Wire payload for one visible `ControlLayer`, matching `ControlLayerRequest`. */
 export interface ControlLayerPayload {
   image: string;
-  maskImage: string | null;
   model: string;
-  preprocessor: string;
-  preprocessorResolution: number;
-  preprocessorThresholdA: number;
-  preprocessorThresholdB: number;
   weight: number;
   guidanceStart: number;
   guidanceEnd: number;
@@ -199,12 +194,7 @@ export async function requestGeneration(
       ...(maskImage === null ? {} : { mask_image: maskImage }),
       control_layers: controlLayers.map((layer) => ({
         image: layer.image,
-        ...(layer.maskImage === null ? {} : { mask_image: layer.maskImage }),
         model: layer.model,
-        preprocessor: layer.preprocessor,
-        preprocessor_resolution: layer.preprocessorResolution,
-        preprocessor_threshold_a: layer.preprocessorThresholdA,
-        preprocessor_threshold_b: layer.preprocessorThresholdB,
         weight: layer.weight,
         guidance_start: layer.guidanceStart,
         guidance_end: layer.guidanceEnd,

@@ -108,36 +108,21 @@ export interface GroupLayer extends LayerBase {
 }
 
 /**
- * A control-guidance layer (ControlNet). Its `image` is the source pixels fed
- * to Forge's ControlNet script; `preprocessor` names the module ("none" =
- * pixels used as-is). Some preprocessors (the "Inpaint" tag) require a mask,
- * supplied by `maskLayerId` pointing at a sibling `MaskLayer` -- there is no
- * separate "no preprocessor" flag on the model, per Forge's own ControlNet
- * implementation (`extensions-builtin/sd_forge_controlnet`).
+ * A control-guidance layer (ControlNet). Its `image` is the exact pixels sent
+ * to Forge's ControlNet script, pre-baked by the Filter tool or painted directly
+ * on the layer.
  */
 export interface ControlLayer extends LayerBase {
   kind: "control";
   image: ImageRef;
   /** ControlNet model name, from `GET /controlnet/control_types`. */
   model: string;
-  /** Preprocessor/module name, from `GET /controlnet/module_list`. */
-  preprocessor: string;
-  /** -1 = auto (matches `Preprocessor.__call__`'s `resolution` default). */
-  preprocessorResolution: number;
-  /** -1 = unused by this preprocessor. */
-  preprocessorThresholdA: number;
-  /** -1 = unused by this preprocessor. */
-  preprocessorThresholdB: number;
   weight: number;
   guidanceStart: number;
   guidanceEnd: number;
   controlMode: ControlMode;
   pixelPerfect: boolean;
   resizeMode: ControlResizeMode;
-  /** Sibling mask layer supplying the inpaint mask, for Inpaint-tagged preprocessors. */
-  maskLayerId: LayerId | null;
-  /** Cached preprocessor output for on-canvas preview only; never sent to generation. */
-  preview: ImageRef | null;
 }
 
 export type Layer = RasterLayer | GroupLayer | MaskLayer | ControlLayer;

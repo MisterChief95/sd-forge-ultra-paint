@@ -53,12 +53,7 @@ class ControlLayerRequest(BaseModel):
     """Mirrors the control-layer dict expected by `generation.py`."""
 
     image: str
-    mask_image: str | None = None
     model: str
-    preprocessor: str
-    preprocessor_resolution: int = -1
-    preprocessor_threshold_a: float = -1
-    preprocessor_threshold_b: float = -1
     weight: float = 1.0
     guidance_start: float = 0.0
     guidance_end: float = 1.0
@@ -122,14 +117,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
         control_layers = [
             {
                 "image": _decode_data_url(layer.image),
-                "mask_image": _decode_data_url(layer.mask_image)
-                if layer.mask_image
-                else None,
                 "model": layer.model,
-                "preprocessor": layer.preprocessor,
-                "preprocessor_resolution": layer.preprocessor_resolution,
-                "preprocessor_threshold_a": layer.preprocessor_threshold_a,
-                "preprocessor_threshold_b": layer.preprocessor_threshold_b,
                 "weight": layer.weight,
                 "guidance_start": layer.guidance_start,
                 "guidance_end": layer.guidance_end,
