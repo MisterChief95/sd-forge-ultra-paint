@@ -12,6 +12,7 @@ EXTENSION_ROOT: Path = Path(__file__).resolve().parent.parent
 # Frontend build output lives here (created by the frontend build task).
 FRONTEND_DIR: Path = EXTENSION_ROOT / "frontend"
 FRONTEND_DIST_DIR: Path = FRONTEND_DIR / "dist"
+DATA_DIR: Path = EXTENSION_ROOT / "data"
 
 # Prefix for every elem_id / DOM id / CSS hook this extension owns.
 # Use `eid()` rather than hand-writing f-strings so the namespace stays consistent.

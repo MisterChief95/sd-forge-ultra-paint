@@ -111,62 +111,64 @@
 
 <div class="flex flex-col gap-2">
   <form
-    class="flex flex-col gap-2 border bg-(--upaint-surface-raised) p-2"
+    class="flex flex-col gap-2"
     style="border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
     onsubmit={handleResize}
   >
-    <div class="grid grid-cols-[1fr_auto_1fr_auto_auto] items-end gap-1.5">
-      <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
-        Width
-        <NumberInput
-          surface="base"
-          class="px-1.5 py-1"
-          name="boundary-width"
-          min="1"
-          max="16384"
-          step="1"
-          value={layerStore.document.boundaryBox.width}
-          aria-label="Boundary box width"
-          oninput={(event) => syncLockedDimension(event, "width")}
-        />
-      </label>
-      <span class="pb-1.5 text-(--upaint-text-muted)" aria-hidden="true">×</span>
-      <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
-        Height
-        <NumberInput
-          surface="base"
-          class="px-1.5 py-1"
-          name="boundary-height"
-          min="1"
-          max="16384"
-          step="1"
-          value={layerStore.document.boundaryBox.height}
-          aria-label="Boundary box height"
-          oninput={(event) => syncLockedDimension(event, "height")}
-        />
-      </label>
-      <Button
-        size="icon"
-        pressed={paintToolStore.boundaryAspectRatio !== null}
-        title="Lock boundary-box aspect ratio"
-        aria-label="Lock boundary-box aspect ratio"
-        onclick={toggleAspectLock}
-      >
-        {paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}
-      </Button>
-      <Button
-        size="icon"
-        title="Swap boundary-box width and height"
-        aria-label="Swap boundary-box width and height"
-        onclick={swapDimensions}
-      >
-        ⇄
-      </Button>
+    <div class="flex no-wrap items-end gap-1.5">
+      <div class="flex-1">
+        <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+          Width
+          <NumberInput
+            class="px-1.5 py-1"
+            name="boundary-width"
+            min="1"
+            max="8192"
+            step="1"
+            value={layerStore.document.boundaryBox.width}
+            aria-label="Boundary box width"
+            oninput={(event) => syncLockedDimension(event, "width")}
+          />
+        </label>
+      </div>
+      <div class="flex-1">
+        <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+          Height
+          <NumberInput
+            class="px-1.5 py-1"
+            name="boundary-height"
+            min="1"
+            max="8192"
+            step="1"
+            value={layerStore.document.boundaryBox.height}
+            aria-label="Boundary box height"
+            oninput={(event) => syncLockedDimension(event, "height")}
+          />
+        </label>
+      </div>
+      <div class="grow-0 gap-2">
+        <Button
+          size="icon"
+          pressed={paintToolStore.boundaryAspectRatio !== null}
+          title="Lock boundary-box aspect ratio"
+          aria-label="Lock boundary-box aspect ratio"
+          onclick={toggleAspectLock}
+        >
+          {paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}
+        </Button>
+        <Button
+          size="icon"
+          title="Swap boundary-box width and height"
+          aria-label="Swap boundary-box width and height"
+          onclick={swapDimensions}
+        >
+          ⇄
+        </Button>
+      </div>
     </div>
     <div class="flex gap-2">
       <Select
         class="flex-1"
-        surface="base"
         bind:value={selectedRatio}
         aria-label="Boundary box aspect ratio"
         onchange={applyRatio}

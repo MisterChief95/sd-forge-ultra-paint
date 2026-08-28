@@ -72,6 +72,7 @@ appears alongside txt2img/img2img.
 | `scripts/ultra_paint_api.py` | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
 | `scripts/ultra_paint_generate_api.py` | `POST /ultra_paint/api/generate` |
 | `scripts/ultra_paint_options_api.py` | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step) |
+| `scripts/ultra_paint_options_api.py` | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence) |
 | `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt` |
 | `scripts/ultra_paint_save_api.py` | `POST /ultra_paint/api/save` |
 

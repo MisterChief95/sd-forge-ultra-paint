@@ -29,6 +29,7 @@ interface UltraPaintTestHook {
     layerSourceDataURL(id: string): string | null;
     addBlankLayer(): Promise<string>;
     resizeBoundaryBox(width: number, height: number): void;
+    undo(): void;
     getZoom(): number;
     isGridVisible(): boolean;
   } | null;
@@ -70,10 +71,26 @@ interface UltraPaintTestHook {
 
 type TestWindow = Window & { __ultraPaintTest?: UltraPaintTestHook };
 
-async function routeOptions(page: Page): Promise<void> {
+interface PersistedSettingsFixture {
+  value: Record<string, unknown>;
+  writes: number;
+}
+
+async function routeOptions(page: Page): Promise<PersistedSettingsFixture> {
+  const persisted: PersistedSettingsFixture = { value: {}, writes: 0 };
   await page.route("**/ultra_paint/api/options", (route) =>
     route.fulfill({ json: optionsFixture }),
   );
+  await page.route("**/ultra_paint/api/settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      persisted.value = route.request().postDataJSON() as Record<string, unknown>;
+      persisted.writes += 1;
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.fulfill({ json: persisted.value });
+  });
+  return persisted;
 }
 
 async function openApp(page: Page): Promise<void> {
@@ -763,6 +780,9 @@ test("mask accordion keeps mask rows separate and its controls working", async (
   const color = topMask.getByLabel('Display color of "Detail Mask"');
   await color.fill("#00cc88");
   await expect(color).toHaveValue("#00cc88");
+  const thumbnail = topMask.getByAltText("Detail Mask preview");
+  await expect(thumbnail).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect(thumbnail).toHaveCSS("border-color", "rgb(0, 204, 136)");
 
   const visibility = topMask.getByLabel('Toggle "Detail Mask" visible');
   await visibility.uncheck();
@@ -770,7 +790,22 @@ test("mask accordion keeps mask rows separate and its controls working", async (
   await visibility.check();
   await expect(visibility).toBeChecked();
 
-  await topMask.getByRole("button", { name: "Move Detail Mask down" }).click();
+  const bottomMask = masksSection.locator("[data-layer-id]").last();
+  const bottomBounds = await bottomMask.boundingBox();
+  expect(bottomBounds).not.toBeNull();
+  if (!bottomBounds) return;
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await topMask.dispatchEvent("pointerdown", { bubbles: true, button: 0 });
+  await topMask.dispatchEvent("dragstart", { dataTransfer });
+  await bottomMask.dispatchEvent("dragover", {
+    clientY: bottomBounds.y + bottomBounds.height - 1,
+    dataTransfer,
+  });
+  await bottomMask.dispatchEvent("drop", {
+    clientY: bottomBounds.y + bottomBounds.height - 1,
+    dataTransfer,
+  });
+  await topMask.dispatchEvent("dragend", { dataTransfer });
   await expect(masksSection.locator("[data-layer-id]").last()).toContainText("Detail Mask");
   await masksSection.getByRole("button", { name: "Delete Detail Mask", exact: true }).click();
   await expect(masksSection.locator("[data-layer-id]")).toHaveCount(1);
@@ -784,12 +819,6 @@ test("mask accordion keeps mask rows separate and its controls working", async (
   await masksAccordion.click();
   await expect(masksAccordion).toHaveAttribute("aria-expanded", "true");
   await expect(masksSection.locator("[data-layer-id]")).toHaveCount(1);
-
-  const layersAccordion = layersSection.getByRole("button", {
-    name: /^Layers/,
-  });
-  await layersAccordion.click();
-  await expect(layersAccordion).toHaveAttribute("aria-expanded", "false");
 });
 
 test("mask paint exports white coverage on black without entering the composite", async ({
@@ -1006,6 +1035,120 @@ test("boundary-box corner drag updates the store and snaps to the 8px grid", asy
   expect(Object.values(boundaryBox).every((value) => value % 8 === 0)).toBe(true);
 });
 
+test("boundary-box body drag commits one undoable mutation", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(160, 160);
+  });
+  await page.getByRole("button", { name: "Boundary Box", exact: true }).click();
+
+  const canvas = page.locator("#upaint-root canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 27, centerY + 19, { steps: 8 });
+  await page.mouse.up();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+      })),
+    )
+    .toEqual({ x: 24, y: 16, width: 160, height: 160 });
+
+  await page.evaluate(() => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    app.undo();
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+      })),
+    )
+    .toEqual({ x: 0, y: 0, width: 160, height: 160 });
+});
+
+test("boundary-box drag survives leaving the canvas and native pointer cancellation", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(160, 160);
+  });
+  await page.getByRole("button", { name: "Boundary Box", exact: true }).click();
+
+  const canvas = page.locator("#upaint-root canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width + 24, centerY, { steps: 8 });
+  await page.mouse.up();
+  const outsideDragBox = await page.evaluate(() => ({
+    ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+  }));
+  expect(outsideDragBox.x).toBeGreaterThan(0);
+  expect(outsideDragBox.x % 8).toBe(0);
+
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    if (!hook) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 160, height: 160 });
+  });
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 25, centerY, { steps: 4 });
+  await canvas.evaluate((element) => {
+    element.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        cancelable: true,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+  });
+  await page.mouse.up();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+      })),
+    )
+    .toEqual({ x: 24, y: 0, width: 160, height: 160 });
+
+  await page.mouse.move(centerX + 24, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 40, centerY, { steps: 3 });
+  await page.mouse.up();
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+      })),
+    )
+    .toEqual({ x: 40, y: 0, width: 160, height: 160 });
+});
+
 test("locked boundary resize preserves its captured ratio for inputs and corner drag", async ({
   page,
 }) => {
@@ -1017,6 +1160,7 @@ test("locked boundary resize preserves its captured ratio for inputs and corner 
     app.resizeBoundaryBox(160, 96);
   });
 
+  await page.getByRole("button", { name: "Bounding Box", exact: true }).click();
   const lock = page.getByRole("button", {
     name: "Lock boundary-box aspect ratio",
   });
@@ -1057,6 +1201,7 @@ test("boundary dimension swap keeps the top-left position fixed", async ({ page 
     hook.layerStore.setBoundaryBox({ x: 64, y: 80, width: 160, height: 96 });
   });
 
+  await page.getByRole("button", { name: "Bounding Box", exact: true }).click();
   await page.getByRole("button", { name: "Swap boundary-box width and height" }).click();
   const box = await page.evaluate(() => {
     const boundaryBox = (window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox;
@@ -1099,6 +1244,7 @@ test("generate flow adds a fixture image at the boundary-box position", async ({
   await page.getByPlaceholder("Describe what to generate").fill("fixture prompt");
   await page.getByLabel("Sampler").selectOption("Euler a");
   await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await page.getByRole("button", { name: "Apply selected preview" }).click();
   await expect(page.locator("[data-layer-id]")).toHaveCount(2);
 
   const generated = await page.evaluate(() => {
@@ -1130,6 +1276,101 @@ test("generate flow adds a fixture image at the boundary-box position", async ({
   expect(requestBody).not.toHaveProperty("mask_image");
   expect(requestBody?.gen_params).not.toHaveProperty("target_width");
   expect(requestBody?.gen_params).not.toHaveProperty("target_height");
+});
+
+test("a second generation after Apply does not freeze the viewport", async ({ page }) => {
+  // Regression test: Apply calls previewStore.discardAll(), which evicted
+  // the just-shown preview's cached Texture even though the (now hidden)
+  // sprite still pointed at it. The next generate() made the sprite visible
+  // again with that dangling destroyed Texture before the new one loaded,
+  // throwing mid-render and permanently stalling PixiJS's ticker.
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", (route) =>
+    route.fulfill({ json: generateFixture }),
+  );
+  await openApp(page);
+
+  const generate = page.getByRole("button", { name: "Generate", exact: true });
+  await page.getByPlaceholder("Describe what to generate").fill("first pass");
+  await generate.click();
+  await page.getByRole("button", { name: "Apply selected preview" }).click();
+
+  await page.getByPlaceholder("Describe what to generate").fill("second pass");
+  await generate.click();
+  await expect(page.getByRole("button", { name: "Apply selected preview" })).toBeVisible();
+
+  await page.waitForTimeout(100);
+  expect(errors).toEqual([]);
+});
+
+test("generation panel settings survive a page reload", async ({ page }) => {
+  const persisted = await routeOptions(page);
+  await openApp(page);
+
+  await page.getByPlaceholder("Describe what to generate").fill("persistent prompt");
+  await page.getByPlaceholder("What to avoid").fill("persistent negative prompt");
+  await page.getByLabel("Sampler").selectOption("DPM++ 2M");
+  await page.getByLabel("Scheduler").selectOption("Karras");
+  await page.getByLabel("Steps").first().fill("42");
+  await page.getByLabel("CFG scale").first().fill("9.5");
+  await page.getByRole("combobox", { name: "VAE / Text Encoder" }).click();
+  await page.getByRole("option", { name: /fixture-clip\.safetensors/ }).click();
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    if (!hook) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setBoundaryBox({ x: 64, y: 80, width: 320, height: 192 });
+  });
+  await expect
+    .poll(() => persisted.value.prompt)
+    .toBe("persistent prompt");
+
+  await page.reload();
+  await page.waitForFunction(() =>
+    Boolean((window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()),
+  );
+
+  await expect(page.getByPlaceholder("Describe what to generate")).toHaveValue("persistent prompt");
+  await expect(page.getByPlaceholder("What to avoid")).toHaveValue("persistent negative prompt");
+  await expect(page.getByLabel("Sampler")).toHaveValue("DPM++ 2M");
+  await expect(page.getByLabel("Scheduler")).toHaveValue("Karras");
+  await expect(page.getByLabel("Steps").first()).toHaveValue("42");
+  await expect(page.getByLabel("CFG scale").first()).toHaveValue("9.5");
+  await expect(page.getByRole("combobox", { name: "VAE / Text Encoder" })).toContainText(
+    "fixture-clip.safetensors",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
+      })),
+    )
+    .toEqual({ x: 64, y: 80, width: 320, height: 192 });
+});
+
+test("generation settings writes are debounced", async ({ page }) => {
+  const persisted = await routeOptions(page);
+  await openApp(page);
+  await expect.poll(() => persisted.writes).toBe(1);
+  persisted.writes = 0;
+
+  const prompt = page.getByPlaceholder("Describe what to generate");
+  await prompt.fill("one");
+  await prompt.fill("two");
+  await prompt.fill("three");
+
+  await page.waitForTimeout(500);
+  expect(persisted.writes).toBe(0);
+  await expect.poll(() => persisted.writes).toBe(1);
+  expect(persisted.value.prompt).toBe("three");
 });
 
 test("LoRAs add activation words and only inject enabled tags into generation", async ({
@@ -1294,13 +1535,13 @@ test("resolution modes update targets and control generate request fields", asyn
   const mode = page.getByLabel("Resolution scale mode");
   const generate = page.getByRole("button", { name: "Generate", exact: true });
   await mode.selectOption("auto");
-  await expect(page.getByLabel("Auto target size")).toHaveText("896 × 1152");
+  await expect(page.getByLabel("Auto target size")).toHaveText(/Width:\s*896\s*Height:\s*1152/);
   await page.evaluate(() => {
     const hook = (window as TestWindow).__ultraPaintTest;
     if (!hook) throw new Error("Ultra Paint test hook is unavailable");
     hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 400, height: 200 });
   });
-  await expect(page.getByLabel("Auto target size")).toHaveText("1408 × 768");
+  await expect(page.getByLabel("Auto target size")).toHaveText(/Width:\s*1408\s*Height:\s*768/);
   await generate.click();
   await expect.poll(() => requestBodies.length).toBe(1);
   expect(requestBodies[0]?.gen_params).toMatchObject({

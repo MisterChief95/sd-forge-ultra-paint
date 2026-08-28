@@ -213,6 +213,43 @@ def test_no_mask_leaves_inpainting_fields_at_gen_param_defaults(fake_forge_modul
     assert p.mask_blur == generation.GEN_PARAM_DEFAULTS["mask_blur"]
 
 
+def test_model_selection_uses_forge_checkpoint_manager(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    calls = []
+
+    fake_sd_models = types.ModuleType("modules.sd_models")
+    fake_sd_models.get_closet_checkpoint_match = lambda name: (
+        object() if name == "selected-model.safetensors" else None
+    )
+    generation.modules.sd_models = fake_sd_models
+
+    fake_main_entry = types.ModuleType("modules_forge.main_entry")
+    fake_main_entry.module_list = {"selected-vae.safetensors": "C:/models/selected-vae.safetensors"}
+    fake_main_entry.modules_change = lambda values, **kwargs: calls.append(
+        ("modules", values, kwargs)
+    ) or True
+    fake_main_entry.checkpoint_change = lambda value, **kwargs: calls.append(
+        ("model", value, kwargs)
+    ) or True
+    fake_main_entry.refresh_model_loading_parameters = lambda: calls.append(("refresh",))
+    fake_modules_forge = types.ModuleType("modules_forge")
+    fake_modules_forge.main_entry = fake_main_entry
+
+    monkeypatch.setitem(sys.modules, "modules.sd_models", fake_sd_models)
+    monkeypatch.setitem(sys.modules, "modules_forge", fake_modules_forge)
+    monkeypatch.setitem(sys.modules, "modules_forge.main_entry", fake_main_entry)
+
+    generation._apply_model_selection(
+        {"model": "selected-model.safetensors", "modules": ["selected-vae.safetensors"]}
+    )
+
+    assert calls == [
+        ("modules", ["selected-vae.safetensors"], {"preset": None, "save": False, "refresh": False}),
+        ("model", "selected-model.safetensors", {"preset": None, "save": False, "refresh": False}),
+        ("refresh",),
+    ]
+
+
 def test_mask_with_undersized_box_respects_whole_image_choice(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
     fake_shared.sd_model = None  # -> model_profile fallback resolution (512)

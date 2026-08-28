@@ -10,6 +10,61 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Python-backed Generation-panel persistence — 2026-08-27
+
+Generation-panel user choices now survive iframe/tab/window reloads and Forge
+restarts through a versioned snapshot stored by Python in
+`data/generation-settings.json`. `GET`/`PUT /ultra_paint/api/settings` provide the
+restore/save boundary. The frontend uses a one-second trailing debounce, permits
+only one ordinary write in flight, and sends a small keepalive write on page hide.
+Python limits the payload to 1 MiB and atomically replaces the settings file.
+
+The snapshot covers prompts, Forge model/modules, LoRAs, sampler/scheduler,
+sampling values, seed behavior, the canvas boundary box, bounding-box output
+sizing, and inpainting settings. Progress, errors, layers, other document
+metadata, textures, and pixels are explicitly not persisted. Restore validates
+untrusted JSON and clamps numeric values, while missing model/module/sampler
+options fall back to the live Forge catalog rather than leaving stale selections
+active.
+
+Files changed include `ultra_paint/settings_api.py`,
+`scripts/ultra_paint_options_api.py`, `frontend/src/ui/GenerationPanel.svelte`,
+`frontend/src/ui/generation/generationApi.ts`, and focused backend/Playwright
+coverage. The Svelte autofixer reports no issues; `npm run typecheck`,
+`npm run lint`, `npm run build`, the full Chromium suite (35/35), and the focused
+Python settings tests (2/2) pass. The available standalone Python environment
+lacks FastAPI, so the focused test provides the same minimal FastAPI doubles used
+elsewhere in the backend suite rather than exercising a live Forge server.
+
+---
+
+## Forge Model Manager controls in Ultra Paint — 2026-08-27
+
+The Generation panel now includes an open **Model** section with Forge's native
+selection model: one checkpoint dropdown and one combined **VAE / Text Encoder**
+picker. The picker and chips share one click-to-open control; selecting a
+VAE/text-encoder option adds a removable chip while keeping the option list
+open for additional choices, rather than requiring the browser's Ctrl/Cmd
+multi-select interaction. `GET /ultra_paint/api/options` sources both lists and the current
+selection directly from `modules_forge.main_entry.refresh_models()` / Forge's
+active settings, so the app sees the same compatible files as Forge's Model
+Manager. The chosen values are submitted with Generate and applied on Forge's
+GPU worker through `checkpoint_change()` / `modules_change()` before processing;
+the change uses Forge's normal reload configuration and is serialized by the
+existing generation queue. The selection is runtime-only (`save=False`), so a
+generation does not rewrite Forge's persisted UI configuration.
+
+Files changed: `ultra_paint/options_api.py`, `ultra_paint/generation.py`,
+`frontend/src/ui/GenerationPanel.svelte`,
+`frontend/src/ui/generation/ModelControls.svelte` (new),
+`frontend/src/ui/generation/generationApi.ts`, `frontend/src/ui/lib/Select.svelte`,
+and the options fixture/unit test. `npm run typecheck` and `npm run build` pass;
+backend pytest is not runnable in the available Python because it lacks Forge's
+Pydantic/Pillow dependencies. Live Forge model-loading verification remains
+required.
+
+---
+
 ## LoRA generation controls — 2026-08-24
 
 The generation panel now has a LoRAs accordion with a lazy-loaded, searchable
@@ -172,17 +227,39 @@ regressions (z-order, Generate placement) were caught and fixed. This is groundw
 Phase 3 will build on directly (an editable boundary box is Phase 3's first bullet
 in §7) — it already exists, Phase 3 does not need to build it from scratch.
 
-**Phase 2.75 — Playwright e2e infrastructure: COMPLETE and live-passing
-(2026-08-24).** `frontend/tests/e2e/ultra-paint.spec.ts` has 4 tests — smoke,
-paint round-trip (`flattenToDataURL` pixel check), boundary-box drag+8px-grid-snap,
-and a stubbed Generate flow — all passing (`npm run test:e2e`, 4/4, ~7.5s) against
-a real installed Chromium. Full detail and the one bug found/fixed during the live
-run are in the dated entry near the end of this file. **Explicit coverage gap,
-carried forward as a live TODO, not a blocker:** eraser, fill, undo/redo, layer
-reorder/delete/opacity/blend, and the real (non-stubbed) FastAPI backend have no
-automated coverage yet — only brush-paint, boundary-box, and stubbed-generate do.
-Extend `ultra-paint.spec.ts` opportunistically as Phase 3 touches nearby code,
-rather than treating full backfill as a prerequisite to starting Phase 3.
+**Boundary-box Pixi federation: IMPLEMENTED (2026-08-27).** Boundary body and
+corner handles are now explicit PixiJS federated hit targets with tool-specific
+cursors, `globalpointermove` drag tracking, and `pointerupoutside` completion.
+Visual-only graphics, the layer-tree root, and the pixel-grid subtree are excluded
+from event traversal with `eventMode = "none"`; Pixi wheel federation is disabled
+because viewport zoom deliberately remains a non-passive native DOM wheel handler.
+Native paint/coalesced-pointer input and keyboard shortcuts are unchanged. A single
+native `pointercancel` listener remains because PixiJS 8.20 does not federate that
+browser lifecycle event. The handle/body pattern stays local to
+`BoundaryBoxOverlay.ts` as the minimal convention for future gizmos; no speculative
+gizmo framework or event-feature lease manager was added.
+
+Verification for the federation change: `npm run format:check`, `npm run lint`,
+`npm run typecheck`, and `npm run build` pass. A focused live Chromium run passes
+5/5 for native wheel zoom, native paint input, federated corner resize, federated
+body move with one-step undo, out-of-canvas drag completion, and the native
+`pointercancel` fallback (the last three behaviors share two new tests). Five stale
+expectations were then aligned with the current UI: native drag reorder, hidden
+empty layer accordions, collapsed Bounding Box settings, generation preview/apply,
+and labelled Auto-target output. The full live Chromium suite now passes 31/31.
+
+**Phase 2.75 — Playwright e2e infrastructure: COMPLETE.** The suite has grown to
+31 tests covering the original smoke/paint/boundary/fixture-Generate paths plus
+masking, shortcuts, viewport controls, generation settings, cancellation, and the
+new federated boundary interactions. The current run status is recorded in the
+federation note immediately above. The real (non-stubbed) FastAPI/Forge generation
+path remains outside Playwright coverage.
+
+**Mask layer thumbnails: IMPLEMENTED (2026-08-27).** Mask layers now use the same
+GPU-generated pixel thumbnail path as raster layers. Their thumbnail border follows
+the mask display color, and the thumbnail itself is the display-color picker; the
+separate display-color row was removed. Focused Playwright coverage verifies the
+rendered PNG thumbnail and color-matched border.
 
 **What "live-verified" means above:** Playwright's `webServer` runs the real Vite
 dev server and a real installed Chromium, and the brush/boundary-box tests do real
@@ -1311,11 +1388,14 @@ Fill, Generate export, and newly created blank paint layers. The toolbar's preci
 width/height fields resize that box while preserving its dragged position.
 
 `frontend/src/scene/BoundaryBoxOverlay.ts` adds the topmost dotted, interactive
-boundary guide. It uses raw DOM pointer listeners and document-local hit testing:
-dragging its body repositions it, while dragging one of its four corner handles
-reshapes it with the opposite corner fixed. Live visuals update locally and one
-`setBoundaryBox` mutation is committed only when the gesture ends, so each drag is
-one undo entry. No `Container.mask` is used.
+boundary guide. Its body and four corner handles are separate PixiJS federated hit
+targets: body drags reposition the box, while handle drags reshape it with the
+opposite corner fixed. `globalpointermove` keeps an active drag alive beyond the
+original target and `pointerupoutside` completes an out-of-canvas release. Live
+visuals update locally and one `setBoundaryBox` mutation is committed only when the
+gesture ends, so each drag is one undo entry. A narrow native `pointercancel`
+fallback handles browser cancellation not mapped by PixiJS 8.20. No
+`Container.mask` is used.
 
 `frontend/src/scene/Compositor.ts` crops export by temporarily translating the
 document root by `(-box.x, -box.y)` into a box-sized render texture, then restoring

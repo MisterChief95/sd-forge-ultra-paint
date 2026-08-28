@@ -200,6 +200,47 @@ def _get(gen_params: dict, key: str):
     return value
 
 
+def _apply_model_selection(gen_params: dict) -> None:
+    """Apply Ultra Paint's optional selector values through Forge's own API."""
+    model = gen_params.get("model")
+    modules = gen_params.get("modules")
+    if model is None and modules is None:
+        return
+
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise ValueError("Ultra Paint: selected model must be a non-empty checkpoint name")
+    if modules is not None and (
+        not isinstance(modules, list) or not all(isinstance(module, str) for module in modules)
+    ):
+        raise ValueError("Ultra Paint: selected VAE / Text Encoder modules must be a list of names")
+
+    from modules import sd_models
+    from modules_forge import main_entry
+
+    if model is not None and sd_models.get_closet_checkpoint_match(model) is None:
+        raise ValueError(f"Ultra Paint: selected model was not found: {model}")
+    if modules is not None:
+        unknown_modules = [module for module in modules if module not in main_entry.module_list]
+        if unknown_modules:
+            raise ValueError(
+                "Ultra Paint: selected VAE / Text Encoder module was not found: "
+                f"{unknown_modules[0]}"
+            )
+
+    modules_changed = (
+        main_entry.modules_change(modules, preset=None, save=False, refresh=False)
+        if modules is not None
+        else False
+    )
+    model_changed = (
+        main_entry.checkpoint_change(model, preset=None, save=False, refresh=False)
+        if model is not None
+        else False
+    )
+    if modules_changed or model_changed:
+        main_entry.refresh_model_loading_parameters()
+
+
 # --------------------------------------------------------------- script args
 
 
@@ -516,6 +557,8 @@ def run_generation(
     """
     if generation_mode not in {"img2img", "txt2img"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
+
+    _apply_model_selection(gen_params)
 
     # The frontend predicts this from visible layer bounds, but only the
     # flattened image knows whether the BB actually contains painted pixels.

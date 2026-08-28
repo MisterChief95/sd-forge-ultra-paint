@@ -50,16 +50,28 @@ def fake_forge_modules(monkeypatch):
     fake_shared_module = types.ModuleType("modules.shared")
     fake_shared_module.sd_model = None
     fake_shared_module.opts = _FakeOpts()
+    fake_shared_module.opts.sd_model_checkpoint = "fixture-model.safetensors"
+    fake_shared_module.opts.forge_additional_modules = ["C:/models/fixture-vae.safetensors"]
 
     fake_modules.sd_samplers = fake_sd_samplers_module
     fake_modules.sd_schedulers = fake_sd_schedulers_module
     fake_modules.shared = fake_shared_module
+
+    fake_modules_forge = types.ModuleType("modules_forge")
+    fake_main_entry_module = types.ModuleType("modules_forge.main_entry")
+    fake_main_entry_module.refresh_models = lambda: (
+        ["fixture-model.safetensors"],
+        ["fixture-clip.safetensors", "fixture-vae.safetensors"],
+    )
+    fake_modules_forge.main_entry = fake_main_entry_module
 
     modules_to_install = {
         "modules": fake_modules,
         "modules.sd_samplers": fake_sd_samplers_module,
         "modules.sd_schedulers": fake_sd_schedulers_module,
         "modules.shared": fake_shared_module,
+        "modules_forge": fake_modules_forge,
+        "modules_forge.main_entry": fake_main_entry_module,
     }
     for name, module in modules_to_install.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -82,6 +94,17 @@ def test_samplers_and_schedulers_pass_through(fake_forge_modules):
 
     assert options.samplers == ["Euler a", "DPM++ 2M"]
     assert options.schedulers == ["Automatic", "Karras"]
+
+
+def test_model_manager_options_match_forge_catalog(fake_forge_modules):
+    options_api, _fake_shared = fake_forge_modules
+
+    options = options_api.get_generation_options()
+
+    assert options.models == ["fixture-model.safetensors"]
+    assert options.modules == ["fixture-clip.safetensors", "fixture-vae.safetensors"]
+    assert options.selected_model == "fixture-model.safetensors"
+    assert options.selected_modules == ["fixture-vae.safetensors"]
 
 
 def test_native_resolution_and_video_flag_for_no_model(fake_forge_modules):

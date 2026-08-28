@@ -1,5 +1,6 @@
 const OPTIONS_URL = "/ultra_paint/api/options";
 const LORAS_URL = "/ultra_paint/api/loras";
+const SETTINGS_URL = "/ultra_paint/api/settings";
 const GENERATE_URL = "/ultra_paint/api/generate";
 const SAVE_URL = "/ultra_paint/api/save";
 const PROGRESS_URL = "/ultra_paint/api/progress";
@@ -10,6 +11,10 @@ export type GenerationMode = "txt2img" | "img2img";
 export interface GenerationOptions {
   samplers: string[];
   schedulers: string[];
+  models: string[];
+  modules: string[];
+  selectedModel: string;
+  selectedModules: string[];
   nativeResolution: number | null;
   isVideoModel: boolean;
   resolutionStep: number | null;
@@ -59,6 +64,8 @@ export interface GenerationParameters {
   coherencePassFast: boolean;
   samplerName: string;
   scheduler: string;
+  modelName: string;
+  moduleNames: string[] | null;
   targetResolution: { width: number; height: number } | null;
   seed: number;
 }
@@ -75,6 +82,10 @@ export interface ProgressResponse {
 interface RawGenerationOptions {
   samplers: unknown;
   schedulers: unknown;
+  models: unknown;
+  modules: unknown;
+  selected_model: unknown;
+  selected_modules: unknown;
   native_resolution: unknown;
   is_video_model: unknown;
   resolution_step: unknown;
@@ -97,6 +108,30 @@ export class GenerationApiError extends Error {
   }
 }
 
+export async function fetchPersistedGenerationSettings(): Promise<Record<string, unknown> | null> {
+  const response = await fetch(SETTINGS_URL, { cache: "no-store" });
+  if (!response.ok) return null;
+  const body: unknown = await response.json();
+  return typeof body === "object" && body !== null && !Array.isArray(body)
+    ? (body as Record<string, unknown>)
+    : null;
+}
+
+export async function persistGenerationSettings(
+  settings: Record<string, unknown>,
+  keepalive = false,
+): Promise<void> {
+  const response = await fetch(SETTINGS_URL, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+    keepalive,
+  });
+  if (!response.ok) {
+    throw new GenerationApiError(`settings request failed (${response.status})`, response.status);
+  }
+}
+
 export async function fetchGenerationOptions(): Promise<GenerationOptions> {
   const response = await fetch(OPTIONS_URL);
   if (!response.ok) {
@@ -107,6 +142,10 @@ export async function fetchGenerationOptions(): Promise<GenerationOptions> {
   return {
     samplers: stringArray(body.samplers),
     schedulers: stringArray(body.schedulers),
+    models: stringArray(body.models),
+    modules: stringArray(body.modules),
+    selectedModel: typeof body.selected_model === "string" ? body.selected_model : "",
+    selectedModules: stringArray(body.selected_modules),
     nativeResolution: positiveSafeInteger(body.native_resolution),
     resolutionStep: positiveSafeInteger(body.resolution_step),
     isVideoModel: body.is_video_model === true,
@@ -194,6 +233,8 @@ export async function requestGeneration(
         coherence_pass_fast: parameters.coherencePassFast,
         sampler_name: parameters.samplerName || null,
         scheduler: parameters.scheduler || null,
+        ...(parameters.modelName ? { model: parameters.modelName } : {}),
+        ...(parameters.moduleNames === null ? {} : { modules: parameters.moduleNames }),
         seed: parameters.seed,
         ...(parameters.targetResolution === null
           ? {}

@@ -70,6 +70,40 @@ const DEFAULT_SETTINGS: GenerationSettings = {
 export class GenerationSettingsStore {
   private _state = $state<GenerationSettings>({ ...DEFAULT_SETTINGS });
 
+  public get snapshot(): GenerationSettings {
+    return $state.snapshot(this._state);
+  }
+
+  public restore(value: Record<string, unknown>): void {
+    if (isScaleMode(value.scaleMode)) this.setScaleMode(value.scaleMode);
+    if (typeof value.autoBaseWidth === "number") this.setAutoBaseWidth(value.autoBaseWidth);
+    if (typeof value.manualWidth === "number") this.setManualWidth(value.manualWidth);
+    if (typeof value.manualHeight === "number") this.setManualHeight(value.manualHeight);
+    if (typeof value.maskBlur === "number") this.setMaskBlur(value.maskBlur);
+    if (typeof value.inpaintPadding === "number") this.setInpaintPadding(value.inpaintPadding);
+    if (isInpaintArea(value.inpaintArea)) this.setInpaintArea(value.inpaintArea);
+    if (typeof value.softInpaintingEnabled === "boolean") {
+      this.setSoftInpaintingEnabled(value.softInpaintingEnabled);
+    }
+    if (typeof value.inpaintControlNetEnabled === "boolean") {
+      this.setInpaintControlNetEnabled(value.inpaintControlNetEnabled);
+    }
+    if (typeof value.inpaintControlNetModel === "string") {
+      this.setInpaintControlNetModel(value.inpaintControlNetModel);
+    }
+    if (typeof value.inpaintControlNetWeight === "number") {
+      this.setInpaintControlNetWeight(value.inpaintControlNetWeight);
+    }
+    if (typeof value.coherenceEdgeSize === "number") {
+      this.setCoherenceEdgeSize(value.coherenceEdgeSize);
+    }
+    if (typeof value.coherencePassFast === "boolean") {
+      this.setCoherencePassFast(value.coherencePassFast);
+    }
+    if (isSeedMode(value.seedMode)) this.setSeedMode(value.seedMode);
+    if (typeof value.seedValue === "number") this.setSeedValue(value.seedValue);
+  }
+
   public get scaleMode(): ScaleMode {
     return this._state.scaleMode;
   }
@@ -201,6 +235,18 @@ function normaliseManualDimension(value: number, fallback: number): number {
 function normaliseRange(value: number, fallback: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(minimum, Math.min(maximum, Math.round(value)));
+}
+
+function isScaleMode(value: unknown): value is ScaleMode {
+  return value === "none" || value === "auto" || value === "manual";
+}
+
+function isInpaintArea(value: unknown): value is InpaintArea {
+  return value === "whole" || value === "masked" || value === "coherence";
+}
+
+function isSeedMode(value: unknown): value is SeedMode {
+  return value === "random" || value === "reuse" || value === "manual";
 }
 
 export const generationSettingsStore = new GenerationSettingsStore();

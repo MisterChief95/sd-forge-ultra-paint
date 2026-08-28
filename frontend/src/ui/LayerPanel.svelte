@@ -93,7 +93,7 @@
   }
 
   function thumbnailFor(layer: Layer): string | null {
-    if (layer.kind === "group" || layer.kind === "mask") return null;
+    if (layer.kind === "group") return null;
     if (thumbnailVersions.get(layer.id) !== layerStore.getTextureVersion(layer.id)) {
       scheduleThumbnail(layer.id);
     }
@@ -503,13 +503,33 @@
           ▦
         </div>
       {:else if layer.kind === "mask"}
-        <div
-          class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
-          style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm); color: ${layer.color};`}
-          title="Mask"
-          aria-label="Mask layer"
-        >
-          ▨
+        <div class="relative h-[34px] w-[34px]">
+          {#if thumbnail}
+            <img
+              class="h-[34px] w-[34px] border bg-(--upaint-surface) object-contain"
+              style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm);`}
+              src={thumbnail}
+              alt={`${layer.name} preview`}
+              draggable="false"
+            />
+          {:else}
+            <div
+              class="flex h-[34px] w-[34px] items-center justify-center border bg-(--upaint-surface) text-base text-(--upaint-text-muted)"
+              style={`border-color: ${layer.color}; border-radius: var(--upaint-radius-sm);`}
+              title="No preview"
+              aria-hidden="true"
+            >
+              ▣
+            </div>
+          {/if}
+          <input
+            class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            type="color"
+            value={layer.color}
+            title="Change mask display color"
+            aria-label={`Display color of "${layer.name}"`}
+            oninput={(event) => handleMaskColorInput(event, layer.id)}
+          />
         </div>
       {:else if thumbnail}
         <img
@@ -610,24 +630,6 @@
           ×
         </Button>
       </div>
-
-      {#if layer.kind === "mask"}
-        <label
-          class="col-span-5 flex items-center gap-2 border-t pt-1.5 text-[11px] text-(--upaint-text-muted)"
-          style="border-color: var(--upaint-border);"
-        >
-          Display color
-          <input
-            class="h-6 w-12 cursor-pointer border bg-transparent p-0.5"
-            style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-            type="color"
-            value={layer.color}
-            title="Mask display color"
-            aria-label={`Display color of "${layer.name}"`}
-            oninput={(event) => handleMaskColorInput(event, layer.id)}
-          />
-        </label>
-      {/if}
 
       {#if layer.kind === "control" && expandedControlId === layer.id}
         <ControlLayerSettings {layer} {maskLayers} />

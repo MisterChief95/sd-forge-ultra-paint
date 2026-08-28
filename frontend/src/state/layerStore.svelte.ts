@@ -884,6 +884,20 @@ export class LayerStore {
     });
   }
 
+  /** Restore a persisted operating region without adding an undo-history entry. */
+  public restoreBoundaryBox(box: BoundaryBox): void {
+    if (
+      this._document.boundaryBox.x === box.x &&
+      this._document.boundaryBox.y === box.y &&
+      this._document.boundaryBox.width === box.width &&
+      this._document.boundaryBox.height === box.height
+    ) {
+      return;
+    }
+    this._document.boundaryBox = { ...box };
+    this.emit();
+  }
+
   /** Drop every layer and destroy every owned texture. */
   public clear(): void {
     for (const texture of this._textures.values()) {
