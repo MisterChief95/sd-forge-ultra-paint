@@ -30,7 +30,6 @@
   let masksOpen = $state(true);
   let controlsOpen = $state(true);
   let expandedControlId = $state<LayerId | null>(null);
-  let showControlOnly = $state(false);
   let contextMenuOpen = $state(false);
   let contextMenuX = $state(0);
   let contextMenuY = $state(0);
@@ -43,14 +42,11 @@
       .filter((layer): layer is Layer => layer !== undefined),
   );
   const regularLayers = $derived(
-    showControlOnly
-      ? []
-      : orderedRootLayers.filter((layer) => layer.kind !== "mask" && layer.kind !== "control"),
+    orderedRootLayers.filter((layer) => layer.kind !== "mask" && layer.kind !== "control"),
   );
   const maskLayers = $derived(
     orderedRootLayers.filter((layer): layer is MaskLayer => layer.kind === "mask"),
   );
-  const visibleMaskLayers = $derived(showControlOnly ? [] : maskLayers);
   const controlLayers = $derived(orderedRootLayers.filter((layer) => layer.kind === "control"));
   const opacitySelection = $derived(
     layerStore.selectedLayerIds.length === 1
@@ -252,6 +248,7 @@
       single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
     const filterable =
       single !== undefined && single.kind === "control" && !isPreviewing && !isFiltering;
+    const clippable = selected.some((candidate) => candidate.kind !== "group");
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
     contextMenuItems = [
@@ -289,10 +286,15 @@
           ]
         : []),
       ...(filterable ? [{ label: "Filter...", action: () => filterStore.begin(single.id) }] : []),
-      {
-        label: showControlOnly ? "Show all layers" : "Show Control layers only",
-        action: () => (showControlOnly = !showControlOnly),
-      },
+      ...(clippable
+        ? [
+            {
+              label: "Clip to BBox",
+              action: () => clipSelectedToBoundaryBox(selected),
+              disabled: isPreviewing || isFiltering,
+            },
+          ]
+        : []),
       {
         label: selected.length === 1 ? "Delete layer" : `Delete ${selected.length} selected`,
         action: () => selected.forEach((candidate) => layerStore.removeLayer(candidate.id)),
@@ -337,6 +339,30 @@
 
   function toggleMasksHidden(): void {
     layerStore.setMasksHidden(!layerStore.masksHidden);
+  }
+
+  function toggleLayersHidden(): void {
+    layerStore.setLayersHidden(!layerStore.layersHidden);
+  }
+
+  function toggleControlsHidden(): void {
+    layerStore.setControlsHidden(!layerStore.controlsHidden);
+  }
+
+  function clipSelectedToBoundaryBox(selected: readonly Layer[]): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      const clipped = selected.filter(
+        (candidate) => candidate.kind !== "group" && app.clipLayerToBoundaryBox(candidate.id),
+      ).length;
+      actionMessage =
+        clipped > 0
+          ? `Clipped ${clipped} layer${clipped === 1 ? "" : "s"} to the boundary box.`
+          : "No overlap with the boundary box -- nothing clipped.";
+    } catch (error) {
+      actionMessage = `Could not clip layer: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function convertLayerToMask(layer: Layer): void {
@@ -818,7 +844,101 @@
     </div>
   </div>
 
+  {#snippet eyeIcon(hidden: boolean)}
+    {#if hidden}
+      <svg
+        class="mx-auto h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z" stroke-linejoin="round" />
+        <circle cx="8" cy="8" r="2" />
+        <path d="M2 2l12 12" stroke-linecap="round" />
+      </svg>
+    {:else}
+      <svg
+        class="mx-auto h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z" stroke-linejoin="round" />
+        <circle cx="8" cy="8" r="2" />
+      </svg>
+    {/if}
+  {/snippet}
+
   <div class="flex min-h-0 flex-1 flex-col overflow-y-auto" style="scrollbar-gutter: stable;">
+    {#if maskLayers.length > 0}
+      <Accordion
+        bind:open={masksOpen}
+        title="Masks"
+        count={maskLayers.length}
+        id="upaint-mask-layer-list"
+        data-layer-section="masks"
+      >
+        {#snippet headerActions()}
+          <Button
+            size="icon"
+            title={isPreviewing || isFiltering
+              ? "Merging is disabled while previewing a generation"
+              : "Merge visible masks into a new mask"}
+            aria-label="Merge visible masks into a new mask"
+            disabled={isPreviewing ||
+              isFiltering ||
+              maskLayers.filter((layer) => layer.visible).length < 2}
+            onclick={mergeVisibleMasks}
+          >
+            ⧉
+          </Button>
+          <Button
+            size="icon"
+            pressed={layerStore.masksHidden}
+            title={layerStore.masksHidden
+              ? "Show masks on canvas (still active for generation)"
+              : "Hide masks from canvas (stays active for generation)"}
+            aria-label={layerStore.masksHidden ? "Show masks on canvas" : "Hide masks from canvas"}
+            onclick={toggleMasksHidden}
+          >
+            {@render eyeIcon(layerStore.masksHidden)}
+          </Button>
+        {/snippet}
+        {@render layerRows(maskLayers)}
+      </Accordion>
+    {/if}
+
+    {#if controlLayers.length > 0}
+      <Accordion
+        bind:open={controlsOpen}
+        title="Control"
+        count={controlLayers.length}
+        id="upaint-control-layer-list"
+        data-layer-section="controls"
+      >
+        {#snippet headerActions()}
+          <Button
+            size="icon"
+            pressed={layerStore.controlsHidden}
+            title={layerStore.controlsHidden
+              ? "Show control layers on canvas (still active for generation)"
+              : "Hide control layers from canvas (stays active for generation)"}
+            aria-label={layerStore.controlsHidden
+              ? "Show control layers on canvas"
+              : "Hide control layers from canvas"}
+            onclick={toggleControlsHidden}
+          >
+            {@render eyeIcon(layerStore.controlsHidden)}
+          </Button>
+        {/snippet}
+        {@render layerRows(controlLayers)}
+      </Accordion>
+    {/if}
+
     {#if regularLayers.length > 0}
       <Accordion
         bind:open={layersOpen}
@@ -841,93 +961,23 @@
           >
             ⧉
           </Button>
+          <Button
+            size="icon"
+            pressed={layerStore.layersHidden}
+            title={layerStore.layersHidden
+              ? "Show layers on canvas (still active for generation)"
+              : "Hide layers from canvas (stays active for generation)"}
+            aria-label={layerStore.layersHidden ? "Show layers on canvas" : "Hide layers from canvas"}
+            onclick={toggleLayersHidden}
+          >
+            {@render eyeIcon(layerStore.layersHidden)}
+          </Button>
         {/snippet}
         {@render layerRows(regularLayers)}
       </Accordion>
     {/if}
 
-    {#if visibleMaskLayers.length > 0}
-      <Accordion
-        bind:open={masksOpen}
-        title="Masks"
-        count={visibleMaskLayers.length}
-        id="upaint-mask-layer-list"
-        data-layer-section="masks"
-      >
-        {#snippet headerActions()}
-          <Button
-            size="icon"
-            title={isPreviewing || isFiltering
-              ? "Merging is disabled while previewing a generation"
-              : "Merge visible masks into a new mask"}
-            aria-label="Merge visible masks into a new mask"
-            disabled={isPreviewing ||
-              isFiltering ||
-              visibleMaskLayers.filter((layer) => layer.visible).length < 2}
-            onclick={mergeVisibleMasks}
-          >
-            ⧉
-          </Button>
-          <Button
-            size="icon"
-            pressed={layerStore.masksHidden}
-            title={layerStore.masksHidden
-              ? "Show masks on canvas (still active for generation)"
-              : "Hide masks from canvas (stays active for generation)"}
-            aria-label={layerStore.masksHidden ? "Show masks on canvas" : "Hide masks from canvas"}
-            onclick={toggleMasksHidden}
-          >
-            {#if layerStore.masksHidden}
-              <svg
-                class="mx-auto h-3.5 w-3.5"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.3"
-                aria-hidden="true"
-              >
-                <path
-                  d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z"
-                  stroke-linejoin="round"
-                />
-                <circle cx="8" cy="8" r="2" />
-                <path d="M2 2l12 12" stroke-linecap="round" />
-              </svg>
-            {:else}
-              <svg
-                class="mx-auto h-3.5 w-3.5"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.3"
-                aria-hidden="true"
-              >
-                <path
-                  d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z"
-                  stroke-linejoin="round"
-                />
-                <circle cx="8" cy="8" r="2" />
-              </svg>
-            {/if}
-          </Button>
-        {/snippet}
-        {@render layerRows(visibleMaskLayers)}
-      </Accordion>
-    {/if}
-
-    {#if controlLayers.length > 0}
-      <Accordion
-        bind:open={controlsOpen}
-        title="Control"
-        count={controlLayers.length}
-        id="upaint-control-layer-list"
-        data-layer-section="controls"
-      >
-        {@render layerRows(controlLayers)}
-      </Accordion>
-    {/if}
-
-    {#if regularLayers.length === 0 && visibleMaskLayers.length === 0 && controlLayers.length === 0}
+    {#if regularLayers.length === 0 && maskLayers.length === 0 && controlLayers.length === 0}
       <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
         No layers yet -- use + to add one.
       </div>

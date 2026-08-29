@@ -293,6 +293,19 @@ export class UltraPaintApp {
     );
   }
 
+  /**
+   * Recenter the camera if the layer being added is the document's first
+   * (i.e. `addRasterLayer` just auto-sized `boundaryBox` to it). Must be
+   * called with the layer count observed *before* the add, since
+   * `addRasterLayer` mutates `boundaryBox` synchronously and the camera
+   * would otherwise stay centered on the stale default box size.
+   */
+  private recenterIfFirstLayer(wasEmpty: boolean): void {
+    if (wasEmpty) {
+      this.viewportPositioned = this.centerDocument();
+    }
+  }
+
   /** Center the current document at its current zoom level in the viewport. */
   private centerDocument(): boolean {
     const app = this.app;
@@ -997,7 +1010,9 @@ export class UltraPaintApp {
     await this.ready;
     const texture = await decodeToTexture(file);
     const name = file instanceof File ? file.name : undefined;
+    const wasEmpty = this.store.getDocument().layers.length === 0;
     const id = this.store.addRasterLayer(this.createPaintableTexture(texture), name, source);
+    this.recenterIfFirstLayer(wasEmpty);
     return id;
   }
 
@@ -1092,6 +1107,78 @@ export class UltraPaintApp {
   }
 
   /**
+   * Crop a paintable layer's texture to its intersection with the document's
+   * boundary box, and shift its transform to match. No-op (returns `false`)
+   * if the layer and boundary box don't overlap at all.
+   */
+  public clipLayerToBoundaryBox(id: LayerId): boolean {
+    const app = this.app;
+    const history = this.history;
+    const layer = this.store.getLayer(id);
+    const target = this.store.getTexture(id);
+    if (!app || !history || !layer || !target) return false;
+    if (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") return false;
+
+    const { boundaryBox: box } = this.store.getDocument();
+    const { transform } = layer;
+    const left = Math.max(transform.x, box.x);
+    const top = Math.max(transform.y, box.y);
+    const right = Math.min(transform.x + target.width * transform.scaleX, box.x + box.width);
+    const bottom = Math.min(transform.y + target.height * transform.scaleY, box.y + box.height);
+    if (right <= left || bottom <= top) return false;
+
+    const localLeft = (left - transform.x) / transform.scaleX;
+    const localTop = (top - transform.y) / transform.scaleY;
+    const width = Math.round((right - left) / transform.scaleX);
+    const height = Math.round((bottom - top) / transform.scaleY);
+    if (width <= 0 || height <= 0) return false;
+    if (width === target.width && height === target.height && localLeft === 0 && localTop === 0) {
+      return false;
+    }
+
+    const cropped = RenderTexture.create({ width, height, resolution: 1, antialias: false });
+    const sprite = new Sprite({ texture: target });
+    sprite.position.set(-localLeft, -localTop);
+    try {
+      app.renderer.render({ container: sprite, target: cropped, clear: true, clearColor: [0, 0, 0, 0] });
+    } catch (error) {
+      cropped.destroy(true);
+      throw error;
+    } finally {
+      sprite.destroy({ texture: false, textureSource: false });
+    }
+
+    const nextTransform = { ...transform, x: left, y: top };
+    const pending = history.beginPixelChange(id);
+    if (!pending) {
+      cropped.destroy(true);
+      throw new Error(`[ultra-paint] could not begin clip history for layer "${id}"`);
+    }
+    let adopted = false;
+    try {
+      const previous = this.store.replaceLayerTexture(id, target, cropped, nextTransform);
+      if (previous !== target) throw new Error(`[ultra-paint] clip target layer "${id}" changed`);
+      adopted = true;
+      this.tree?.getNode(id)?.setTexture(cropped);
+      history.commitPixelChange(pending);
+      target.destroy(true);
+      return true;
+    } catch (error) {
+      history.discardPixelChange(pending);
+      if (adopted) {
+        const rolledBack = this.store.replaceLayerTexture(id, cropped, target, transform);
+        if (rolledBack === cropped) {
+          this.tree?.getNode(id)?.setTexture(target);
+          cropped.destroy(true);
+        }
+      } else {
+        cropped.destroy(true);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Extract a layer's own source texture (ignoring its transform and any
    * compositing with other layers) as a `data:image/png;base64,...` URL.
    * Used for ControlNet preprocessing/preview, which operates on one
@@ -1144,7 +1231,9 @@ export class UltraPaintApp {
     const response = await fetch(url);
     const blob = await response.blob();
     const texture = await decodeToTexture(blob);
+    const wasEmpty = this.store.getDocument().layers.length === 0;
     const id = this.store.addRasterLayer(this.createPaintableTexture(texture), name, source);
+    this.recenterIfFirstLayer(wasEmpty);
     const doc = this.store.getDocument();
     this.store.setTransform(id, {
       x: doc.boundaryBox.x,
@@ -1266,7 +1355,9 @@ export class UltraPaintApp {
         clear: true,
         clearColor: [0, 0, 0, 0],
       });
+      const wasEmpty = this.store.getDocument().layers.length === 0;
       const id = this.store.addRasterLayer(texture, name, "paint");
+      this.recenterIfFirstLayer(wasEmpty);
       const current = this.store.getDocument();
       this.store.setTransform(id, {
         x: current.boundaryBox.x,

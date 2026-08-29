@@ -268,6 +268,18 @@ export class LayerStore {
    */
   private _masksHidden = $state(false);
 
+  /**
+   * Display-only "hide all regular layers" toggle (raster/group). Same
+   * independence from each layer's own `visible` flag as `_masksHidden`.
+   */
+  private _layersHidden = $state(false);
+
+  /**
+   * Display-only "hide all control layers" toggle. Same independence from
+   * each layer's own `visible` flag as `_masksHidden`.
+   */
+  private _controlsHidden = $state(false);
+
   constructor(width = 1024, height = 1024) {
     this._document = createEmptyDocument(width, height);
   }
@@ -298,6 +310,30 @@ export class LayerStore {
   public setMasksHidden(hidden: boolean): void {
     if (this._masksHidden === hidden) return;
     this._masksHidden = hidden;
+    this.emit();
+  }
+
+  /** Reactive getter for the "hide all regular layers" display toggle. */
+  public get layersHidden(): boolean {
+    return this._layersHidden;
+  }
+
+  /** Toggle whether regular layers are hidden from the canvas without deactivating them. */
+  public setLayersHidden(hidden: boolean): void {
+    if (this._layersHidden === hidden) return;
+    this._layersHidden = hidden;
+    this.emit();
+  }
+
+  /** Reactive getter for the "hide all control layers" display toggle. */
+  public get controlsHidden(): boolean {
+    return this._controlsHidden;
+  }
+
+  /** Toggle whether control layers are hidden from the canvas without deactivating them. */
+  public setControlsHidden(hidden: boolean): void {
+    if (this._controlsHidden === hidden) return;
+    this._controlsHidden = hidden;
     this.emit();
   }
 
