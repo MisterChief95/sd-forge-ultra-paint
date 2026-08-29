@@ -13,6 +13,15 @@ from PIL import Image
 
 @pytest.fixture
 def fake_forge_modules(monkeypatch):
+    fake_fastapi = types.ModuleType("fastapi")
+
+    class HTTPException(Exception):
+        def __init__(self, status_code, detail):
+            self.status_code = status_code
+            self.detail = detail
+
+    fake_fastapi.HTTPException = HTTPException
+
     fake_modules = types.ModuleType("modules")
     fake_modules.__path__ = []
     manual_dir = Path(__file__).resolve().parent
@@ -30,6 +39,7 @@ def fake_forge_modules(monkeypatch):
 
     fake_modules.images = fake_images_module
     fake_modules.shared = fake_shared_module
+    monkeypatch.setitem(sys.modules, "fastapi", fake_fastapi)
     monkeypatch.setitem(sys.modules, "modules", fake_modules)
     monkeypatch.setitem(sys.modules, "modules.images", fake_images_module)
     monkeypatch.setitem(sys.modules, "modules.shared", fake_shared_module)
@@ -42,9 +52,17 @@ def fake_forge_modules(monkeypatch):
     monkeypatch.delitem(sys.modules, "ultra_paint.save_api", raising=False)
 
 
-def _data_url() -> str:
+def _data_url(info: str | None = None) -> str:
     buffer = BytesIO()
-    Image.new("RGBA", (3, 2), (255, 0, 0, 128)).save(buffer, format="PNG")
+    image = Image.new("RGBA", (3, 2), (255, 0, 0, 128))
+    if info is None:
+        image.save(buffer, format="PNG")
+    else:
+        from PIL.PngImagePlugin import PngInfo
+
+        pnginfo = PngInfo()
+        pnginfo.add_text("parameters", info)
+        image.save(buffer, format="PNG", pnginfo=pnginfo)
     payload = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{payload}"
 
@@ -68,3 +86,11 @@ def test_save_uses_forge_manual_save_directory(fake_forge_modules):
         "save_to_dirs": True,
     }
     assert response.path.endswith("saved.png")
+
+
+def test_save_forwards_embedded_generation_parameters(fake_forge_modules):
+    save_api, _fake_shared, save_image = fake_forge_modules
+
+    save_api.save(save_api.SaveRequest(image=_data_url("prompt, Steps: 20, Seed: 42")))
+
+    assert save_image.call_args.kwargs["info"] == "prompt, Steps: 20, Seed: 42"

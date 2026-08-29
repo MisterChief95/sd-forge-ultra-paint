@@ -48,11 +48,17 @@ def fake_forge_modules(monkeypatch):
         _Scheduler("Karras"),
     ]
 
+    class _Upscaler:
+        def __init__(self, name):
+            self.name = name
+
     fake_shared_module = types.ModuleType("modules.shared")
     fake_shared_module.sd_model = None
     fake_shared_module.opts = _FakeOpts()
     fake_shared_module.opts.sd_model_checkpoint = "fixture-model.safetensors"
     fake_shared_module.opts.forge_additional_modules = ["C:/models/fixture-vae.safetensors"]
+    fake_shared_module.latent_upscale_modes = {"Latent": "nearest", "Latent (bicubic)": "bicubic"}
+    fake_shared_module.sd_upscalers = [_Upscaler("None"), _Upscaler("Lanczos"), _Upscaler("ESRGAN_4x")]
 
     fake_modules.sd_samplers = fake_sd_samplers_module
     fake_modules.sd_schedulers = fake_sd_schedulers_module
@@ -95,6 +101,17 @@ def test_samplers_and_schedulers_pass_through(fake_forge_modules):
 
     assert options.samplers == ["Euler a", "DPM++ 2M"]
     assert options.schedulers == ["Automatic", "Karras"]
+
+
+def test_upscalers_list_matches_forge_hires_dropdown(fake_forge_modules):
+    # Same combined choice list Forge's own txt2img Hires "Upscaler" dropdown
+    # builds (modules/ui.py): latent-space modes first, then every
+    # registered pixel-space upscaler.
+    options_api, _fake_shared = fake_forge_modules
+
+    options = options_api.get_generation_options()
+
+    assert options.upscalers == ["Latent", "Latent (bicubic)", "None", "Lanczos", "ESRGAN_4x"]
 
 
 def test_model_manager_options_match_forge_catalog(fake_forge_modules):

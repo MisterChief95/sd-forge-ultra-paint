@@ -1,7 +1,9 @@
 """Unit tests for the Ultra Paint generation API handler."""
 
+import base64
 import sys
 import types
+from io import BytesIO
 from threading import Lock
 
 import pytest
@@ -39,7 +41,10 @@ def fake_forge_modules(monkeypatch):
     def run_and_wait_result(*args, **kwargs):
         calls.append((args, kwargs))
         return types.SimpleNamespace(
-            images=[Image.new("RGB", (2, 2))], extra_images=[], all_seeds=[12345]
+            images=[Image.new("RGB", (2, 2))],
+            extra_images=[],
+            all_seeds=[12345],
+            infotexts=["fixture generation parameters"],
         )
 
     fake_main_thread.run_and_wait_result = run_and_wait_result
@@ -119,6 +124,18 @@ def test_omitted_control_layers_forwards_empty_list(fake_forge_modules):
     )
 
     assert calls[0][1]["control_layers"] == []
+
+
+def test_generated_png_embeds_forge_infotext(fake_forge_modules):
+    generate_api, _calls, _generation_calls = fake_forge_modules
+
+    response = generate_api.generate(
+        generate_api.GenerateRequest(composite_image=_data_url(generate_api))
+    )
+
+    payload = base64.b64decode(response.images[0].split(",", 1)[1])
+    with Image.open(BytesIO(payload)) as image:
+        assert image.info["parameters"] == "fixture generation parameters"
 
 
 def test_malformed_control_layer_image_returns_400_without_generation(

@@ -326,6 +326,24 @@ def test_inpaint_disables_forge_original_image_overlay(fake_forge_modules):
     assert p.override_settings["overlay_inpaint"] is False
 
 
+def test_upscaler_name_overrides_upscaler_for_img2img(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite()
+
+    p = generation.build_img2img_processing(composite, {"upscaler_name": "ESRGAN_4x"})
+
+    assert p.override_settings["upscaler_for_img2img"] == "ESRGAN_4x"
+
+
+def test_missing_upscaler_name_leaves_upscaler_for_img2img_unset(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite()
+
+    p = generation.build_img2img_processing(composite, {})
+
+    assert "upscaler_for_img2img" not in p.override_settings
+
+
 def test_only_masked_result_becomes_transparent_bb_patch(fake_forge_modules):
     generation, _fake_shared = fake_forge_modules
     raw = Image.new("RGB", (8, 8), (0, 255, 0))
@@ -357,7 +375,7 @@ def test_whole_image_result_uses_mask_as_alpha(fake_forge_modules):
     assert result.getpixel((12, 2))[3] == 0
 
 
-def test_coherence_pass_runs_second_pass_with_expanded_alpha(fake_forge_modules):
+def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
     composite = _composite(32, 32)
     mask = Image.new("L", composite.size, 0)
@@ -374,14 +392,19 @@ def test_coherence_pass_runs_second_pass_with_expanded_alpha(fake_forge_modules)
         mask,
     )
 
-    assert len(fake_shared.process_calls) == 2
-    p2 = fake_shared.process_calls[1]
-    assert p2.denoising_strength == generation.COHERENCE_DENOISING_STRENGTH == 0.3
-    assert p2.mask_blur == 7
-    assert p2.scripts is None
-    assert p2.script_args is None
-    assert result.images[0].getpixel((10, 16))[3] > 0
-    assert result.images[0].getpixel((8, 16))[3] == 0
+    # Single pass -- the ring is denoised in-place pre-decode by
+    # scripts/fast_coherence_pass.py's post_sample hook, not a second
+    # dispatched StableDiffusionProcessingImg2Img.
+    assert len(fake_shared.process_calls) == 1
+    p = fake_shared.process_calls[0]
+    assert p.ultra_paint_fast_coherence_enabled is True
+    assert p.ultra_paint_coherence_edge_size == 3
+    # Blurred *then* dilated ("feathered"): a smooth, continuous ramp with
+    # no hard clip-induced jump at the mask's original edge.
+    alpha_row = [result.images[0].getpixel((x, 16))[3] for x in range(4, 16)]
+    assert alpha_row == sorted(alpha_row)
+    assert alpha_row[0] < alpha_row[-1]
+    assert max(b - a for a, b in zip(alpha_row, alpha_row[1:])) <= 8
 
 
 def test_disabled_coherence_keeps_single_pass_mask_alpha(fake_forge_modules):
@@ -409,18 +432,27 @@ def test_coherence_pass_zero_edge_size_has_no_expanded_alpha(fake_forge_modules)
         mask,
     )
 
-    assert len(fake_shared.process_calls) == 2
-    assert result.images[0].getpixel((11, 16))[3] == 0
-    assert result.images[0].getpixel((12, 16))[3] == 255
+    assert len(fake_shared.process_calls) == 1
+    # No dilation offset with edge_size=0, but mask_blur still feathers the
+    # boundary -- a smooth ramp straddling the mask's original edge (x=12),
+    # not a hard clip-induced jump: the pixel just outside (11) and just
+    # inside (12) differ by roughly one ramp step, not 0 -> full alpha.
+    assert result.images[0].getpixel((2, 16))[3] == 0  # far away: untouched
+    before, after = (
+        result.images[0].getpixel((11, 16))[3],
+        result.images[0].getpixel((12, 16))[3],
+    )
+    assert 0 < before < after
+    alpha_row = [result.images[0].getpixel((x, 16))[3] for x in range(2, 16)]
+    assert alpha_row == sorted(alpha_row)
 
 
 def test_coherence_pass_resizes_back_to_canvas_size(fake_forge_modules, monkeypatch):
-    """Regression test: Forge returns the generated image and `mask_for_overlay`
-    sized to the generation resolution (`processing.py:1757-1760`), not the
-    canvas. `_apply_coherence_pass` must resize back down/up to the canvas
-    size before returning, the same way `_transparent_inpaint_patch` already
-    does -- otherwise the result pastes back at generation resolution instead
-    of the boundary box's actual pixel size."""
+    """Regression test: Forge returns the generated image sized to the
+    generation resolution (`processing.py:1757-1760`), not the canvas.
+    `_transparent_inpaint_patch` must resize back down/up to the canvas size
+    before returning -- otherwise the result pastes back at generation
+    resolution instead of the boundary box's actual pixel size."""
     generation, fake_shared = fake_forge_modules
     composite = _composite(32, 32)
     mask = Image.new("L", composite.size, 0)
@@ -447,19 +479,23 @@ def test_coherence_pass_resizes_back_to_canvas_size(fake_forge_modules, monkeypa
     assert result.images[0].size == composite.size
 
 
-def test_coherence_pass_scales_edge_size_to_generation_resolution(
+def test_coherence_pass_edge_size_independent_of_generation_resolution(
     fake_forge_modules, monkeypatch
 ):
+    """The paste-back alpha ring is built from the raw canvas-resolution
+    `mask_image` (never Forge's `mask_for_overlay`, which may sit at a
+    different generation resolution) -- so `coherence_edge_size` stays in
+    canvas pixels regardless of what resolution Forge actually generated at."""
     generation, fake_shared = fake_forge_modules
     composite = _composite(32, 32)
     mask = Image.new("L", composite.size, 0)
     mask.paste(255, (12, 12, 20, 20))
-    original_compute_ring = generation.compute_ring
+    original_feathered_alpha = generation.feathered_alpha
     edge_sizes = []
 
-    def _capture_compute_ring(alpha, edge_size):
+    def _capture_feathered_alpha(alpha, edge_size, blur):
         edge_sizes.append(edge_size)
-        return original_compute_ring(alpha, edge_size)
+        return original_feathered_alpha(alpha, edge_size, blur)
 
     def _fake_process_images(p):
         fake_shared.process_calls.append(p)
@@ -470,7 +506,7 @@ def test_coherence_pass_scales_edge_size_to_generation_resolution(
             images=[Image.new("RGB", (64, 64))], extra_images=[]
         )
 
-    monkeypatch.setattr(generation, "compute_ring", _capture_compute_ring)
+    monkeypatch.setattr(generation, "feathered_alpha", _capture_feathered_alpha)
     monkeypatch.setattr(generation, "process_images", _fake_process_images)
 
     generation.run_generation(
@@ -479,7 +515,7 @@ def test_coherence_pass_scales_edge_size_to_generation_resolution(
         mask,
     )
 
-    assert edge_sizes == [6]
+    assert edge_sizes == [3]
 
 
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):
@@ -671,6 +707,48 @@ def test_only_one_of_target_width_height_is_ignored(fake_forge_modules):
     p = generation.build_img2img_processing(_composite(64, 64), {"target_width": 512})
 
     assert (p.width, p.height) == (64, 64)
+
+
+def test_upscale_keeps_target_size(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite(64, 48)
+    monkeypatch.setattr(
+        generation,
+        "process_images",
+        lambda p: types.SimpleNamespace(
+            images=[Image.new("RGB", (p.width, p.height))], extra_images=[]
+        ),
+    )
+
+    result = generation.run_generation(
+        composite,
+        {"target_width": 128, "target_height": 96},
+        mask_image=None,
+        generation_mode="upscale",
+    )
+
+    assert result.images[0].size == (128, 96)
+
+
+def test_whole_image_img2img_still_resizes_to_source(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite(64, 48)
+    monkeypatch.setattr(
+        generation,
+        "process_images",
+        lambda p: types.SimpleNamespace(
+            images=[Image.new("RGB", (p.width, p.height))], extra_images=[]
+        ),
+    )
+
+    result = generation.run_generation(
+        composite,
+        {"target_width": 128, "target_height": 96},
+        mask_image=None,
+        generation_mode="img2img",
+    )
+
+    assert result.images[0].size == composite.size
 
 
 def test_txt2img_uses_txt2img_runner_and_ignores_img2img_fields(fake_forge_modules):

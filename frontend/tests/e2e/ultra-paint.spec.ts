@@ -46,6 +46,7 @@ interface UltraPaintTestHook {
     };
     setBoundaryBox(box: BoundaryBox): void;
     setSelectedLayerId(id: string | null): void;
+    setPreserveAlpha(id: string, preserveAlpha: boolean): void;
     setVisible(id: string, visible: boolean): void;
     setTransform(id: string, transform: Partial<TestLayer["transform"]>): void;
   };
@@ -419,6 +420,45 @@ test("paint round-trip persists a pointer stroke in flattenToDataURL", async ({ 
       }),
     )
     .toEqual({ width: 256, height: 256, alpha: 255 });
+});
+
+test("preserve alpha clips the brush while the pointer is still down", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(256, 256);
+  });
+  await addBlankLayer(page);
+  await paintCenteredStroke(page);
+
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const layerId = hook?.layerStore.document.layers.find(
+      (candidate) => candidate.kind === "raster",
+    )?.id;
+    if (!hook || !layerId) throw new Error("Raster test layer is unavailable");
+    hook.layerStore.setPreserveAlpha(layerId, true);
+    hook.paintToolStore.setBrushSettings({ radius: 80 });
+  });
+
+  const canvas = page.locator("#upaint-root canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+  const outsideOriginalAlpha = { x: centerX - 2, y: centerY + 58, width: 4, height: 4 };
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.waitForTimeout(50);
+  const held = await page.screenshot({ clip: outsideOriginalAlpha });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  const committed = await page.screenshot({ clip: outsideOriginalAlpha });
+
+  expect(held.equals(committed)).toBe(true);
 });
 
 test("contextual shortcuts switch tools and modifier drags adjust without painting", async ({
@@ -1318,6 +1358,30 @@ test("generate flow adds a fixture image at the boundary-box position", async ({
   expect(requestBody?.gen_params).not.toHaveProperty("target_height");
 });
 
+test("preview gallery saves the selected generated PNG directly", async ({ page }) => {
+  let savedImage: string | null = null;
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", (route) =>
+    route.fulfill({ json: generateFixture }),
+  );
+  await page.route("**/ultra_paint/api/save", async (route) => {
+    savedImage = (route.request().postDataJSON() as { image?: string }).image ?? null;
+    await route.fulfill({ json: { path: "outputs/selected-preview.png" } });
+  });
+  await openApp(page);
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+  await page.getByRole("button", { name: "Save selected preview" }).click();
+
+  await expect.poll(() => savedImage).toBe(generateFixture.images[0]);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved to outputs/selected-preview.png" }),
+  ).toBeVisible();
+});
+
 test("a second generation after Apply does not freeze the viewport", async ({ page }) => {
   // Regression test: Apply calls previewStore.discardAll(), which evicted
   // the just-shown preview's cached Texture even though the (now hidden)
@@ -1673,6 +1737,71 @@ test("generation progress fills the active button and Save lives in the toolbar"
   await expect(
     page.getByRole("status").filter({ hasText: "Saved to outputs/ultra-paint-test.png" }),
   ).toBeVisible();
+});
+
+test("live preview ignores a foreign job and blocks painting while generating", async ({
+  page,
+}) => {
+  const foreignImg =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const oursImg =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwAAAAASUVORK5CYII=";
+  let releaseGenerate: (() => void) | null = null;
+  let pollCount = 0;
+  let releaseSecondPoll: (() => void) | null = null;
+  const secondPollGate = new Promise<void>((resolve) => {
+    releaseSecondPoll = resolve;
+  });
+
+  await routeOptions(page);
+  await page.route("**/ultra_paint/api/progress", async (route) => {
+    pollCount += 1;
+    if (pollCount > 1) await secondPollGate;
+    // First poll lands before our own `state.begin("ultra_paint")` has run
+    // server-side -- Forge's shared.state still reports whatever job is
+    // active elsewhere. The live-preview image from that foreign job must
+    // never reach our overlay/img (see generationController.svelte.ts).
+    const [job, image] =
+      pollCount === 1 ? ["some_other_tab", foreignImg] : ["ultra_paint", oursImg];
+    return route.fulfill({
+      json: { job, sampling_step: 1, sampling_steps: 4, current_image: image },
+    });
+  });
+  await page.route("**/ultra_paint/api/generate", async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseGenerate = resolve;
+    });
+    await route.fulfill({ json: generateFixture });
+  });
+  await openApp(page);
+  await addBlankLayer(page);
+
+  const before = await page.evaluate(() =>
+    (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
+  );
+
+  await page.getByRole("button", { name: "Generate", exact: true }).click();
+
+  const livePreview = page.getByRole("img", { name: "Live generation preview" });
+  await expect.poll(() => pollCount).toBeGreaterThanOrEqual(1);
+  // The foreign job's image must never reach the live-preview <img>.
+  await expect(livePreview).not.toBeVisible();
+
+  const canvas = page.locator("#upaint-root canvas");
+  await expect(canvas).toHaveCSS("cursor", "wait");
+
+  releaseSecondPoll?.();
+  await expect(livePreview).toBeVisible();
+  await expect(livePreview).toHaveAttribute("src", oursImg);
+
+  await paintCenteredStroke(page);
+  const afterAttemptedPaint = await page.evaluate(() =>
+    (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
+  );
+  expect(afterAttemptedPaint).toBe(before);
+
+  releaseGenerate?.();
+  await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
 });
 
 test("queued generations capture prompts sequentially and Cancel Current continues", async ({
