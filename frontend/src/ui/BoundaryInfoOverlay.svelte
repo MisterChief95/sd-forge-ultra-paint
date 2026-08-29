@@ -14,10 +14,18 @@
       case "auto": {
         const step = generationRuntimeStore.resolutionStep;
         if (step === null) return null;
-        return calculateAutoResolution(box.width, box.height, generationSettingsStore.autoBaseWidth, step);
+        return calculateAutoResolution(
+          box.width,
+          box.height,
+          generationSettingsStore.autoBaseWidth,
+          step,
+        );
       }
       case "manual":
-        return { width: generationSettingsStore.manualWidth, height: generationSettingsStore.manualHeight };
+        return {
+          width: generationSettingsStore.manualWidth,
+          height: generationSettingsStore.manualHeight,
+        };
     }
   });
 </script>

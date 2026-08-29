@@ -164,8 +164,7 @@
     placeholder="Describe what to generate"
     oninput={promptField.onInput}
     onkeydown={promptField.onKeydown}
-    onblur={promptField.onBlur}
-  ></textarea>
+    onblur={promptField.onBlur}></textarea>
   {#if promptField.open}
     <TagAutocompleteDropdown
       items={promptField.results}
@@ -189,8 +188,7 @@
     placeholder="What to avoid"
     oninput={negativePromptField.onInput}
     onkeydown={negativePromptField.onKeydown}
-    onblur={negativePromptField.onBlur}
-  ></textarea>
+    onblur={negativePromptField.onBlur}></textarea>
   {#if negativePromptField.open}
     <TagAutocompleteDropdown
       items={negativePromptField.results}

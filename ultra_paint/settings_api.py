@@ -34,7 +34,9 @@ def get_generation_settings() -> dict[str, Any]:
 def save_generation_settings(settings: dict[str, Any]) -> Response:
     encoded = json.dumps(settings, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_SETTINGS_BYTES:
-        raise HTTPException(status_code=413, detail="Generation settings are too large.")
+        raise HTTPException(
+            status_code=413, detail="Generation settings are too large."
+        )
 
     with _SETTINGS_LOCK:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)

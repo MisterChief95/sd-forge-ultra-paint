@@ -224,14 +224,18 @@ def test_model_selection_uses_forge_checkpoint_manager(fake_forge_modules, monke
     generation.modules.sd_models = fake_sd_models
 
     fake_main_entry = types.ModuleType("modules_forge.main_entry")
-    fake_main_entry.module_list = {"selected-vae.safetensors": "C:/models/selected-vae.safetensors"}
-    fake_main_entry.modules_change = lambda values, **kwargs: calls.append(
-        ("modules", values, kwargs)
-    ) or True
-    fake_main_entry.checkpoint_change = lambda value, **kwargs: calls.append(
-        ("model", value, kwargs)
-    ) or True
-    fake_main_entry.refresh_model_loading_parameters = lambda: calls.append(("refresh",))
+    fake_main_entry.module_list = {
+        "selected-vae.safetensors": "C:/models/selected-vae.safetensors"
+    }
+    fake_main_entry.modules_change = lambda values, **kwargs: (
+        calls.append(("modules", values, kwargs)) or True
+    )
+    fake_main_entry.checkpoint_change = lambda value, **kwargs: (
+        calls.append(("model", value, kwargs)) or True
+    )
+    fake_main_entry.refresh_model_loading_parameters = lambda: calls.append(
+        ("refresh",)
+    )
     fake_modules_forge = types.ModuleType("modules_forge")
     fake_modules_forge.main_entry = fake_main_entry
 
@@ -244,8 +248,16 @@ def test_model_selection_uses_forge_checkpoint_manager(fake_forge_modules, monke
     )
 
     assert calls == [
-        ("modules", ["selected-vae.safetensors"], {"preset": None, "save": False, "refresh": False}),
-        ("model", "selected-model.safetensors", {"preset": None, "save": False, "refresh": False}),
+        (
+            "modules",
+            ["selected-vae.safetensors"],
+            {"preset": None, "save": False, "refresh": False},
+        ),
+        (
+            "model",
+            "selected-model.safetensors",
+            {"preset": None, "save": False, "refresh": False},
+        ),
         ("refresh",),
     ]
 

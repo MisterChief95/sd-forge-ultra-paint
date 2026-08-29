@@ -47,7 +47,7 @@ def _get_progress() -> dict:
 def on_app_started(_demo: Blocks | None, app: FastAPI) -> None:
     app.add_api_route(PROGRESS_ROUTE, _get_progress, methods=["GET"])
     if not FRONTEND_DIST_DIR.is_dir():
-        print(
+        print(  # noqa: T201
             f"Warning: Ultra Paint frontend build directory is missing: {FRONTEND_DIST_DIR}"
         )
     app.mount(

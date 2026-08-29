@@ -27,8 +27,6 @@ Only fires for generations Ultra Paint explicitly opted in via
 every img2img/inpaint job in the webui, not just Ultra Paint's own.
 """
 
-import time
-
 import numpy as np
 import torch
 from PIL import Image
@@ -58,8 +56,6 @@ class FastCoherencePass(scripts.Script):
         if not getattr(p, "ultra_paint_fast_coherence_enabled", False):
             return
 
-        t_start = time.perf_counter()
-
         mask_for_overlay = getattr(p, "mask_for_overlay", None)
         if mask_for_overlay is None:
             return  # not an inpaint job
@@ -70,7 +66,9 @@ class FastCoherencePass(scripts.Script):
         # feeding it an already-blurred mask hardens that blur's faint tail
         # into solid coverage before the ring's own dilation is even applied,
         # ballooning the ring well past `edge_size`.
-        coherence_mask = getattr(p, "ultra_paint_coherence_mask", None) or mask_for_overlay
+        coherence_mask = (
+            getattr(p, "ultra_paint_coherence_mask", None) or mask_for_overlay
+        )
 
         edge_size = getattr(p, "ultra_paint_coherence_edge_size", DEFAULT_EDGE_SIZE)
         canvas_size = getattr(
@@ -112,8 +110,6 @@ class FastCoherencePass(scripts.Script):
         if ring_mask.max().item() <= 0:
             return  # edge_size resolved to nothing (e.g. mask fills the frame) -- nothing to blend
 
-        t_setup_done = time.perf_counter()
-
         # Forge's convention (processing.py:1868-1869): `mask` = 1 where the
         # original should be kept, `nmask` = 1 where it should regenerate.
         # p.c/p.uc/p.rng/p.image_conditioning are reused completely
@@ -135,16 +131,7 @@ class FastCoherencePass(scripts.Script):
         finally:
             p.mask, p.nmask, p.denoising_strength = saved
 
-        t_sample_done = time.perf_counter()
-
         # Same final cleanup blend the stock img2img sample() does
         # (processing.py:1920) -- pins the "keep" region back to the exact
         # original latent instead of trusting the per-step blend alone.
         ps.samples = denoised * ring_mask + samples * keep_mask
-
-        t_end = time.perf_counter()
-        print(
-            f"[ultra_paint fast coherence] TIMING setup={t_setup_done - t_start:.3f}s "
-            f"sample_img2img={t_sample_done - t_setup_done:.3f}s "
-            f"composite={t_end - t_sample_done:.3f}s total={t_end - t_start:.3f}s"
-        )

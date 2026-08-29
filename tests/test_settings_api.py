@@ -48,9 +48,13 @@ def test_settings_round_trip_uses_atomic_file(settings_api, monkeypatch, tmp_pat
 
 def test_settings_reject_oversized_payload(settings_api, monkeypatch, tmp_path):
     settings_api, HTTPException = settings_api
-    monkeypatch.setattr(settings_api, "SETTINGS_FILE", tmp_path / "generation-settings.json")
+    monkeypatch.setattr(
+        settings_api, "SETTINGS_FILE", tmp_path / "generation-settings.json"
+    )
 
     with pytest.raises(HTTPException, match="too large") as exc_info:
-        settings_api.save_generation_settings({"prompt": "x" * settings_api.MAX_SETTINGS_BYTES})
+        settings_api.save_generation_settings(
+            {"prompt": "x" * settings_api.MAX_SETTINGS_BYTES}
+        )
 
     assert exc_info.value.status_code == 413

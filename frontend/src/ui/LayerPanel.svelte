@@ -967,7 +967,9 @@
             title={layerStore.layersHidden
               ? "Show layers on canvas (still active for generation)"
               : "Hide layers from canvas (stays active for generation)"}
-            aria-label={layerStore.layersHidden ? "Show layers on canvas" : "Hide layers from canvas"}
+            aria-label={layerStore.layersHidden
+              ? "Show layers on canvas"
+              : "Hide layers from canvas"}
             onclick={toggleLayersHidden}
           >
             {@render eyeIcon(layerStore.layersHidden)}

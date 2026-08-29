@@ -63,7 +63,10 @@ def get_generation_options() -> GenerationOptions:
         # Same choice list Forge's own txt2img Hires "Upscaler" dropdown
         # builds (modules/ui.py): latent-space modes first, then every
         # registered pixel-space upscaler ("None", "Lanczos", "ESRGAN_4x", ...).
-        upscalers=[*shared.latent_upscale_modes, *[x.name for x in shared.sd_upscalers]],
+        upscalers=[
+            *shared.latent_upscale_modes,
+            *[x.name for x in shared.sd_upscalers],
+        ],
         selected_model=str(getattr(shared.opts, "sd_model_checkpoint", "") or ""),
         selected_modules=[
             os.path.basename(module)

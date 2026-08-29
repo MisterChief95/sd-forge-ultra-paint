@@ -1140,7 +1140,12 @@ export class UltraPaintApp {
     const sprite = new Sprite({ texture: target });
     sprite.position.set(-localLeft, -localTop);
     try {
-      app.renderer.render({ container: sprite, target: cropped, clear: true, clearColor: [0, 0, 0, 0] });
+      app.renderer.render({
+        container: sprite,
+        target: cropped,
+        clear: true,
+        clearColor: [0, 0, 0, 0],
+      });
     } catch (error) {
       cropped.destroy(true);
       throw error;

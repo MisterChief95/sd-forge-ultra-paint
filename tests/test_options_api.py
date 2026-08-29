@@ -56,9 +56,18 @@ def fake_forge_modules(monkeypatch):
     fake_shared_module.sd_model = None
     fake_shared_module.opts = _FakeOpts()
     fake_shared_module.opts.sd_model_checkpoint = "fixture-model.safetensors"
-    fake_shared_module.opts.forge_additional_modules = ["C:/models/fixture-vae.safetensors"]
-    fake_shared_module.latent_upscale_modes = {"Latent": "nearest", "Latent (bicubic)": "bicubic"}
-    fake_shared_module.sd_upscalers = [_Upscaler("None"), _Upscaler("Lanczos"), _Upscaler("ESRGAN_4x")]
+    fake_shared_module.opts.forge_additional_modules = [
+        "C:/models/fixture-vae.safetensors"
+    ]
+    fake_shared_module.latent_upscale_modes = {
+        "Latent": "nearest",
+        "Latent (bicubic)": "bicubic",
+    }
+    fake_shared_module.sd_upscalers = [
+        _Upscaler("None"),
+        _Upscaler("Lanczos"),
+        _Upscaler("ESRGAN_4x"),
+    ]
 
     fake_modules.sd_samplers = fake_sd_samplers_module
     fake_modules.sd_schedulers = fake_sd_schedulers_module
@@ -111,7 +120,13 @@ def test_upscalers_list_matches_forge_hires_dropdown(fake_forge_modules):
 
     options = options_api.get_generation_options()
 
-    assert options.upscalers == ["Latent", "Latent (bicubic)", "None", "Lanczos", "ESRGAN_4x"]
+    assert options.upscalers == [
+        "Latent",
+        "Latent (bicubic)",
+        "None",
+        "Lanczos",
+        "ESRGAN_4x",
+    ]
 
 
 def test_model_manager_options_match_forge_catalog(fake_forge_modules):

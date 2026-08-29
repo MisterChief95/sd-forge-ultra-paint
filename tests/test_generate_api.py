@@ -145,7 +145,9 @@ def test_malformed_control_layer_image_returns_400_without_generation(
     request = generate_api.GenerateRequest(
         composite_image=_data_url(generate_api),
         control_layers=[
-            generate_api.ControlLayerRequest(image="not-a-data-url", model="control-model")
+            generate_api.ControlLayerRequest(
+                image="not-a-data-url", model="control-model"
+            )
         ],
     )
 

@@ -221,11 +221,16 @@ def _apply_model_selection(gen_params: dict) -> None:
         return
 
     if model is not None and (not isinstance(model, str) or not model.strip()):
-        raise ValueError("Ultra Paint: selected model must be a non-empty checkpoint name")
+        raise ValueError(
+            "Ultra Paint: selected model must be a non-empty checkpoint name"
+        )
     if modules is not None and (
-        not isinstance(modules, list) or not all(isinstance(module, str) for module in modules)
+        not isinstance(modules, list)
+        or not all(isinstance(module, str) for module in modules)
     ):
-        raise ValueError("Ultra Paint: selected VAE / Text Encoder modules must be a list of names")
+        raise ValueError(
+            "Ultra Paint: selected VAE / Text Encoder modules must be a list of names"
+        )
 
     from modules import sd_models
     from modules_forge import main_entry
@@ -233,7 +238,9 @@ def _apply_model_selection(gen_params: dict) -> None:
     if model is not None and sd_models.get_closet_checkpoint_match(model) is None:
         raise ValueError(f"Ultra Paint: selected model was not found: {model}")
     if modules is not None:
-        unknown_modules = [module for module in modules if module not in main_entry.module_list]
+        unknown_modules = [
+            module for module in modules if module not in main_entry.module_list
+        ]
         if unknown_modules:
             raise ValueError(
                 "Ultra Paint: selected VAE / Text Encoder module was not found: "
@@ -686,7 +693,7 @@ def run_generation(
     shared.total_tqdm.clear()
 
     if opts.samples_log_stdout:
-        print(processed.js())
+        print(processed.js())  # noqa: T201
 
     return processed
 
