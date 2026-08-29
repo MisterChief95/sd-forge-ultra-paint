@@ -40,6 +40,7 @@ export class ConsistentOpacityStroke implements StrokeSession {
   private strokeTexture: RenderTexture;
   private readonly stamp: Sprite;
   private readonly strokeSprite: Sprite;
+  private readonly layerAlphaMaskSprite: Sprite | null;
   private readonly previewTexture: RenderTexture | null;
   private readonly previewSourceSprite: Sprite | null;
   private readonly previewEraseRoot: Container | null;
@@ -80,6 +81,10 @@ export class ConsistentOpacityStroke implements StrokeSession {
     this.strokeSprite = new Sprite({ texture: this.strokeTexture });
     this.strokeSprite.alpha = settings.opacity;
     this.strokeSprite.blendMode = this.options.commitBlendMode;
+    this.layerAlphaMaskSprite = this.options.preserveAlpha ? new Sprite({ texture: target }) : null;
+    if (this.layerAlphaMaskSprite) {
+      this.strokeSprite.setMask({ mask: this.layerAlphaMaskSprite, channel: "alpha" });
+    }
 
     if (this.options.livePreview === "replace-layer-texture") {
       this.previewTexture = RenderTexture.create({
@@ -114,7 +119,7 @@ export class ConsistentOpacityStroke implements StrokeSession {
 
     for (const point of points) {
       this.layerContainer.toLocal(point, this.documentRoot, this.localPoint);
-      if (this.options.allowGrowth && this.growForCurrentStamp()) {
+      if (this.options.allowGrowth && !this.options.preserveAlpha && this.growForCurrentStamp()) {
         // The atomic store emit synchronously reconciles the layer's
         // compensated transform, so the old local coordinate is stale.
         this.layerContainer.toLocal(point, this.documentRoot, this.localPoint);
@@ -144,6 +149,9 @@ export class ConsistentOpacityStroke implements StrokeSession {
 
     if (this.options.livePreview === "overlay") {
       if (!this.strokeSprite.parent) {
+        if (this.layerAlphaMaskSprite) {
+          this.layerContainer.addChild(this.layerAlphaMaskSprite);
+        }
         this.layerContainer.addChild(this.strokeSprite);
       }
       return;
@@ -235,7 +243,9 @@ export class ConsistentOpacityStroke implements StrokeSession {
 
     // Remove/restore the live preview before writing the real texture so
     // the next frame cannot briefly draw both versions of the stroke.
+    this.strokeSprite.mask = null;
     this.strokeSprite.removeFromParent();
+    this.layerAlphaMaskSprite?.removeFromParent();
     if (this.previewTexture && this.store.getTexture(this.layerId) === this.target) {
       this.options.setPreviewTexture?.(this.target);
     }
@@ -295,6 +305,7 @@ export class ConsistentOpacityStroke implements StrokeSession {
     this.previewSourceSprite?.destroy({ texture: false, textureSource: false });
     this.previewEraseRoot?.destroy({ children: false });
     this.previewTexture?.destroy(true);
+    this.layerAlphaMaskSprite?.destroy({ texture: false, textureSource: false });
     this.strokeSprite.destroy({ texture: false, textureSource: false });
     this.strokeTexture.destroy(true);
     this.stamp.destroy({ texture: false, textureSource: false });
