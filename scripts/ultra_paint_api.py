@@ -31,6 +31,14 @@ def _current_image_data_url() -> str | None:
 
 
 def _get_progress() -> dict:
+    # `shared.state.current_image` is never populated on its own -- the
+    # sampler callback only stashes the raw latent (`store_latent` in
+    # modules/sd_samplers_cfg_denoiser.py). The (expensive) latent->image
+    # decode only happens inside `set_current_image()`, which webui's own
+    # progress routes (modules/progress.py, modules/api/api.py) call on each
+    # poll -- so it has to be called here too, or `current_image` stays None
+    # for the whole job no matter how many steps run.
+    shared.state.set_current_image()
     payload = shared.state.dict()
     payload["current_image"] = _current_image_data_url()
     return payload

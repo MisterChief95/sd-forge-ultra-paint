@@ -6,13 +6,14 @@ const SAVE_URL = "/ultra_paint/api/save";
 const PROGRESS_URL = "/ultra_paint/api/progress";
 const INTERRUPT_URL = "/ultra_paint/api/interrupt";
 
-export type GenerationMode = "txt2img" | "img2img";
+export type GenerationMode = "txt2img" | "img2img" | "upscale";
 
 export interface GenerationOptions {
   samplers: string[];
   schedulers: string[];
   models: string[];
   modules: string[];
+  upscalers: string[];
   selectedModel: string;
   selectedModules: string[];
   nativeResolution: number | null;
@@ -56,12 +57,27 @@ export interface GenerationParameters {
   inpaintControlNetWeight: number;
   coherencePassEnabled: boolean;
   coherenceEdgeSize: number;
-  coherencePassFast: boolean;
   samplerName: string;
   scheduler: string;
   modelName: string;
   moduleNames: string[] | null;
   targetResolution: { width: number; height: number } | null;
+  seed: number;
+}
+
+export interface UpscaleParameters {
+  prompt: string;
+  negativePrompt: string;
+  denoisingStrength: number;
+  steps: number;
+  cfgScale: number;
+  samplerName: string;
+  scheduler: string;
+  modelName: string;
+  moduleNames: string[] | null;
+  upscalerName: string;
+  targetWidth: number;
+  targetHeight: number;
   seed: number;
 }
 
@@ -79,6 +95,7 @@ interface RawGenerationOptions {
   schedulers: unknown;
   models: unknown;
   modules: unknown;
+  upscalers: unknown;
   selected_model: unknown;
   selected_modules: unknown;
   native_resolution: unknown;
@@ -139,6 +156,7 @@ export async function fetchGenerationOptions(): Promise<GenerationOptions> {
     schedulers: stringArray(body.schedulers),
     models: stringArray(body.models),
     modules: stringArray(body.modules),
+    upscalers: stringArray(body.upscalers),
     selectedModel: typeof body.selected_model === "string" ? body.selected_model : "",
     selectedModules: stringArray(body.selected_modules),
     nativeResolution: positiveSafeInteger(body.native_resolution),
@@ -220,7 +238,6 @@ export async function requestGeneration(
           : {}),
         coherence_pass_enabled: parameters.coherencePassEnabled,
         coherence_edge_size: parameters.coherenceEdgeSize,
-        coherence_pass_fast: parameters.coherencePassFast,
         sampler_name: parameters.samplerName || null,
         scheduler: parameters.scheduler || null,
         ...(parameters.modelName ? { model: parameters.modelName } : {}),
@@ -232,6 +249,59 @@ export async function requestGeneration(
               target_width: parameters.targetResolution.width,
               target_height: parameters.targetResolution.height,
             }),
+      },
+    }),
+  });
+
+  if (!response.ok) throw new Error(await responseError(response));
+  const body = (await response.json()) as { images?: unknown; seeds?: unknown };
+  if (!Array.isArray(body.images)) {
+    throw new Error("Generation returned an invalid image response.");
+  }
+  return {
+    images: body.images,
+    seeds: Array.isArray(body.seeds)
+      ? body.seeds.filter((seed): seed is number => typeof seed === "number")
+      : [],
+  };
+}
+
+export async function requestUpscale(
+  compositeImage: string,
+  parameters: UpscaleParameters,
+  controlLayers: ControlLayerPayload[] = [],
+): Promise<GenerationResult> {
+  const response = await fetch(GENERATE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      composite_image: compositeImage,
+      generation_mode: "upscale",
+      control_layers: controlLayers.map((layer) => ({
+        image: layer.image,
+        model: layer.model,
+        weight: layer.weight,
+        guidance_start: layer.guidanceStart,
+        guidance_end: layer.guidanceEnd,
+        control_mode: layer.controlMode,
+        pixel_perfect: layer.pixelPerfect,
+        resize_mode: layer.resizeMode,
+        enabled: layer.enabled,
+      })),
+      gen_params: {
+        prompt: parameters.prompt,
+        negative_prompt: parameters.negativePrompt,
+        steps: parameters.steps,
+        cfg_scale: parameters.cfgScale,
+        denoising_strength: parameters.denoisingStrength,
+        sampler_name: parameters.samplerName || null,
+        scheduler: parameters.scheduler || null,
+        ...(parameters.modelName ? { model: parameters.modelName } : {}),
+        ...(parameters.moduleNames === null ? {} : { modules: parameters.moduleNames }),
+        seed: parameters.seed,
+        target_width: parameters.targetWidth,
+        target_height: parameters.targetHeight,
+        upscaler_name: parameters.upscalerName || null,
       },
     }),
   });

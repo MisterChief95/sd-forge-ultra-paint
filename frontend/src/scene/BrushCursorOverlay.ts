@@ -3,6 +3,7 @@
 import { Container, Graphics, Point } from "pixi.js";
 import type { Application } from "pixi.js";
 
+import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
 import type { PaintToolStore, PaintToolUnsubscribe } from "../state/paintToolStore.svelte";
 
@@ -14,6 +15,7 @@ export class BrushCursorOverlay {
   private readonly documentPoint = new Point();
   private unsubscribeStore: Unsubscribe | null = null;
   private unsubscribeTools: PaintToolUnsubscribe | null = null;
+  private unsubscribeRuntime: (() => void) | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private hovering = false;
   private lastRadius = -1;
@@ -37,6 +39,7 @@ export class BrushCursorOverlay {
 
     this.unsubscribeStore = store.subscribe(() => this.refresh());
     this.unsubscribeTools = toolStore.subscribe(() => this.refresh());
+    this.unsubscribeRuntime = generationRuntimeStore.subscribe(() => this.refresh());
     this.mount();
     this.refresh();
   }
@@ -46,6 +49,8 @@ export class BrushCursorOverlay {
     this.unsubscribeStore = null;
     this.unsubscribeTools?.();
     this.unsubscribeTools = null;
+    this.unsubscribeRuntime?.();
+    this.unsubscribeRuntime = null;
     const canvas = this.canvas;
     if (canvas) {
       canvas.removeEventListener("pointermove", this.handlePointerMove);
@@ -100,7 +105,8 @@ export class BrushCursorOverlay {
     const isPaintable =
       selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control";
 
-    const visible = this.hovering && isPaintTool && isPaintable;
+    const visible =
+      this.hovering && isPaintTool && isPaintable && !generationRuntimeStore.generating;
     this.container.visible = visible;
     if (!visible) return;
 

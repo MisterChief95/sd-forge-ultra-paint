@@ -6,6 +6,7 @@ takes ~40 positional arguments describing the five img2img sub-modes (sketch,
 inpaint, inpaint-sketch, inpaint-upload, batch), none of which apply: Ultra
 Paint always hands over one boundary-box-sized RGBA frame; an empty frame
 selects txt2img, while visible raster content selects img2img/inpainting.
+Upscale behaves like whole-image img2img but keeps the generated target size.
 
 Threading contract
 ------------------
@@ -67,10 +68,12 @@ key                          default    notes
                                           when a mask is supplied.
 ``inpaint_controlnet_model``  ``""``     Model name for the inpaint ControlNet unit.
 ``inpaint_controlnet_weight``  ``1.0``   Weight of the inpaint ControlNet unit.
-``coherence_pass_enabled``    ``False``  Runs a low-strength second img2img pass over a
-                                        ring straddling the mask boundary.
-``coherence_edge_size``       ``32``     Pixels on each side of the mask boundary included
-                                        in the coherence-pass ring.
+``coherence_pass_enabled``    ``False``  Denoises a low-strength ring straddling the mask
+                                        boundary in latent space, in-place before Forge's
+                                        one decode (see scripts/fast_coherence_pass.py).
+``coherence_edge_size``       ``32``     Total pixel width of the coherence-pass ring,
+                                        centered on the mask boundary (half dilates
+                                        outward, half erodes inward).
 ``soft_inpainting_power``    ``1``
 ``soft_inpainting_scale``    ``0.5``
 ``soft_inpainting_detail_preservation``  ``4``
@@ -91,6 +94,19 @@ key                          default    notes
                                         all), `p.width`/`p.height` fall back to the
                                         composite's own (8px-clamped) dimensions, unchanged
                                         from pre-Phase-3 behavior.
+``upscaler_name``             ``None``   Same choice list as Forge's own txt2img Hires
+                                        "Upscaler" dropdown (`shared.latent_upscale_modes`
+                                        keys + `shared.sd_upscalers` names) -- but unlike
+                                        Hires fix's dedicated two-stage pipeline, Ultra
+                                        Paint's Upscale is one ordinary img2img pass, so
+                                        this only reaches `images.resize_image`'s init-image
+                                        resize (via a per-request `upscaler_for_img2img`
+                                        override). A "Latent ..." entry isn't a real
+                                        `sd_upscalers` name, so Forge's own `resize_image`
+                                        silently falls back to its first upscaler (usually
+                                        "None" -> plain Lanczos) if one is picked. ``None``
+                                        leaves the site-wide "Upscaler for img2img" setting
+                                        in effect, unchanged from pre-Upscale behavior.
 ===========================  =========  ==============================================
 
 `mask_image`
@@ -134,7 +150,7 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
-from ultra_paint.mask_ring import compute_ring, scale_edge_size
+from ultra_paint.mask_ring import feathered_alpha, scale_edge_size
 from ultra_paint.model_profile import is_unsupported_video_model
 
 __all__ = [
@@ -171,7 +187,6 @@ GEN_PARAM_DEFAULTS: dict = {
     "inpaint_controlnet_weight": 1.0,
     "coherence_pass_enabled": False,
     "coherence_edge_size": 32,
-    "coherence_pass_fast": False,
     "soft_inpainting_power": 1,
     "soft_inpainting_scale": 0.5,
     "soft_inpainting_detail_preservation": 4,
@@ -180,10 +195,8 @@ GEN_PARAM_DEFAULTS: dict = {
     "soft_inpainting_difference_contrast": 2,
     "target_width": None,
     "target_height": None,
+    "upscaler_name": None,
 }
-
-
-COHERENCE_DENOISING_STRENGTH = 0.3
 
 
 def _get(gen_params: dict, key: str):
@@ -384,6 +397,8 @@ def build_img2img_processing(
         output_width = width
         output_height = height
 
+    upscaler_name = _get(gen_params, "upscaler_name")
+
     p = StableDiffusionProcessingImg2Img(
         sd_model=shared.sd_model,
         # Same option precedence as modules/img2img.py:226-227.
@@ -415,6 +430,14 @@ def build_img2img_processing(
             # image back into them. `run_generation` restores the Only-masked
             # crop to boundary-box coordinates and uses the mask as alpha.
             "overlay_inpaint": False,
+            # `StableDiffusionProcessingImg2Img.init()` calls
+            # `images.resize_image(self.resize_mode, image, self.width,
+            # self.height)` with no `upscaler_name`, so it always falls back
+            # to this site-wide setting -- overriding it per-request (Forge
+            # applies/restores `override_settings` around the whole job in
+            # `process_images`, before `.init()` runs) is the only way to
+            # pick an upscaler for a single generation.
+            **({"upscaler_for_img2img": upscaler_name} if upscaler_name else {}),
         },
         inpainting_fill=int(_get(gen_params, "inpainting_fill")),
         # False = use the whole boundary box; True = crop again around the
@@ -555,7 +578,7 @@ def run_generation(
     `control_layers` stays a separate top-level argument rather than becoming
     part of `gen_params`; see the module docstring.
     """
-    if generation_mode not in {"img2img", "txt2img"}:
+    if generation_mode not in {"img2img", "txt2img", "upscale"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
 
     _apply_model_selection(gen_params)
@@ -575,20 +598,18 @@ def run_generation(
         )
     )
 
-    use_fast_coherence = (
+    coherence_enabled = (
         not is_txt2img
         and mask_image is not None
         and _get(gen_params, "coherence_pass_enabled")
-        and _get(gen_params, "coherence_pass_fast")
     )
-    if use_fast_coherence:
+    if coherence_enabled:
         # Picked up by scripts/fast_coherence_pass.py's post_sample hook --
-        # patches the latent in place before Forge's single decode, instead
-        # of dispatching a second full StableDiffusionProcessingImg2Img like
-        # `_apply_coherence_pass` below.
+        # patches the latent in place before Forge's single decode.
         p.ultra_paint_fast_coherence_enabled = True
         p.ultra_paint_coherence_edge_size = int(_get(gen_params, "coherence_edge_size"))
         p.ultra_paint_coherence_canvas_size = composite_image.size
+        p.ultra_paint_coherence_mask = mask_image.convert("L")
 
     with closing(p):
         # Index 0 of script_args is 0 ("Script: None"), so `run` returns None and
@@ -608,20 +629,24 @@ def run_generation(
             ]
         elif mask_image is not None:
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
-            if use_fast_coherence:
+            if coherence_enabled:
                 # Latent already patched pre-decode -- paste back like the
-                # no-coherence path, but alpha against the *dilated* mask
-                # (same as _apply_coherence_pass's `patch.putalpha(dilated)`
-                # below), not the plain one: the ring's blend extends
-                # `coherence_edge_size` px outside the original mask, and
-                # compositing against the un-dilated mask would clip that
-                # outward half away with alpha=0.
-                dilated, _, _ = compute_ring(
-                    mask_for_alpha.convert("L"),
+                # no-coherence path, but alpha against the *dilated* mask, not
+                # the plain one: the ring's blend extends `coherence_edge_size`
+                # px outside the original mask, and compositing against the
+                # un-dilated mask would clip that outward half away with
+                # alpha=0.
+                dilated = feathered_alpha(
+                    mask_image.convert("L"),
                     scale_edge_size(
                         int(_get(gen_params, "coherence_edge_size")),
                         composite_image.size,
-                        mask_for_alpha.size,
+                        mask_image.size,
+                    ),
+                    scale_edge_size(
+                        int(_get(gen_params, "mask_blur")),
+                        composite_image.size,
+                        mask_image.size,
                     ),
                 )
                 processed.images = [
@@ -630,18 +655,6 @@ def run_generation(
                         composite_image.size,
                         dilated,
                         p.paste_to,
-                    )
-                    for image in processed.images
-                ]
-            elif _get(gen_params, "coherence_pass_enabled"):
-                processed.images = [
-                    _apply_coherence_pass(
-                        image,
-                        composite_image.size,
-                        mask_for_alpha,
-                        int(_get(gen_params, "coherence_edge_size")),
-                        p,
-                        gen_params,
                     )
                     for image in processed.images
                 ]
@@ -661,12 +674,14 @@ def run_generation(
             # a Resolution-scale target larger than the boundary box ships
             # the full upscaled result back to the frontend instead of the
             # boundary box's own size.
-            processed.images = [
-                image.resize(composite_image.size, Image.Resampling.LANCZOS)
-                if image.size != composite_image.size
-                else image
-                for image in processed.images
-            ]
+            # Upscale intentionally keeps the generated target resolution.
+            if generation_mode != "upscale":
+                processed.images = [
+                    image.resize(composite_image.size, Image.Resampling.LANCZOS)
+                    if image.size != composite_image.size
+                    else image
+                    for image in processed.images
+                ]
 
     shared.total_tqdm.clear()
 
@@ -674,70 +689,6 @@ def run_generation(
         print(processed.js())
 
     return processed
-
-
-def _apply_coherence_pass(
-    image: Image.Image,
-    canvas_size: tuple[int, int],
-    mask_for_alpha: Image.Image,
-    edge_size: int,
-    base_p: StableDiffusionProcessingImg2Img,
-    gen_params: dict,
-) -> Image.Image:
-    """Denoise a ring around an inpaint boundary, keeping its expanded alpha."""
-    flattened = image.convert("RGBA")
-    alpha = mask_for_alpha.convert("L")
-    dilated, eroded, ring = compute_ring(
-        alpha, scale_edge_size(edge_size, canvas_size, alpha.size)
-    )
-
-    p2 = StableDiffusionProcessingImg2Img(
-        sd_model=base_p.sd_model,
-        outpath_samples=opts.outdir_samples or opts.outdir_img2img_samples,
-        outpath_grids=opts.outdir_grids or opts.outdir_img2img_grids,
-        prompt=base_p.prompt,
-        negative_prompt=base_p.negative_prompt,
-        styles=list(base_p.styles),
-        batch_size=1,
-        n_iter=1,
-        steps=base_p.steps,
-        cfg_scale=base_p.cfg_scale,
-        distilled_cfg_scale=base_p.distilled_cfg_scale,
-        denoising_strength=COHERENCE_DENOISING_STRENGTH,
-        sampler_name=base_p.sampler_name,
-        scheduler=base_p.scheduler,
-        seed=base_p.seed,
-        subseed=base_p.subseed,
-        subseed_strength=base_p.subseed_strength,
-        width=base_p.width,
-        height=base_p.height,
-        init_images=[flattened],
-        mask=ring,
-        resize_mode=0,
-        override_settings={"overlay_inpaint": False},
-        inpainting_fill=1,
-        inpaint_full_res=False,
-        inpaint_full_res_padding=0,
-        mask_blur=int(_get(gen_params, "mask_blur")),
-        inpainting_mask_invert=0,
-    )
-    with closing(p2):
-        processed2 = process_images(p2)
-
-    # `image`/`mask_for_alpha` are both sized to the generation resolution
-    # (`base_p.width x base_p.height`), not the canvas -- Forge's own
-    # `process_images` resizes `mask_for_overlay` to match right before
-    # returning (processing.py:1757-1760), the same reason
-    # `_transparent_inpaint_patch`'s "Whole image" branch resizes back down.
-    # Skipping this step pastes the result back at generation resolution
-    # instead of the boundary box's actual pixel size.
-    patch = processed2.images[0].convert("RGBA")
-    if patch.size != canvas_size:
-        patch = patch.resize(canvas_size, Image.Resampling.LANCZOS)
-    if dilated.size != canvas_size:
-        dilated = dilated.resize(canvas_size, Image.Resampling.LANCZOS)
-    patch.putalpha(dilated)
-    return patch
 
 
 def _transparent_inpaint_patch(

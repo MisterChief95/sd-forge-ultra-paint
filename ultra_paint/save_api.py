@@ -40,7 +40,9 @@ def _decode_data_url(data_url: str) -> Image.Image:
         image.load()
     except Exception as exc:
         raise ValueError("image did not decode to a valid PNG") from exc
-    return image.convert("RGBA")
+    converted = image.convert("RGBA")
+    converted.info.update(image.info)
+    return converted
 
 
 def save(request: SaveRequest) -> SaveResponse:
@@ -52,6 +54,9 @@ def save(request: SaveRequest) -> SaveResponse:
     path = shared.opts.outdir_save
     extension = shared.opts.samples_format
     save_to_dirs = shared.opts.use_save_to_dirs_for_ui
+    info = image.info.get("parameters")
+    if not isinstance(info, str):
+        info = None
     os.makedirs(shared.opts.outdir_save, exist_ok=True)
     fullfn, _ = modules.images.save_image(
         image,
@@ -60,7 +65,7 @@ def save(request: SaveRequest) -> SaveResponse:
         seed=None,
         prompt=None,
         extension=extension,
-        info=None,
+        info=info,
         grid=False,
         p=None,
         save_to_dirs=save_to_dirs,

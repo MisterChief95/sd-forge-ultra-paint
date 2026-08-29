@@ -8,6 +8,9 @@
   import { registerGenerationActions } from "../input/actionMap";
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
+  import Button from "./lib/Button.svelte";
+  import Select from "./lib/Select.svelte";
+  import SliderNumberInput from "./lib/SliderNumberInput.svelte";
   import BoundaryBoxControls from "./generation/BoundaryBoxControls.svelte";
   import GenerationActionsAndStatus from "./generation/GenerationActionsAndStatus.svelte";
   import InpaintControls from "./generation/InpaintControls.svelte";
@@ -41,6 +44,15 @@
   let steps = $state(20);
   let cfgScale = $state(7);
   let denoisingStrength = $state(0.75);
+  let upscalers = $state<string[]>([]);
+  let upscalerName = $state("");
+  let upscaleMultiplier = $state(1.5);
+  let upscaleDenoisingStrength = $state(0.4);
+  let upscaleAdvancedEnabled = $state(false);
+  let upscaleSteps = $state(20);
+  let upscaleCfgScale = $state(7);
+  let upscaleSamplerName = $state("");
+  let upscaleScheduler = $state("");
   let selectedLoras = $state<SelectedLora[]>([]);
   let persistenceReady = $state(false);
   let restoredPersistedSettings = false;
@@ -91,8 +103,12 @@
       schedulers = value.schedulers;
       models = value.models;
       modules = value.modules;
+      upscalers = value.upscalers;
       samplerName = samplers.includes(samplerName) ? samplerName : "";
       scheduler = schedulers.includes(scheduler) ? scheduler : "";
+      upscaleSamplerName = samplers.includes(upscaleSamplerName) ? upscaleSamplerName : "";
+      upscaleScheduler = schedulers.includes(upscaleScheduler) ? upscaleScheduler : "";
+      upscalerName = upscalers.includes(upscalerName) ? upscalerName : "";
       modelName =
         restoredPersistedSettings && models.includes(modelName) ? modelName : value.selectedModel;
       moduleNames = restoredPersistedSettings
@@ -145,13 +161,28 @@
       inpaintControlNetWeight: generationSettingsStore.inpaintControlNetWeight,
       coherencePassEnabled: generationSettingsStore.inpaintArea === "coherence",
       coherenceEdgeSize: generationSettingsStore.coherenceEdgeSize,
-      coherencePassFast: generationSettingsStore.coherencePassFast,
       samplerName,
       scheduler,
       modelName: modelOptionsLoaded ? modelName : "",
       moduleNames: modelOptionsLoaded ? moduleNames : null,
       targetResolution: selectedTargetResolution,
       scaleMode: generationSettingsStore.scaleMode,
+    });
+  }
+
+  function upscale(): void {
+    void controller.upscale({
+      prompt: buildLoraPrompt(prompt, selectedLoras),
+      negativePrompt,
+      denoisingStrength: upscaleDenoisingStrength,
+      steps: upscaleAdvancedEnabled ? upscaleSteps : steps,
+      cfgScale: upscaleAdvancedEnabled ? upscaleCfgScale : cfgScale,
+      samplerName: upscaleAdvancedEnabled ? upscaleSamplerName : samplerName,
+      scheduler: upscaleAdvancedEnabled ? upscaleScheduler : scheduler,
+      modelName: modelOptionsLoaded ? modelName : "",
+      moduleNames: modelOptionsLoaded ? moduleNames : null,
+      upscalerName,
+      sizeMultiplier: upscaleMultiplier,
     });
   }
 
@@ -186,6 +217,14 @@
       steps,
       cfgScale,
       denoisingStrength,
+      upscalerName,
+      upscaleMultiplier,
+      upscaleDenoisingStrength,
+      upscaleAdvancedEnabled,
+      upscaleSteps,
+      upscaleCfgScale,
+      upscaleSamplerName,
+      upscaleScheduler,
       selectedLoras,
       generationSettings: generationSettingsStore.snapshot,
     };
@@ -246,6 +285,22 @@
     steps = numberValue(stored.steps, steps, 1, 150, true);
     cfgScale = numberValue(stored.cfgScale, cfgScale, 1, 30);
     denoisingStrength = numberValue(stored.denoisingStrength, denoisingStrength, 0, 1);
+    upscalerName = stringValue(stored.upscalerName, upscalerName);
+    upscaleMultiplier = numberValue(stored.upscaleMultiplier, upscaleMultiplier, 0.25, 4);
+    upscaleDenoisingStrength = numberValue(
+      stored.upscaleDenoisingStrength,
+      upscaleDenoisingStrength,
+      0,
+      1,
+    );
+    upscaleAdvancedEnabled =
+      typeof stored.upscaleAdvancedEnabled === "boolean"
+        ? stored.upscaleAdvancedEnabled
+        : upscaleAdvancedEnabled;
+    upscaleSteps = numberValue(stored.upscaleSteps, upscaleSteps, 1, 150, true);
+    upscaleCfgScale = numberValue(stored.upscaleCfgScale, upscaleCfgScale, 1, 30);
+    upscaleSamplerName = stringValue(stored.upscaleSamplerName, upscaleSamplerName);
+    upscaleScheduler = stringValue(stored.upscaleScheduler, upscaleScheduler);
     selectedLoras = selectedLoraArray(stored.selectedLoras);
     if (isRecord(stored.generationSettings)) {
       generationSettingsStore.restore(stored.generationSettings);
@@ -432,7 +487,6 @@
           inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
           inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
           coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
-          coherencePassFast={generationSettingsStore.coherencePassFast}
           onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
           onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
           onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
@@ -445,8 +499,104 @@
           onInpaintControlNetWeightChange={(value) =>
             generationSettingsStore.setInpaintControlNetWeight(value)}
           onCoherenceEdgeSizeChange={(value) => generationSettingsStore.setCoherenceEdgeSize(value)}
-          onCoherencePassFastChange={(value) => generationSettingsStore.setCoherencePassFast(value)}
         />
+      </div>
+    </Accordion>
+
+    <Accordion title="Upscale">
+      <div class="flex flex-col gap-3 p-2">
+        <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+          Upscaler
+          <Select bind:value={upscalerName}>
+            <option value="">Default</option>
+            {#each upscalers as upscalerOption (upscalerOption)}
+              <option value={upscalerOption}>{upscalerOption}</option>
+            {/each}
+          </Select>
+        </label>
+
+        <SliderNumberInput
+          label="Size multiplier"
+          bind:value={upscaleMultiplier}
+          min={0.25}
+          max={4}
+          sliderStep={0.25}
+          numberStep={0.25}
+        />
+
+        <SliderNumberInput
+          label="Denoising strength"
+          bind:value={upscaleDenoisingStrength}
+          min={0}
+          max={1}
+          sliderStep={0.01}
+        />
+
+        <Accordion title="Advanced">
+          {#snippet headerActions()}
+            <label
+              class="flex cursor-pointer items-center gap-1 text-[11px] text-(--upaint-text-muted)"
+            >
+              <input
+                type="checkbox"
+                bind:checked={upscaleAdvancedEnabled}
+                class="m-0 h-3.5 w-3.5 accent-(--upaint-accent) focus-visible:ring-2 focus-visible:ring-(--upaint-accent)"
+              />
+              Enabled
+            </label>
+          {/snippet}
+
+          <div class="flex flex-col gap-2 p-2">
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+                Sampler
+                <Select bind:value={upscaleSamplerName} disabled={!upscaleAdvancedEnabled}>
+                  <option value="">Default</option>
+                  {#each samplers as sampler (sampler)}
+                    <option value={sampler}>{sampler}</option>
+                  {/each}
+                </Select>
+              </label>
+
+              <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+                Scheduler
+                <Select bind:value={upscaleScheduler} disabled={!upscaleAdvancedEnabled}>
+                  <option value="">Default</option>
+                  {#each schedulers as schedulerOption (schedulerOption)}
+                    <option value={schedulerOption}>{schedulerOption}</option>
+                  {/each}
+                </Select>
+              </label>
+            </div>
+
+            <SliderNumberInput
+              label="Steps"
+              bind:value={upscaleSteps}
+              min={1}
+              max={150}
+              sliderStep={1}
+              disabled={!upscaleAdvancedEnabled}
+            />
+
+            <SliderNumberInput
+              label="CFG scale"
+              bind:value={upscaleCfgScale}
+              min={1}
+              max={30}
+              sliderStep={0.5}
+              disabled={!upscaleAdvancedEnabled}
+            />
+          </div>
+        </Accordion>
+
+        <Button
+          variant="primary"
+          class="w-full"
+          onclick={upscale}
+          disabled={generationRuntimeStore.generating}
+        >
+          Upscale
+        </Button>
       </div>
     </Accordion>
   </div>

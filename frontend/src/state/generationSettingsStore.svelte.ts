@@ -37,13 +37,6 @@ export interface GenerationSettings {
    * `"coherence"`.
    */
   coherenceEdgeSize: number;
-  /**
-   * Denoise just the ring in latent space and skip straight to Forge's one
-   * decode, instead of dispatching a second full img2img pass over the
-   * whole canvas and alpha-blending its result on top. Opt-in while this
-   * path is still new -- see scripts/fast_coherence_pass.py.
-   */
-  coherencePassFast: boolean;
   seedMode: SeedMode;
   /** The seed shown in the seed box and sent when `seedMode` isn't `"random"`. */
   seedValue: number;
@@ -56,13 +49,12 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   manualHeight: 1024,
   maskBlur: 4,
   inpaintPadding: 32,
-  inpaintArea: "whole",
+  inpaintArea: "coherence",
   softInpaintingEnabled: false,
   inpaintControlNetEnabled: false,
   inpaintControlNetModel: "",
   inpaintControlNetWeight: 1,
   coherenceEdgeSize: 32,
-  coherencePassFast: false,
   seedMode: "random",
   seedValue: -1,
 };
@@ -96,9 +88,6 @@ export class GenerationSettingsStore {
     }
     if (typeof value.coherenceEdgeSize === "number") {
       this.setCoherenceEdgeSize(value.coherenceEdgeSize);
-    }
-    if (typeof value.coherencePassFast === "boolean") {
-      this.setCoherencePassFast(value.coherencePassFast);
     }
     if (isSeedMode(value.seedMode)) this.setSeedMode(value.seedMode);
     if (typeof value.seedValue === "number") this.setSeedValue(value.seedValue);
@@ -199,14 +188,6 @@ export class GenerationSettingsStore {
 
   public setCoherenceEdgeSize(value: number): void {
     this._state.coherenceEdgeSize = normaliseRange(value, this._state.coherenceEdgeSize, 0, 256);
-  }
-
-  public get coherencePassFast(): boolean {
-    return this._state.coherencePassFast;
-  }
-
-  public setCoherencePassFast(enabled: boolean): void {
-    this._state.coherencePassFast = enabled;
   }
 
   public get seedMode(): SeedMode {

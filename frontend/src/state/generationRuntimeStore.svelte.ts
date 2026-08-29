@@ -24,8 +24,27 @@ const INITIAL_STATE: GenerationRuntimeState = {
   resolutionStep: null,
 };
 
+export type GenerationRuntimeListener = () => void;
+export type GenerationRuntimeUnsubscribe = () => void;
+
 export class GenerationRuntimeStore {
   private _state = $state<GenerationRuntimeState>({ ...INITIAL_STATE });
+
+  // Runes give reactivity for free inside .svelte components, but the Pixi
+  // overlay (GenerationPreviewOverlay) is plain TS outside that reactive
+  // context -- same subscribe/emit shape as PreviewStore, for the same reason.
+  private readonly listeners = new Set<GenerationRuntimeListener>();
+
+  public subscribe(fn: GenerationRuntimeListener): GenerationRuntimeUnsubscribe {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
+  private emit(): void {
+    for (const fn of [...this.listeners]) fn();
+  }
 
   public get generating(): boolean {
     return this._state.generating;
@@ -64,6 +83,7 @@ export class GenerationRuntimeStore {
 
   public setGenerating(value: boolean): void {
     this._state.generating = value;
+    this.emit();
   }
 
   public setInterrupting(value: boolean): void {
@@ -81,6 +101,7 @@ export class GenerationRuntimeStore {
 
   public setProgress(value: GenerationProgress | null): void {
     this._state.progress = value;
+    this.emit();
   }
 
   public setResolutionStep(value: number | null): void {
@@ -93,6 +114,7 @@ export class GenerationRuntimeStore {
     this._state.current = 0;
     this._state.total = 0;
     this._state.progress = null;
+    this.emit();
   }
 }
 

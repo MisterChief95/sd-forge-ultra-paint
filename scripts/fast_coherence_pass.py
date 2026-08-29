@@ -29,32 +29,17 @@ every img2img/inpaint job in the webui, not just Ultra Paint's own.
 
 import time
 
-import cv2
 import numpy as np
 import torch
 from PIL import Image
 
 from modules import scripts
-from ultra_paint.mask_ring import compute_ring, scale_edge_size
+from ultra_paint.mask_ring import blur_ring, compute_ring, scale_edge_size
 
 
 COHERENCE_STEPS = 6
 COHERENCE_DENOISE_STRENGTH = 0.35
 DEFAULT_EDGE_SIZE = 32
-
-
-def _blur_ring(ring_image, mask_blur):
-    """Gaussian-blur the ring the same way Forge blurs any inpaint mask
-    (processing.py:1729-1731) -- without this the ring's edge is exactly as
-    hard as the MaxFilter/MinFilter that built it, instead of fading like the
-    slow coherence pass's mask does."""
-    if mask_blur <= 0:
-        return ring_image
-    kernel_size = 2 * int(2.5 * mask_blur + 0.5) + 1
-    blurred = cv2.GaussianBlur(
-        np.array(ring_image, dtype=np.float32), (kernel_size, kernel_size), mask_blur
-    )
-    return Image.fromarray(np.clip(blurred, 0, 255).astype(np.uint8))
 
 
 class FastCoherencePass(scripts.Script):
@@ -79,34 +64,42 @@ class FastCoherencePass(scripts.Script):
         if mask_for_overlay is None:
             return  # not an inpaint job
 
+        # The ring's geometry must come from the *unblurred* mask, not
+        # Forge's own mask_blur-softened mask_for_overlay -- compute_ring
+        # hard-thresholds its input (mask_ring.py's `alpha.point(...)`), so
+        # feeding it an already-blurred mask hardens that blur's faint tail
+        # into solid coverage before the ring's own dilation is even applied,
+        # ballooning the ring well past `edge_size`.
+        coherence_mask = getattr(p, "ultra_paint_coherence_mask", None) or mask_for_overlay
+
         edge_size = getattr(p, "ultra_paint_coherence_edge_size", DEFAULT_EDGE_SIZE)
         canvas_size = getattr(
-            p, "ultra_paint_coherence_canvas_size", mask_for_overlay.size
+            p, "ultra_paint_coherence_canvas_size", coherence_mask.size
         )
         samples = (
             ps.samples
         )  # (B, C, H, W) latent, pre-decode -- (B, C, T, H, W) for video models
 
         # `edge_size`/`mask_blur` are pixel units in the mask's own
-        # resolution -- mask_for_overlay's own size, not (p.width, p.height)
+        # resolution -- coherence_mask's own size, not (p.width, p.height)
         # (Forge doesn't assume these match: processing.py:1800-1801). Scale
         # both into latent units by the real width/height ratio -- works
         # regardless of the model's VAE downscale factor (8x for most SD
         # models, 16x for some, a non-uniform ratio for video models).
         lh, lw = samples.shape[-2], samples.shape[-1]
-        iw, ih = mask_for_overlay.size
+        iw, ih = coherence_mask.size
         edge_scale = (lw / iw + lh / ih) / 2
-        edge_size = scale_edge_size(edge_size, canvas_size, mask_for_overlay.size)
+        edge_size = scale_edge_size(edge_size, canvas_size, coherence_mask.size)
 
         # MaxFilter/MinFilter (in compute_ring) are O(w*h*kernel) -- run at
         # the mask's full pixel resolution with edge_size~32 (kernel~65) this
         # was a measured multi-second stall. Resize down to latent resolution
         # first so the filters run on a ~100x100 image instead.
-        alpha_latent = mask_for_overlay.convert("L").resize(
+        alpha_latent = coherence_mask.convert("L").resize(
             (lw, lh), Image.Resampling.BILINEAR
         )
         _, _, ring = compute_ring(alpha_latent, max(1, round(edge_size * edge_scale)))
-        ring = _blur_ring(ring, max(0, round(p.mask_blur * edge_scale)))
+        ring = blur_ring(ring, max(0, round(p.mask_blur * edge_scale)))
 
         ring_arr = np.asarray(ring, dtype=np.float32) / 255.0
         ring_mask = (

@@ -11,10 +11,13 @@ import {
   GenerationApiError,
   interruptGeneration,
   requestGeneration,
+  requestUpscale,
   saveFlattenedImage,
   type ControlLayerPayload,
+  type GenerationMode,
   type GenerationOptions,
   type GenerationParameters,
+  type UpscaleParameters,
 } from "./generationApi";
 
 /** Visible control layers, captured with the rest of a queued generation. */
@@ -39,22 +42,49 @@ function collectControlLayers(app: UltraPaintApp): ControlLayerPayload[] {
   return payloads;
 }
 
-const POLL_INTERVAL_MS = 750;
-const MAX_PROGRESS_POLLS = 1200;
+// ponytail: fixed constant, not a settings-panel option yet -- each poll
+// triggers a real latent->image decode server-side (see ultra_paint_api.py),
+// and Forge itself has no per-step preview queue (only the freshest latent
+// at poll time), so tightening this only raises the fraction of steps
+// caught on fast/turbo models, it can't guarantee every one. Promote to a
+// GenerationSettingsStore field + UI slider if users want to trade decode
+// overhead for catching more frames.
+const POLL_INTERVAL_MS = 250;
+// Poll *count*, not a duration -- scaled to preserve the original ~15min
+// cutoff (was 1200 * 750ms) now that POLL_INTERVAL_MS is smaller.
+const MAX_PROGRESS_POLLS = 3600;
 
-export interface GenerateInput extends Omit<GenerationParameters, "seed"> {
+export interface GenerateInput extends Omit<GenerationParameters, "generationMode" | "seed"> {
+  generationMode: Exclude<GenerationMode, "upscale">;
   scaleMode: ScaleMode;
+}
+
+export interface UpscaleInput extends Omit<
+  UpscaleParameters,
+  "targetWidth" | "targetHeight" | "seed"
+> {
+  sizeMultiplier: number;
 }
 
 type NotificationKind = "info" | "success" | "error";
 
-interface QueuedGeneration {
+interface QueuedGenerationBase {
   compositeImage: string;
-  maskImage: string | null;
-  parameters: GenerationParameters;
   controlLayers: ControlLayerPayload[];
   updateRandomSeed: boolean;
 }
+
+type QueuedGeneration =
+  | (QueuedGenerationBase & {
+      mode: Exclude<GenerationMode, "upscale">;
+      maskImage: string | null;
+      parameters: GenerationParameters;
+    })
+  | (QueuedGenerationBase & {
+      mode: "upscale";
+      maskImage: null;
+      parameters: UpscaleParameters;
+    });
 
 export interface GenerationControllerBindings {
   setOptions(value: GenerationOptions): void;
@@ -64,6 +94,7 @@ export interface GenerationControllerBindings {
 export interface GenerationController {
   loadOptions(): Promise<void>;
   generate(input: GenerateInput): void;
+  upscale(input: UpscaleInput): void;
   saveImage(): Promise<void>;
   cancelCurrent(): Promise<void>;
   cancelRemaining(): void;
@@ -117,6 +148,7 @@ export function createGenerationController(
 
     const seedMode = generationSettingsStore.seedMode;
     queued.push({
+      mode: input.generationMode,
       compositeImage,
       maskImage,
       parameters: {
@@ -124,6 +156,45 @@ export function createGenerationController(
         seed: seedMode === "random" ? -1 : generationSettingsStore.seedValue,
       },
       controlLayers: collectControlLayers(app),
+      updateRandomSeed: seedMode === "random",
+    });
+
+    batchTotal += 1;
+    generationRuntimeStore.setBatch(batchCurrent || 1, batchTotal);
+    if (!draining) void drainQueue();
+  }
+
+  function upscale(input: UpscaleInput): void {
+    const app = getActiveUltraPaintApp();
+    if (!app) {
+      bindings.notify("error", "The painting canvas is not ready yet.");
+      return;
+    }
+
+    let compositeImage: string;
+    try {
+      compositeImage = app.flattenToDataURL();
+    } catch (error) {
+      console.error("[ultra-paint] flatten failed:", error);
+      bindings.notify("error", "The painting canvas is not ready yet.");
+      return;
+    }
+
+    const box = app.getStore().document.boundaryBox;
+    const seedMode = generationSettingsStore.seedMode;
+    const { sizeMultiplier, ...parameters } = input;
+    queued.push({
+      mode: "upscale",
+      compositeImage,
+      maskImage: null,
+      parameters: {
+        ...parameters,
+        targetWidth: Math.round(box.width * sizeMultiplier),
+        targetHeight: Math.round(box.height * sizeMultiplier),
+        seed: seedMode === "random" ? -1 : generationSettingsStore.seedValue,
+      },
+      // Future ControlNet passthrough can collectControlLayers(app) here.
+      controlLayers: [],
       updateRandomSeed: seedMode === "random",
     });
 
@@ -149,12 +220,15 @@ export function createGenerationController(
       void pollProgress(runId);
 
       try {
-        const { images, seeds } = await requestGeneration(
-          job.compositeImage,
-          job.maskImage,
-          job.parameters,
-          job.controlLayers,
-        );
+        const { images, seeds } =
+          job.mode === "upscale"
+            ? await requestUpscale(job.compositeImage, job.parameters, job.controlLayers)
+            : await requestGeneration(
+                job.compositeImage,
+                job.maskImage,
+                job.parameters,
+                job.controlLayers,
+              );
         if (runId === progressRunId) progressRunId += 1;
         if (activeCancelled) continue;
 
@@ -284,7 +358,14 @@ export function createGenerationController(
       if (destroyed || runId !== progressRunId) return;
       try {
         const next = await fetchGenerationProgress();
-        if (!destroyed && runId === progressRunId) generationRuntimeStore.setProgress(next);
+        // `/progress` reports Forge's *global* `shared.state`, shared with every
+        // other tab/extension. Until our own `state.begin("ultra_paint")` has
+        // actually run (e.g. this request is still queued behind someone
+        // else's job on `queue_lock`), it reports whatever job is currently
+        // running elsewhere -- discard that so a stray preview from another
+        // tab doesn't flash into our overlay before our own job starts.
+        const ours = next.job === "ultra_paint" ? next : null;
+        if (!destroyed && runId === progressRunId) generationRuntimeStore.setProgress(ours);
       } catch (error) {
         if (error instanceof GenerationApiError) {
           console.warn(`[ultra-paint] progress request failed (${error.status})`);
@@ -300,7 +381,16 @@ export function createGenerationController(
     }
   }
 
-  return { loadOptions, generate, saveImage, cancelCurrent, cancelRemaining, cancelAll, destroy };
+  return {
+    loadOptions,
+    generate,
+    upscale,
+    saveImage,
+    cancelCurrent,
+    cancelRemaining,
+    cancelAll,
+    destroy,
+  };
 }
 
 function wait(milliseconds: number): Promise<void> {

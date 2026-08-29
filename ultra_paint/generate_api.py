@@ -21,6 +21,7 @@ from typing import Literal
 
 from fastapi import HTTPException
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 from pydantic import BaseModel
 
 from modules import call_queue, shared
@@ -66,7 +67,7 @@ class ControlLayerRequest(BaseModel):
 class GenerateRequest(BaseModel):
     composite_image: str
     gen_params: dict = {}
-    generation_mode: Literal["img2img", "txt2img"] = "img2img"
+    generation_mode: Literal["img2img", "txt2img", "upscale"] = "img2img"
     # Optional data:image/...;base64,... URL from the frontend's
     # Compositor.flattenMask() (Phase 3) -- omitted/None when no mask layer
     # has been painted, matching Phase 1/2 behavior exactly (no inpainting).
@@ -95,9 +96,13 @@ def _decode_data_url(data_url: str) -> Image.Image:
     return image.convert("RGBA")
 
 
-def _encode_data_url(image: Image.Image) -> str:
+def _encode_data_url(image: Image.Image, info: str | None = None) -> str:
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    pnginfo = None
+    if info:
+        pnginfo = PngInfo()
+        pnginfo.add_text("parameters", info)
+    image.save(buffer, format="PNG", pnginfo=pnginfo)
     encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{encoded}"
 
@@ -159,7 +164,14 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     # Same extraction as modules/img2img.py:287 / the old `_on_generate`.
     # `n_iter == batch_size == 1`, so there is never a grid image to strip.
     images = processed.images + processed.extra_images
+    infotexts = getattr(processed, "infotexts", [])
     return GenerateResponse(
-        images=[_encode_data_url(image) for image in images],
+        images=[
+            _encode_data_url(
+                image,
+                infotexts[index] if index < len(infotexts) else None,
+            )
+            for index, image in enumerate(images)
+        ],
         seeds=[int(seed) for seed in processed.all_seeds],
     )

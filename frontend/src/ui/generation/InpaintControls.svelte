@@ -10,7 +10,6 @@
     inpaintControlNetModel: string;
     inpaintControlNetWeight: number;
     coherenceEdgeSize: number;
-    coherencePassFast: boolean;
     onMaskBlurChange: (value: number) => void;
     onInpaintPaddingChange: (value: number) => void;
     onInpaintAreaChange: (value: InpaintArea) => void;
@@ -19,7 +18,6 @@
     onInpaintControlNetModelChange: (value: string) => void;
     onInpaintControlNetWeightChange: (value: number) => void;
     onCoherenceEdgeSizeChange: (value: number) => void;
-    onCoherencePassFastChange: (value: boolean) => void;
   }
 
   import CheckboxField from "../lib/CheckboxField.svelte";
@@ -36,7 +34,6 @@
     inpaintControlNetModel,
     inpaintControlNetWeight,
     coherenceEdgeSize,
-    coherencePassFast,
     onMaskBlurChange,
     onInpaintPaddingChange,
     onInpaintAreaChange,
@@ -45,7 +42,6 @@
     onInpaintControlNetModelChange,
     onInpaintControlNetWeightChange,
     onCoherenceEdgeSizeChange,
-    onCoherencePassFastChange,
   }: Props = $props();
 
   let controlModels = $state<string[]>([]);
@@ -106,11 +102,6 @@
       numberStep={1}
       onValueInput={onCoherenceEdgeSizeChange}
     />
-    <CheckboxField
-      label="Fast (latent-space, experimental)"
-      checked={coherencePassFast}
-      onchange={(event) => onCoherencePassFastChange(event.currentTarget.checked)}
-    />
   {/if}
 
   {#if inpaintArea !== "coherence"}
@@ -122,7 +113,7 @@
   {/if}
 
   <CheckboxField
-    label="Inpaint ControlNet (Anima LLLite, etc.)"
+    label="Inpaint ControlNet"
     checked={inpaintControlNetEnabled}
     onchange={(event) => onInpaintControlNetEnabledChange(event.currentTarget.checked)}
   />
@@ -144,10 +135,6 @@
           <option value={model}>{model}</option>
         {/each}
       </Select>
-      <span class="text-[11px]">
-        Uses the composited inpaint mask directly -- no control layer needed. Most models don't need
-        this; a few (Anima's LLLite Inpaint Adapter) require it.
-      </span>
       {#if controlModelsFetched && controlModels.length === 0}
         <p class="m-0 text-[11px] text-(--upaint-danger)">
           No ControlNet models found -- is a ControlNet model installed, and is the ControlNet

@@ -1,6 +1,7 @@
 import { Point } from "pixi.js";
 import type { Application, Container } from "pixi.js";
 
+import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
 import type {
   PaintTool,
@@ -53,6 +54,8 @@ export class StrokeController {
 
   private readonly unsubscribeTools: PaintToolUnsubscribe;
 
+  private readonly unsubscribeRuntime: () => void;
+
   private readonly previousTouchAction: string;
 
   private readonly screenPoint = new Point();
@@ -86,6 +89,7 @@ export class StrokeController {
 
     this.unsubscribeStore = store.subscribe(() => this.refreshCursor());
     this.unsubscribeTools = tools.subscribe(() => this.refreshCursor());
+    this.unsubscribeRuntime = generationRuntimeStore.subscribe(() => this.refreshCursor());
     this.refreshCursor();
   }
 
@@ -93,6 +97,7 @@ export class StrokeController {
     this.finishStroke(true);
     this.unsubscribeStore();
     this.unsubscribeTools();
+    this.unsubscribeRuntime();
     this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
     this.canvas.removeEventListener("pointermove", this.handlePointerMove);
     this.canvas.removeEventListener("pointerup", this.handlePointerEnd);
@@ -105,6 +110,7 @@ export class StrokeController {
   private readonly handlePointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || this.active !== null) return;
     if (this.tools.getState().activeTool === "eyedropper") return;
+    if (generationRuntimeStore.generating) return;
 
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
@@ -249,6 +255,10 @@ export class StrokeController {
   }
 
   private refreshCursor(): void {
+    if (generationRuntimeStore.generating) {
+      this.canvas.style.cursor = "wait";
+      return;
+    }
     if (this.tools.getState().activeTool === "eyedropper") {
       this.canvas.style.cursor = "crosshair";
       return;

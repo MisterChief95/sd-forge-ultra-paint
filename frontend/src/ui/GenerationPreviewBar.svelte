@@ -1,6 +1,9 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { previewStore } from "../state/previewStore.svelte";
+  import { toastStore } from "../state/toastStore.svelte";
+  import { saveFlattenedImage } from "./generation/generationApi";
   import Button from "./lib/Button.svelte";
 
   let applying = $state(false);
@@ -19,6 +22,21 @@
       console.error("[ultra-paint] could not apply generation preview:", error);
     } finally {
       applying = false;
+    }
+  }
+
+  async function save(): Promise<void> {
+    const preview = previewStore.selected;
+    if (!preview || generationRuntimeStore.saving) return;
+
+    generationRuntimeStore.setSaving(true);
+    try {
+      const path = await saveFlattenedImage(preview.dataUrl);
+      toastStore.success(`Saved to ${path}`);
+    } catch (error) {
+      toastStore.error(error instanceof Error ? error.message : "Save failed.");
+    } finally {
+      generationRuntimeStore.setSaving(false);
     }
   }
 </script>
@@ -41,7 +59,7 @@
           aria-pressed={preview.id === previewStore.selectedId}
           onclick={() => previewStore.select(preview.id)}
         >
-          <img src={preview.dataUrl} alt="" class="h-full w-full object-cover" />
+          <img src={preview.dataUrl} alt="" class="h-full w-full object-contain" />
         </button>
       {/each}
     </div>
@@ -105,6 +123,28 @@
             <path d="M2 14L14 2" stroke-linecap="round" />
           </svg>
         {/if}
+      </Button>
+
+      <Button
+        size="icon"
+        aria-label={generationRuntimeStore.saving
+          ? "Saving selected preview"
+          : "Save selected preview"}
+        title={generationRuntimeStore.saving ? "Saving selected preview" : "Save selected preview"}
+        disabled={!previewStore.selected || generationRuntimeStore.saving}
+        onclick={save}
+      >
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          aria-hidden="true"
+        >
+          <path d="M2.5 2.5h8.75l2.25 2.25V13.5h-11z" stroke-linejoin="round" />
+          <path d="M5 2.5v4h5.5v-4M5 13.5V9h6v4.5" stroke-linejoin="round" />
+        </svg>
       </Button>
 
       <Button

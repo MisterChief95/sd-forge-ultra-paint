@@ -40,6 +40,7 @@ class GenerationOptions(BaseModel):
     schedulers: list[str]
     models: list[str]
     modules: list[str]
+    upscalers: list[str]
     selected_model: str
     selected_modules: list[str]
     native_resolution: int
@@ -59,6 +60,10 @@ def get_generation_options() -> GenerationOptions:
         schedulers=[x.label for x in sd_schedulers.schedulers],
         models=[str(model) for model in models],
         modules=[str(module) for module in modules],
+        # Same choice list Forge's own txt2img Hires "Upscaler" dropdown
+        # builds (modules/ui.py): latent-space modes first, then every
+        # registered pixel-space upscaler ("None", "Lanczos", "ESRGAN_4x", ...).
+        upscalers=[*shared.latent_upscale_modes, *[x.name for x in shared.sd_upscalers]],
         selected_model=str(getattr(shared.opts, "sd_model_checkpoint", "") or ""),
         selected_modules=[
             os.path.basename(module)
