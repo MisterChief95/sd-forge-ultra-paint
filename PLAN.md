@@ -10,6 +10,74 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Preview-gallery save with PNG metadata — 2026-08-29
+
+The generation preview gallery now has a Save button immediately before its
+discard actions. It sends the selected generated PNG directly through the same
+Forge manual-save route and toast/saving state as the toolbar Save, without first
+flattening or applying it to the canvas. Generation responses now embed Forge's
+matching infotext as the PNG `parameters` text chunk, and the save route forwards
+that chunk back to Forge's image saver so prompt/settings metadata survives this
+path when Forge supplied it.
+
+Files changed: `frontend/src/ui/GenerationPreviewBar.svelte`,
+`frontend/tests/e2e/ultra-paint.spec.ts`, `ultra_paint/generate_api.py`,
+`ultra_paint/save_api.py`, `tests/test_generate_api.py`, and
+`tests/test_save_api.py`. Verification: Svelte autofix found no issues,
+frontend typecheck and lint pass, the production build passes, the focused
+Playwright preview-save test passes 1/1, and the focused generation/save API
+tests pass 7/7. The full frontend format check remains blocked by unrelated
+pre-existing formatting changes; the edited preview component passes its focused
+format check. No live Forge/GPU validation was run.
+
+---
+
+## Preserve-alpha live stroke clipping — 2026-08-29
+
+Brush strokes on preserve-alpha layers are now clipped to the layer's existing
+alpha while the pointer is still down, rather than showing the complete stroke
+until commit. The live mask uses a temporary Pixi sprite that shares the existing
+layer texture (no pixel copy), and preserve-alpha strokes skip dynamic texture
+growth because locked-alpha paint cannot extend the layer's occupied bounds. The
+commit-time snapshot remains in place to avoid sampling from the render target
+while writing back into it.
+
+Files changed: `frontend/src/paint/ConsistentOpacityStroke.ts` and
+`frontend/tests/e2e/ultra-paint.spec.ts`. Verification: frontend typecheck passes
+with 0 errors/0 warnings, focused ESLint and Prettier checks pass, production build
+passes, and the focused Playwright live-preview regression passes 1/1. No live
+Forge validation was run.
+
+---
+
+## Upscale workflow — 2026-08-28
+
+The Generation panel now has a collapsed **Upscale** workflow that snapshots the
+current boundary-box composite and submits a dedicated whole-image img2img pass at
+0.25x-4x the source size. It always reuses the current prompt, negative prompt,
+model, modules, and seed behavior; owns a separate denoising strength; and can
+optionally override sampler, scheduler, steps, and CFG through an independently
+enabled Advanced section. The result keeps Forge's generated target resolution and
+continues through the shared generation queue/preview/apply path.
+
+Upscale deliberately omits masks and all inpaint/coherence parameters. Its typed
+top-level `control_layers` field is sent as an empty list for now, leaving the
+existing ControlNet payload boundary ready for a later passthrough phase without
+implementing it here. Ordinary no-mask img2img retains its resize-back-to-boundary
+behavior, covered alongside the new keep-target-size branch in
+`tests/test_generation.py`.
+
+Files changed: `ultra_paint/generate_api.py`, `ultra_paint/generation.py`,
+`tests/test_generation.py`, `frontend/src/ui/generation/generationApi.ts`,
+`frontend/src/ui/generation/generationController.svelte.ts`, and
+`frontend/src/ui/GenerationPanel.svelte`. Verification: frontend typecheck passes
+with 0 errors/0 warnings, production build passes, the focused upscale pytest passes,
+the full generation tests pass 32/32, and generate API tests pass 4/4. The Svelte
+autofixer was unavailable because the sandbox could not access the npm registry;
+Prettier validation passed instead. No live Forge/GPU generation was run.
+
+---
+
 ## Codex repo audit — gaps found, roadmap additions — 2026-08-27
 
 A Codex pass (analysis only, no code changes) confirmed the architecture described
