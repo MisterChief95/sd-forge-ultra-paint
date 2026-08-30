@@ -10,6 +10,25 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Hide Layers export isolation — 2026-08-30
+
+The display-only **Hide Layers** comparison toggle no longer leaks into Save
+or Generate composites. `flattenToDataURL()` now temporarily applies each
+raster/group layer's persisted document visibility, excludes mask/control
+layers as before, and restores the exact prior scene `visible`/`renderable`
+state in `finally` even when flattening fails. Added a separate focused
+Playwright regression that verifies both Save and Generate receive painted
+pixels while the canvas remains hidden for comparison afterward.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/hide-layers-export.spec.ts`, and this `PLAN.md`.
+Verification: Prettier check, frontend typecheck (0 errors/0 warnings),
+focused ESLint, production build, and the focused Chromium Playwright regression
+(1/1) pass.
+No live Forge/GPU validation was run.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its
