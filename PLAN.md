@@ -10,6 +10,23 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Mask export layer semantics — 2026-08-30
+
+`Compositor.flattenMask()` now builds each temporary export layer as the same
+container/sprite boundary used by `LayerNode`: transform, opacity, and blend mode
+belong to the container, while the raw mask sprite still bypasses the display-only
+hatch/color filter. This keeps inpainting-mask exports aligned with layer-panel
+controls without baking the hatch tint into the generated mask.
+
+Files changed: `frontend/src/scene/Compositor.ts` and
+`frontend/tests/e2e/ultra-paint.spec.ts`. Verification: frontend typecheck and
+production build pass, and the focused Playwright regression verifies a translated,
+50%-opacity mask exports gray coverage unaffected by its red display tint, then
+switches it to `erase` and verifies the exported coverage clears. No live Forge/GPU
+validation was run.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its

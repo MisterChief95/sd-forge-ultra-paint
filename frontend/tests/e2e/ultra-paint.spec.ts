@@ -47,6 +47,7 @@ interface UltraPaintTestHook {
     setBoundaryBox(box: BoundaryBox): void;
     setSelectedLayerId(id: string | null): void;
     setPreserveAlpha(id: string, preserveAlpha: boolean): void;
+    setBlendMode(id: string, mode: "erase"): void;
     setVisible(id: string, visible: boolean): void;
     setTransform(id: string, transform: Partial<TestLayer["transform"]>): void;
   };
@@ -939,6 +940,46 @@ test("mask paint exports white coverage on black without entering the composite"
       },
       compositeCenterAlpha: 0,
     });
+});
+
+test("mask export honours layer opacity, blend mode, and transform without display tint", async ({
+  page,
+}) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(256, 256);
+    hook.paintToolStore.setBrushSettings({ radius: 24, hardness: 1, opacity: 1 });
+  });
+  await addMaskLayer(page);
+  await paintCenteredStroke(page);
+
+  const id = await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const layer = hook?.layerStore.document.layers.find((candidate) => candidate.kind === "mask");
+    if (!hook || !layer?.id) throw new Error("Mask layer is unavailable");
+    hook.layerStore.setTransform(layer.id, { x: 32, y: 64 });
+    return layer.id;
+  });
+  await page.getByLabel(/Display color of/).fill("#ff0000");
+  await page.getByLabel("Opacity of the selected layer").evaluate((input: HTMLInputElement) => {
+    input.value = "50";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  await expect.poll(() => readMaskPixel(page, 160, 192)).toEqual([127, 127, 127, 255]);
+  await expect.poll(() => readMaskPixel(page, 128, 128)).toEqual([0, 0, 0, 255]);
+
+  await page.evaluate((layerId) => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    if (!hook) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setBlendMode(layerId, "erase");
+  }, id);
+  await expect.poll(() => readMaskPixel(page, 160, 192)).toEqual([0, 0, 0, 255]);
+  await expect(page.getByLabel("Blend mode of the selected layer")).toHaveValue("erase");
 });
 
 test("eraser removes exported coverage from a mask layer", async ({ page }) => {
