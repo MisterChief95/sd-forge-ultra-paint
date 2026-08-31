@@ -1518,19 +1518,28 @@ export class UltraPaintApp {
       this.pixelGrid && parent?.children.includes(this.pixelGrid.container)
         ? parent.getChildIndex(this.pixelGrid.container) + 1
         : 0;
-    const maskVisibility = doc.layers
-      .filter((layer) => layer.kind === "mask" || layer.kind === "control")
+    // The preview-comparison controls change scene visibility directly. Export
+    // instead follows the document's persisted raster/group visibility, while
+    // continuing to exclude masks and ControlNet inputs from the composite.
+    const sceneVisibility = doc.layers
       .map((layer) => {
         const node = tree.getNode(layer.id);
-        return node ? { node, visible: node.container.visible } : null;
+        return node
+          ? { layer, node, renderable: node.container.renderable, visible: node.container.visible }
+          : null;
       })
       .filter((entry) => entry !== null);
     tree.root.removeFromParent();
-    for (const entry of maskVisibility) entry.node.container.visible = false;
+    for (const entry of sceneVisibility) {
+      const include = entry.layer.kind !== "mask" && entry.layer.kind !== "control";
+      entry.node.container.renderable = include;
+      entry.node.container.visible = include && entry.layer.visible;
+    }
     try {
       return Compositor.flatten(app, tree.root, doc.boundaryBox);
     } finally {
-      for (const entry of maskVisibility) {
+      for (const entry of sceneVisibility) {
+        entry.node.container.renderable = entry.renderable;
         entry.node.container.visible = entry.visible;
       }
       parent?.addChildAt(tree.root, insertIndex);
