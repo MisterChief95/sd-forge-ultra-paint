@@ -154,6 +154,32 @@ Forge validation was run.
 
 ---
 
+## Transform-correct growth and boundary clipping — 2026-08-30
+
+Dynamic raster growth now derives the compensated layer position by converting
+the inserted top/left origin through Pixi's `toGlobal()` / parent `toLocal()`
+pair. Existing pixels consequently stay in the same document position for
+rotated, negatively scaled, and group-nested layers rather than only for an
+axis-aligned transform. The store remains the atomic texture/metadata boundary;
+the live scene supplies the complete transform required for that update.
+
+**Clip to BBox** now converts the document boundary's four corners into the
+target layer's local texture space through the live Pixi hierarchy, crops to
+their local bounds, and applies the resulting polygon as the offscreen crop
+mask. Its replacement transform likewise comes from Pixi coordinate conversion,
+so group rotation/translation and negative scales are retained exactly.
+
+Added the separate `frontend/tests/e2e/transform-correctness.spec.ts` coverage:
+one real pointer stroke grows a rotated/flipped texture from its top-left while
+checking the previously painted pixel's world location and source alpha; the
+other clips filled content under nested rotated/flipped group transforms and
+verifies no remaining opaque samples map outside the boundary box. Verification:
+`npm run typecheck` passed with 0 errors/0 warnings, `npm run build` passed, and
+the focused Playwright spec passed 2/2. No live Forge/GPU generation validation
+was run.
+
+---
+
 ## Upscale workflow — 2026-08-28
 
 The Generation panel now has a collapsed **Upscale** workflow that snapshots the
