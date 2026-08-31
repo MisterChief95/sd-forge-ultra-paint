@@ -35,6 +35,7 @@ import { ColorMatrixFilter, Container, Rectangle, RenderTexture, Sprite } from "
 import type { Application } from "pixi.js";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BoundaryBox } from "../state/schema";
+import { toPixiBlendMode } from "../util/blendModes";
 
 export class Compositor {
   /**
@@ -190,17 +191,22 @@ export class Compositor {
       const texture = store.getTexture(layer.id);
       if (!texture) continue;
 
-      const sprite = new Sprite({ texture, label: `mask-export:${layer.id}` });
+      const layerContainer = new Container({ label: `mask-export:${layer.id}` });
       const transform = layer.transform;
-      sprite.position.set(transform.x, transform.y);
-      sprite.scale.set(transform.scaleX, transform.scaleY);
-      sprite.rotation = transform.rotation;
+      layerContainer.position.set(transform.x, transform.y);
+      layerContainer.scale.set(transform.scaleX, transform.scaleY);
+      layerContainer.rotation = transform.rotation;
+      layerContainer.alpha = layer.opacity;
+      layerContainer.blendMode = toPixiBlendMode(layer.blendMode);
+
+      const sprite = new Sprite({ texture, label: `mask-export-sprite:${layer.id}` });
 
       const filter = new ColorMatrixFilter();
       filter.matrix = [0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0];
-      sprite.filters = [filter];
+      layerContainer.filters = [filter];
       filters.push(filter);
-      root.addChild(sprite);
+      layerContainer.addChild(sprite);
+      root.addChild(layerContainer);
     }
 
     const renderTexture = RenderTexture.create({
