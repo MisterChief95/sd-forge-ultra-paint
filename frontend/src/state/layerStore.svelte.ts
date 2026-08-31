@@ -8,6 +8,8 @@
 
 import { RenderTexture } from "pixi.js";
 
+import { clampDimension } from "../util/dimensions";
+
 import type {
   BoundaryBox,
   BlendMode,
@@ -234,7 +236,7 @@ function newId(prefix: string): string {
 function createEmptyDocument(width: number, height: number): Document {
   return {
     id: newId("doc"),
-    boundaryBox: { x: 0, y: 0, width, height },
+    boundaryBox: { x: 0, y: 0, width: clampDimension(width), height: clampDimension(height) },
     layers: [],
     layerOrder: [],
   };
@@ -472,8 +474,8 @@ export class LayerStore {
       this._document.boundaryBox = {
         x: 0,
         y: 0,
-        width: texture.width,
-        height: texture.height,
+        width: clampDimension(texture.width),
+        height: clampDimension(texture.height),
       };
     }
 
@@ -950,36 +952,53 @@ export class LayerStore {
 
   /** Set the operating region without touching layer pixels. */
   public setBoundaryBox(box: BoundaryBox): void {
+    const next = this.normaliseBoundaryBox(box);
     if (
-      this._document.boundaryBox.x === box.x &&
-      this._document.boundaryBox.y === box.y &&
-      this._document.boundaryBox.width === box.width &&
-      this._document.boundaryBox.height === box.height
+      this._document.boundaryBox.x === next.x &&
+      this._document.boundaryBox.y === next.y &&
+      this._document.boundaryBox.width === next.width &&
+      this._document.boundaryBox.height === next.height
     ) {
       return;
     }
     const previous = { ...this._document.boundaryBox };
-    this._document.boundaryBox = { ...box };
+    this._document.boundaryBox = next;
     this.emit();
     this.emitMutation({
       kind: "set-boundary-box",
       previous,
-      next: { ...box },
+      next: { ...next },
     });
   }
 
   /** Restore a persisted operating region without adding an undo-history entry. */
   public restoreBoundaryBox(box: BoundaryBox): void {
+    const next = this.normaliseBoundaryBox(box);
     if (
-      this._document.boundaryBox.x === box.x &&
-      this._document.boundaryBox.y === box.y &&
-      this._document.boundaryBox.width === box.width &&
-      this._document.boundaryBox.height === box.height
+      this._document.boundaryBox.x === next.x &&
+      this._document.boundaryBox.y === next.y &&
+      this._document.boundaryBox.width === next.width &&
+      this._document.boundaryBox.height === next.height
     ) {
       return;
     }
-    this._document.boundaryBox = { ...box };
+    this._document.boundaryBox = next;
     this.emit();
+  }
+
+  /** Ensure all boundary-box mutations stay safe for later texture allocation. */
+  private normaliseBoundaryBox(box: BoundaryBox): BoundaryBox {
+    const previous = this._document.boundaryBox;
+    const coordinate = (value: number, fallback: number) =>
+      Number.isFinite(value) && Number.isSafeInteger(Math.round(value))
+        ? Math.round(value)
+        : fallback;
+    return {
+      x: coordinate(box.x, previous.x),
+      y: coordinate(box.y, previous.y),
+      width: clampDimension(box.width, previous.width),
+      height: clampDimension(box.height, previous.height),
+    };
   }
 
   /** Drop every layer and destroy every owned texture. */

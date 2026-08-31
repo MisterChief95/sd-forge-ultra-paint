@@ -3,6 +3,7 @@
   import type { ScaleMode } from "../../state/generationSettingsStore.svelte";
   import { layerStore } from "../../state/layerStore.svelte";
   import { paintToolStore } from "../../state/paintToolStore.svelte";
+  import { clampDimension } from "../../util/dimensions";
   import Button from "../lib/Button.svelte";
   import NumberInput from "../lib/NumberInput.svelte";
   import Select from "../lib/Select.svelte";
@@ -68,9 +69,7 @@
       value < 1
     )
       return;
-    other.value = String(
-      Math.max(1, Math.round(dimension === "width" ? value / ratio : value * ratio)),
-    );
+    other.value = String(clampDimension(dimension === "width" ? value / ratio : value * ratio));
   }
 
   function toggleAspectLock(): void {
@@ -92,10 +91,7 @@
     if (paintToolStore.boundaryAspectRatio !== null) {
       paintToolStore.setBoundaryAspectRatio(ratio);
     }
-    getActiveUltraPaintApp()?.resizeBoundaryBox(
-      box.width,
-      Math.max(1, Math.round(box.width / ratio)),
-    );
+    getActiveUltraPaintApp()?.resizeBoundaryBox(box.width, clampDimension(box.width / ratio));
   }
 
   function updateScaleMode(event: Event): void {

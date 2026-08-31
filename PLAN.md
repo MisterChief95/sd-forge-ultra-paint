@@ -10,6 +10,25 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Dimension-safety boundary — 2026-08-30
+
+Boundary-box state is now normalised at the shared `LayerStore` boundary: coordinates
+are finite integers, and widths/heights are finite integers clamped to the product's
+1–8192px per-axis texture ceiling. This protects direct mutations, persisted restore,
+the initial document, and first-layer auto-sizing before later blank/mask/compositor
+RenderTexture allocations consume the box. Aspect-ratio companion inputs use the same
+cap without submitting or replacing the current box on invalid manual input.
+
+Uploaded and generated images now scale down during decode before becoming Pixi
+textures, and the paintable-copy path independently applies the cap. This prevents
+those import routes from allocating a RenderTexture larger than 8192px on either axis.
+Focused Playwright coverage lives separately in `frontend/tests/e2e/dimension-safety.spec.ts`.
+Verification: Svelte autofixer reported no issues for the changed component, frontend
+typecheck passed with 0 errors/0 warnings, and the focused Playwright regression passes.
+No live Forge/GPU validation was run.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its
