@@ -24,6 +24,7 @@
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
+  import { isDocumentMutationLocked } from "./state/documentInteractionLock.svelte";
   import BoundaryInfoOverlay from "./ui/BoundaryInfoOverlay.svelte";
   import FilterBar from "./ui/FilterBar.svelte";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
@@ -49,7 +50,7 @@
     const file = pasteFile;
     const app = ultraPaintApp;
     closePasteMenu();
-    if (!file || !app) return;
+    if (!file || !app || isDocumentMutationLocked()) return;
 
     const add =
       kind === "mask"

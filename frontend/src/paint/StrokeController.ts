@@ -2,6 +2,8 @@ import { Point } from "pixi.js";
 import type { Application, Container } from "pixi.js";
 
 import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
+import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
+import { filterStore } from "../state/filterStore.svelte";
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
 import type {
   PaintTool,
@@ -9,6 +11,7 @@ import type {
   PaintToolUnsubscribe,
 } from "../state/paintToolStore.svelte";
 import type { LayerId } from "../state/schema";
+import { previewStore } from "../state/previewStore.svelte";
 
 /** One interpolated sample in document-local coordinates. */
 export interface StrokePoint {
@@ -56,6 +59,10 @@ export class StrokeController {
 
   private readonly unsubscribeRuntime: () => void;
 
+  private readonly unsubscribePreview: () => void;
+
+  private readonly unsubscribeFilter: () => void;
+
   private readonly previousTouchAction: string;
 
   private readonly screenPoint = new Point();
@@ -90,6 +97,8 @@ export class StrokeController {
     this.unsubscribeStore = store.subscribe(() => this.refreshCursor());
     this.unsubscribeTools = tools.subscribe(() => this.refreshCursor());
     this.unsubscribeRuntime = generationRuntimeStore.subscribe(() => this.refreshCursor());
+    this.unsubscribePreview = previewStore.subscribe(() => this.refreshCursor());
+    this.unsubscribeFilter = filterStore.subscribe(() => this.refreshCursor());
     this.refreshCursor();
   }
 
@@ -98,6 +107,8 @@ export class StrokeController {
     this.unsubscribeStore();
     this.unsubscribeTools();
     this.unsubscribeRuntime();
+    this.unsubscribePreview();
+    this.unsubscribeFilter();
     this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
     this.canvas.removeEventListener("pointermove", this.handlePointerMove);
     this.canvas.removeEventListener("pointerup", this.handlePointerEnd);
@@ -110,7 +121,7 @@ export class StrokeController {
   private readonly handlePointerDown = (event: PointerEvent): void => {
     if (event.button !== 0 || this.active !== null) return;
     if (this.tools.getState().activeTool === "eyedropper") return;
-    if (generationRuntimeStore.generating) return;
+    if (generationRuntimeStore.generating || isDocumentMutationLocked()) return;
 
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
@@ -259,6 +270,10 @@ export class StrokeController {
       this.canvas.style.cursor = "wait";
       return;
     }
+    if (isDocumentMutationLocked()) {
+      this.canvas.style.cursor = "not-allowed";
+      return;
+    }
     if (this.tools.getState().activeTool === "eyedropper") {
       this.canvas.style.cursor = "crosshair";
       return;
@@ -268,10 +283,11 @@ export class StrokeController {
     const isPaintTool =
       this.tools.getState().activeTool === "brush" || this.tools.getState().activeTool === "eraser";
     const isPaintable =
-      selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control";
+      (selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control") &&
+      !selected.locked;
     // The BrushCursorOverlay draws a size-accurate ring for this case;
     // the system cursor would just be a redundant second indicator.
-    this.canvas.style.cursor = isPaintTool && isPaintable ? "none" : "";
+    this.canvas.style.cursor = isPaintTool ? (isPaintable ? "none" : "not-allowed") : "";
   }
 }
 

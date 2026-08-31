@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../../app/UltraPaintApp";
+  import { isDocumentMutationLocked } from "../../state/documentInteractionLock.svelte";
   import type { ScaleMode } from "../../state/generationSettingsStore.svelte";
   import { layerStore } from "../../state/layerStore.svelte";
   import { paintToolStore } from "../../state/paintToolStore.svelte";
@@ -43,9 +44,11 @@
   ] as const;
 
   let selectedRatio = $state("");
+  const documentLocked = $derived(isDocumentMutationLocked());
 
   function handleResize(event: SubmitEvent): void {
     event.preventDefault();
+    if (documentLocked) return;
     const data = new FormData(event.currentTarget as HTMLFormElement);
     const width = Number(data.get("boundary-width"));
     const height = Number(data.get("boundary-height"));
@@ -81,11 +84,13 @@
   }
 
   function swapDimensions(): void {
+    if (documentLocked) return;
     const box = layerStore.document.boundaryBox;
     layerStore.setBoundaryBox({ ...box, width: box.height, height: box.width });
   }
 
   function applyRatio(event: Event): void {
+    if (documentLocked) return;
     const ratio = Number((event.currentTarget as HTMLSelectElement).value);
     if (!Number.isFinite(ratio) || ratio <= 0) return;
     const box = layerStore.document.boundaryBox;
@@ -124,6 +129,7 @@
             step="1"
             value={layerStore.document.boundaryBox.width}
             aria-label="Boundary box width"
+            disabled={documentLocked}
             oninput={(event) => syncLockedDimension(event, "width")}
           />
         </label>
@@ -139,6 +145,7 @@
             step="1"
             value={layerStore.document.boundaryBox.height}
             aria-label="Boundary box height"
+            disabled={documentLocked}
             oninput={(event) => syncLockedDimension(event, "height")}
           />
         </label>
@@ -157,6 +164,7 @@
           size="icon"
           title="Swap boundary-box width and height"
           aria-label="Swap boundary-box width and height"
+          disabled={documentLocked}
           onclick={swapDimensions}
         >
           ⇄
@@ -168,6 +176,7 @@
         class="flex-1"
         bind:value={selectedRatio}
         aria-label="Boundary box aspect ratio"
+        disabled={documentLocked}
         onchange={applyRatio}
       >
         <option value="">Aspect ratio…</option>
@@ -175,7 +184,9 @@
           <option value={ratio}>{label}</option>
         {/each}
       </Select>
-      <Button type="submit" title="Resize and center the boundary box">Resize</Button>
+      <Button type="submit" title="Resize and center the boundary box" disabled={documentLocked}
+        >Resize</Button
+      >
     </div>
   </form>
 

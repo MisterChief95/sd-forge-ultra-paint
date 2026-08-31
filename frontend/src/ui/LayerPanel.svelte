@@ -3,6 +3,7 @@
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { filterStore } from "../state/filterStore.svelte";
+  import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { previewStore } from "../state/previewStore.svelte";
   import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
@@ -57,12 +58,13 @@
   /** True while an unapplied generation preview is on screen -- locks out
    * layer-panel controls that could disturb the canvas/layer stack the
    * preview is being compared against (see UltraPaintApp/GenerationPreviewOverlay). */
-  const isPreviewing = $derived(previewStore.selected !== null && previewStore.visible);
+  const isPreviewing = $derived(previewStore.selected !== null);
 
   /** True while a control layer's Filter mode is open -- locks out layer-panel
    * controls the same way isPreviewing does, since the canvas is showing an
    * unapplied preview override for the target layer (see FilterPreviewOverlay). */
   const isFiltering = $derived(filterStore.active);
+  const documentLocked = $derived(isDocumentMutationLocked());
 
   $effect(() => {
     if (isPreviewing || isFiltering) contextMenuOpen = false;
@@ -767,6 +769,7 @@
 <div
   class="box-border flex h-full w-full flex-col text-xs"
   style="color: var(--upaint-text); font-family: var(--upaint-font);"
+  inert={documentLocked || undefined}
 >
   <header
     class="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2.5"

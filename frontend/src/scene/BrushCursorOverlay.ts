@@ -4,8 +4,11 @@ import { Container, Graphics, Point } from "pixi.js";
 import type { Application } from "pixi.js";
 
 import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
+import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
+import { filterStore } from "../state/filterStore.svelte";
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
 import type { PaintToolStore, PaintToolUnsubscribe } from "../state/paintToolStore.svelte";
+import { previewStore } from "../state/previewStore.svelte";
 
 export class BrushCursorOverlay {
   public readonly container = new Container({ label: "ultra-paint:brush-cursor" });
@@ -16,6 +19,8 @@ export class BrushCursorOverlay {
   private unsubscribeStore: Unsubscribe | null = null;
   private unsubscribeTools: PaintToolUnsubscribe | null = null;
   private unsubscribeRuntime: (() => void) | null = null;
+  private unsubscribePreview: (() => void) | null = null;
+  private unsubscribeFilter: (() => void) | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private hovering = false;
   private lastRadius = -1;
@@ -40,6 +45,8 @@ export class BrushCursorOverlay {
     this.unsubscribeStore = store.subscribe(() => this.refresh());
     this.unsubscribeTools = toolStore.subscribe(() => this.refresh());
     this.unsubscribeRuntime = generationRuntimeStore.subscribe(() => this.refresh());
+    this.unsubscribePreview = previewStore.subscribe(() => this.refresh());
+    this.unsubscribeFilter = filterStore.subscribe(() => this.refresh());
     this.mount();
     this.refresh();
   }
@@ -51,6 +58,10 @@ export class BrushCursorOverlay {
     this.unsubscribeTools = null;
     this.unsubscribeRuntime?.();
     this.unsubscribeRuntime = null;
+    this.unsubscribePreview?.();
+    this.unsubscribePreview = null;
+    this.unsubscribeFilter?.();
+    this.unsubscribeFilter = null;
     const canvas = this.canvas;
     if (canvas) {
       canvas.removeEventListener("pointermove", this.handlePointerMove);
@@ -106,7 +117,12 @@ export class BrushCursorOverlay {
       selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control";
 
     const visible =
-      this.hovering && isPaintTool && isPaintable && !generationRuntimeStore.generating;
+      this.hovering &&
+      isPaintTool &&
+      isPaintable &&
+      !selected?.locked &&
+      !generationRuntimeStore.generating &&
+      !isDocumentMutationLocked();
     this.container.visible = visible;
     if (!visible) return;
 
