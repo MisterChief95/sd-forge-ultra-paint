@@ -2,6 +2,7 @@
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { saveGeneration } from "../input/actionMap";
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
+  import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
   import brushIcon from "./img/brush-tool-svgrepo-com.svg";
   import eraserIcon from "./img/eraser-svgrepo-com.svg";
@@ -21,6 +22,11 @@
   }
 
   let pressurePopoverOpen = $state(false);
+  const fillLayer = $derived.by(() => {
+    const id = layerStore.selectedLayerId;
+    return id ? layerStore.getLayer(id) : undefined;
+  });
+  const fillDisabled = $derived(fillLayer?.kind !== "raster" || fillLayer.locked);
 
   function positionPressurePopover(event: MouseEvent): void {
     const button = event.currentTarget;
@@ -75,8 +81,9 @@
     </Button>
     <Button
       size="icon"
-      title="Fill the selected layer"
+      title={fillDisabled ? "Select an unlocked raster layer to fill" : "Fill the selected layer"}
       aria-label="Fill the selected layer"
+      disabled={fillDisabled}
       onclick={() => getActiveUltraPaintApp()?.fillSelectedLayer()}
     >
       <img src={fillIcon} alt="" class="h-4 w-4 brightness-0 invert" />

@@ -10,6 +10,25 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Layer destructive-action invariants — 2026-08-30
+
+Locked layers now reject every shared pixel-destructive action: Fill, mask
+clear/invert, boundary-box clipping, and applying a ControlNet filter result.
+The layer-panel and toolbar also disable Fill, Filter, and Clip when their
+current selection has no eligible unlocked target; the shared app methods remain
+the source of truth for shortcuts and programmatic callers. Preserve Alpha now
+also applies to Fill by snapshotting the existing texture alpha and masking the
+fill render, so Fill cannot add pixels outside existing coverage.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/src/ui/PaintToolbar.svelte`, `frontend/src/ui/LayerPanel.svelte`, and
+`frontend/tests/e2e/ultra-paint.spec.ts`. Verification: Svelte autofixer found
+no issues, frontend typecheck passed with 0 errors/0 warnings, lint and focused
+Prettier checks passed, production build passed, and focused Playwright coverage
+passed 2/2. No live Forge/GPU validation was run.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its

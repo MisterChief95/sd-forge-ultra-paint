@@ -247,8 +247,12 @@
     const convertible =
       single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
     const filterable =
-      single !== undefined && single.kind === "control" && !isPreviewing && !isFiltering;
-    const clippable = selected.some((candidate) => candidate.kind !== "group");
+      single !== undefined &&
+      single.kind === "control" &&
+      !single.locked &&
+      !isPreviewing &&
+      !isFiltering;
+    const clippable = selected.some((candidate) => candidate.kind !== "group" && !candidate.locked);
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
     contextMenuItems = [
