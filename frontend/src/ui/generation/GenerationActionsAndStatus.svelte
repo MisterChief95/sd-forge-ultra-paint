@@ -1,13 +1,11 @@
 <script lang="ts">
   import Button from "../lib/Button.svelte";
-  import type { GenerationProgress } from "../../state/generationRuntimeStore.svelte";
 
   interface Props {
     generating: boolean;
     interrupting: boolean;
     current: number;
     total: number;
-    progress: GenerationProgress | null;
     progressPercent: number;
     onGenerate: () => void;
     onCancelCurrent: () => void;
@@ -20,7 +18,6 @@
     interrupting,
     current,
     total,
-    progress,
     progressPercent,
     onGenerate,
     onCancelCurrent,
@@ -114,12 +111,3 @@
     </div>
   {/if}
 </div>
-
-{#if generating && progress?.current_image}
-  <img
-    class="max-h-52 w-full object-contain"
-    style="border-radius: var(--upaint-radius-sm);"
-    src={progress.current_image}
-    alt="Live generation preview"
-  />
-{/if}

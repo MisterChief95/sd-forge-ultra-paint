@@ -21,7 +21,9 @@ interface TestWindow extends Window {
 }
 
 async function openApp(page: Page): Promise<void> {
-  await page.route("**/ultra_paint/api/options", (route) => route.fulfill({ json: optionsFixture }));
+  await page.route("**/ultra_paint/api/options", (route) =>
+    route.fulfill({ json: optionsFixture }),
+  );
   await page.route("**/ultra_paint/api/settings", (route) => route.fulfill({ json: {} }));
   await page.goto("./");
   await page.waitForFunction(() => Boolean((window as TestWindow).__ultraPaintTest));
@@ -58,12 +60,14 @@ test("pending generation preview freezes canvas mutations and shows the disabled
   await page.route("**/ultra_paint/api/progress", (route) =>
     route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
   );
-  await page.route("**/ultra_paint/api/generate", (route) => route.fulfill({ json: generateFixture }));
+  await page.route("**/ultra_paint/api/generate", (route) =>
+    route.fulfill({ json: generateFixture }),
+  );
   await addBlankLayer(page);
   await page.locator("[data-layer-id]").first().click();
 
-  const before = await page.evaluate(
-    () => (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
+  const before = await page.evaluate(() =>
+    (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
   );
   await page.getByRole("button", { name: "Generate", exact: true }).click();
   await expect(page.getByRole("toolbar", { name: "Generation previews" })).toBeVisible();
@@ -72,21 +76,23 @@ test("pending generation preview freezes canvas mutations and shows the disabled
   await expect(page.getByRole("button", { name: "Add a layer" })).toBeDisabled();
   await paintCenteredStroke(page);
   await page.keyboard.press("Shift+F");
-  const after = await page.evaluate(
-    () => (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
+  const after = await page.evaluate(() =>
+    (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
   );
   expect(after).toBe(before);
 
   await page.getByRole("button", { name: "Discard all previews" }).click();
   await expect(canvas).toHaveCSS("cursor", "none");
   await paintCenteredStroke(page);
-  const painted = await page.evaluate(
-    () => (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
+  const painted = await page.evaluate(() =>
+    (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.flattenToDataURL(),
   );
   expect(painted).not.toBe(before);
 });
 
-test("filter lock uses the disabled cursor and target removal cancels cleanly", async ({ page }) => {
+test("filter lock uses the disabled cursor and target removal cancels cleanly", async ({
+  page,
+}) => {
   await openApp(page);
   await page.route("**/ultra_paint/api/controlnet/module_list", (route) =>
     route.fulfill({ json: { module_list: ["lineart"] } }),
@@ -104,7 +110,12 @@ test("filter lock uses the disabled cursor and target removal cancels cleanly", 
   await page.getByRole("menuitem", { name: "Filter...", exact: true }).click();
   await expect(page.getByRole("toolbar", { name: /Filter/ })).toBeVisible();
   await expect(page.locator("#upaint-root canvas")).toHaveCSS("cursor", "not-allowed");
-  await page.evaluate((id) => (window as TestWindow).__ultraPaintTest?.layerStore.removeLayer(id), controlId);
-  await expect.poll(() => page.evaluate(() => (window as TestWindow).__ultraPaintTest?.filterStore.active)).toBe(false);
+  await page.evaluate(
+    (id) => (window as TestWindow).__ultraPaintTest?.layerStore.removeLayer(id),
+    controlId,
+  );
+  await expect
+    .poll(() => page.evaluate(() => (window as TestWindow).__ultraPaintTest?.filterStore.active))
+    .toBe(false);
   await expect(page.getByRole("toolbar", { name: /Filter/ })).toHaveCount(0);
 });

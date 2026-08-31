@@ -411,7 +411,6 @@
     interrupting={generationRuntimeStore.interrupting}
     current={generationRuntimeStore.current}
     total={generationRuntimeStore.total}
-    progress={generationRuntimeStore.progress}
     progressPercent={generationRuntimeStore.progressPercent}
     onGenerate={generate}
     onCancelCurrent={() => void controller.cancelCurrent()}
