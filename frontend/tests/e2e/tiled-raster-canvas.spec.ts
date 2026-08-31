@@ -64,6 +64,7 @@ type TestLayer = {
   id: string;
   kind: string;
   image: { storage?: "tiled"; width: number; height: number };
+  transform: { x: number; y: number; scaleX: number; scaleY: number; rotation: number };
 };
 
 type TestWindow = Window & {
@@ -79,6 +80,7 @@ type TestWindow = Window & {
       flattenToDataURL(chunkSize?: number): string;
       resizeBoundaryBox(width: number, height: number): void;
       addImageFromFile(file: File): Promise<string>;
+      addImageFromDataURL(url: string, name?: string, source?: string): Promise<string>;
       undo(): void;
       redo(): void;
     } | null;
@@ -713,4 +715,336 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   expect(setup.afterClipRedo?.storage).toBeUndefined();
   expect(setup.afterClipRedo?.width).toBe(setup.afterClip?.width);
   expect(setup.afterClipRedo?.height).toBe(setup.afterClip?.height);
+});
+
+test("brush and eraser strokes paint and undo/redo correctly on a tiled raster layer", async ({
+  page,
+}) => {
+  const setup = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: {
+        setBrushSettings(settings: {
+          color?: string;
+          radius?: number;
+          hardness?: number;
+          opacity?: number;
+          pressureEnabled?: boolean;
+        }): void;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // A single solid-color tile (well under the 1024 tile size) keeps this
+    // focused on the stroke/commit/history mechanics, not multi-tile crossing
+    // (already exercised for Fill above, which uses the same edit/transaction API).
+    const canvas = document.createElement("canvas");
+    canvas.width = 400;
+    canvas.height = 300;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#202020";
+    ctx.fillRect(0, 0, 400, 300);
+    const blob: Blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
+    );
+    const id = await app.addImageFromFile(new File([blob], "solid.png", { type: blob.type }));
+    const storage = hook!.layerStore.document.layers.find((l) => l.id === id)?.image.storage;
+
+    hook!.layerStore.setSelectedLayerId(id);
+    hook!.paintToolStore.setBrushSettings({
+      color: "#ffffff",
+      radius: 40,
+      hardness: 1,
+      opacity: 1,
+      pressureEnabled: false,
+    });
+
+    return { id, storage };
+  });
+
+  expect(setup.storage).toBe("tiled");
+
+  // Upload auto-sizes the boundary box to the image and centers the camera on
+  // it at zoom 1, so canvas-center == document/layer-local center (200, 150).
+  const canvasLocator = page.locator("#upaint-root canvas");
+  const bounds = await canvasLocator.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (!bounds) return;
+  const centerX = bounds.x + bounds.width / 2;
+  const centerY = bounds.y + bounds.height / 2;
+
+  await page.getByRole("button", { name: "Brush", exact: true }).click();
+  await page.mouse.move(centerX - 80, centerY - 50);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 80, centerY - 50, { steps: 8 });
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: "Eraser", exact: true }).click();
+  await page.mouse.move(centerX - 80, centerY + 50);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 80, centerY + 50, { steps: 8 });
+  await page.mouse.up();
+
+  const result = await page.evaluate((id) => {
+    const app = (window as TestWindow).__ultraPaintTest!.getActiveUltraPaintApp()!;
+    const afterStrokesUrl = app.layerSourceDataURL(id)!;
+    app.undo(); // undo eraser
+    const afterEraserUndoUrl = app.layerSourceDataURL(id)!;
+    app.redo(); // redo eraser
+    const afterEraserRedoUrl = app.layerSourceDataURL(id)!;
+    app.undo(); // undo eraser again
+    app.undo(); // undo brush
+    const afterBrushUndoUrl = app.layerSourceDataURL(id)!;
+    app.redo(); // redo brush (eraser stays undone)
+    const afterBrushRedoUrl = app.layerSourceDataURL(id)!;
+    return {
+      afterStrokesUrl,
+      afterEraserUndoUrl,
+      afterEraserRedoUrl,
+      afterBrushUndoUrl,
+      afterBrushRedoUrl,
+    };
+  }, setup.id);
+
+  const brushPoint: Array<[number, number]> = [[200, 100]];
+  const eraserPoint: Array<[number, number]> = [[200, 200]];
+  const white = [255, 255, 255, 255];
+  const gray = [32, 32, 32, 255];
+
+  expect(await samplePixels(page, result.afterStrokesUrl, brushPoint)).toEqual([white]);
+  const erased = await samplePixels(page, result.afterStrokesUrl, eraserPoint);
+  expect(erased[0]![3]).toBe(0);
+
+  expect(await samplePixels(page, result.afterEraserUndoUrl, eraserPoint)).toEqual([gray]);
+  const erasedAgain = await samplePixels(page, result.afterEraserRedoUrl, eraserPoint);
+  expect(erasedAgain[0]![3]).toBe(0);
+
+  expect(await samplePixels(page, result.afterBrushUndoUrl, brushPoint)).toEqual([gray]);
+  expect(await samplePixels(page, result.afterBrushRedoUrl, brushPoint)).toEqual([white]);
+});
+
+test("blank layers and generated-Apply images ingest through the tiled surface", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // Sizes the very first layer (adding it re-origins an empty document's
+    // boundary box to (0, 0), same as the existing monolithic path).
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 500, height: 400 });
+
+    const blankId = await app.addBlankLayer();
+    const blankSurface = hook.layerStore.getTiledSurface(blankId);
+    const blankLayer = hook.layerStore.document.layers.find((l) => l.id === blankId);
+    const blankTileCountBeforeFill = blankSurface?.tileCount;
+
+    // A blank tiled layer must still be paintable: Fill should allocate tiles.
+    hook.layerStore.setSelectedLayerId(blankId);
+    app.fillSelectedLayer();
+    const tileCountAfterFill = hook.layerStore.getTiledSurface(blankId)?.tileCount;
+
+    // Reposition away from the origin now that the document is no longer
+    // empty, so a missing setTransform after generated-Apply ingestion
+    // (which must NOT re-origin the box the way first-layer creation does)
+    // would show up as a bug.
+    hook.layerStore.setBoundaryBox({ x: 300, y: 200, width: 120, height: 90 });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 120;
+    canvas.height = 90;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillRect(0, 0, 120, 90);
+    const dataUrl = canvas.toDataURL("image/png");
+
+    const generatedId = await app.addImageFromDataURL(dataUrl, "Generated", "generated");
+    const generatedLayer = hook.layerStore.document.layers.find((l) => l.id === generatedId);
+
+    return {
+      blankStorage: blankLayer?.image.storage,
+      blankDims: { width: blankLayer?.image.width, height: blankLayer?.image.height },
+      blankTileCountBeforeFill,
+      tileCountAfterFill,
+      hasMonolithicBlankTexture: hook.layerStore.getTexture(blankId) !== undefined,
+      generatedStorage: generatedLayer?.image.storage,
+      generatedTransform: generatedLayer ? { ...generatedLayer.transform } : undefined,
+      generatedDims: { width: generatedLayer?.image.width, height: generatedLayer?.image.height },
+      hasMonolithicGeneratedTexture: hook.layerStore.getTexture(generatedId) !== undefined,
+    };
+  });
+
+  expect(result.blankStorage).toBe("tiled");
+  expect(result.blankDims).toEqual({ width: 500, height: 400 });
+  expect(result.blankTileCountBeforeFill).toBe(0);
+  expect(result.hasMonolithicBlankTexture).toBe(false);
+  expect(result.tileCountAfterFill).toBeGreaterThan(0);
+
+  expect(result.generatedStorage).toBe("tiled");
+  expect(result.generatedDims).toEqual({ width: 120, height: 90 });
+  expect(result.generatedTransform).toEqual({ x: 300, y: 200, scaleX: 1, scaleY: 1, rotation: 0 });
+  expect(result.hasMonolithicGeneratedTexture).toBe(false);
+});
+
+test("generated tiled rasters stay below their Mask and ControlNet sections", async ({
+  page,
+}) => {
+  const order = await page.evaluate(async () => {
+    type AppWithTree = NonNullable<
+      ReturnType<NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]>
+    > & {
+      tree?: {
+        root: { children: unknown[] };
+        getNode(id: string): { container: unknown } | undefined;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const app = hook.getActiveUltraPaintApp() as AppWithTree | null;
+    if (!app?.tree) throw new Error("Ultra Paint scene tree is unavailable");
+    await app.ready;
+
+    const rasterId = await app.addBlankLayer();
+    const controlId = app.convertLayerToControl(rasterId);
+    const maskId = app.convertLayerToMask(rasterId);
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const generatedId = await app.addImageFromDataURL(canvas.toDataURL("image/png"));
+
+    const indexOf = (id: string) => {
+      const node = app.tree?.getNode(id);
+      if (!node) throw new Error(`Layer node "${id}" is unavailable`);
+      return app.tree.root.children.indexOf(node.container);
+    };
+    return {
+      mask: indexOf(maskId),
+      control: indexOf(controlId),
+      generated: indexOf(generatedId),
+    };
+  });
+
+  // Pixi draws later children on top: Mask -> ControlNet -> Raster.
+  expect(order.mask).toBeGreaterThan(order.control);
+  expect(order.control).toBeGreaterThan(order.generated);
+});
+
+/** Whether `url`'s decoded PNG contains any opaque pixel matching `rgb` exactly. */
+async function hasExactColor(
+  page: import("@playwright/test").Page,
+  url: string,
+  rgb: [number, number, number],
+): Promise<boolean> {
+  return page.evaluate(
+    ({ url: src, rgb: target }) =>
+      new Promise<boolean>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const ctx = canvas.getContext("2d")!;
+          ctx.drawImage(image, 0, 0);
+          const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < data.length; i += 4) {
+            if (
+              data[i] === target[0] &&
+              data[i + 1] === target[1] &&
+              data[i + 2] === target[2] &&
+              (data[i + 3] ?? 0) > 0
+            ) {
+              resolve(true);
+              return;
+            }
+          }
+          resolve(false);
+        };
+        image.onerror = () => reject(new Error("failed to decode sampled PNG"));
+        image.src = src;
+      }),
+    { url, rgb },
+  );
+}
+
+test("merging visible layers composites chunk-by-chunk into a tiled surface, without leaking debug tile borders", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+      getActiveUltraPaintApp(): ReturnType<
+        NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]
+      > & {
+        mergeVisibleLayersToNewLayer(): string;
+        setTileDebugBorders(visible: boolean): void;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // 1200x1200 spans a 2x2 grid at the default 1024 tile size.
+    hook!.layerStore.setBoundaryBox({ x: 0, y: 0, width: 1200, height: 1200 });
+
+    const redId = await app.addBlankLayer();
+    hook!.layerStore.setSelectedLayerId(redId);
+    hook!.paintToolStore.setBrushSettings({ color: "#ff0000", opacity: 1 });
+    app.fillSelectedLayer();
+
+    // Opaque blue on top fully occludes the red layer, so a correct
+    // chunk-by-chunk merge reads as pure solid blue everywhere -- including
+    // exactly at the tile seams -- with no need to reason about blending.
+    const blueId = await app.addBlankLayer();
+    hook!.layerStore.setSelectedLayerId(blueId);
+    hook!.paintToolStore.setBrushSettings({ color: "#0000ff", opacity: 1 });
+    app.fillSelectedLayer();
+
+    const mergedId = app.mergeVisibleLayersToNewLayer();
+    const mergedLayer = hook!.layerStore.document.layers.find((l) => l.id === mergedId);
+    const mergedTileCount = hook!.layerStore.getTiledSurface(mergedId)?.tileCount;
+    const mergedUrl = app.layerSourceDataURL(mergedId)!;
+
+    app.setTileDebugBorders(true);
+    const flattenedWithBordersOn = app.flattenToDataURL();
+    const remergedId = app.mergeVisibleLayersToNewLayer();
+    const remergedWithBordersOnUrl = app.layerSourceDataURL(remergedId)!;
+    app.setTileDebugBorders(false);
+
+    return {
+      storage: mergedLayer?.image.storage,
+      mergedTileCount,
+      mergedUrl,
+      flattenedWithBordersOn,
+      remergedWithBordersOnUrl,
+    };
+  });
+
+  expect(result.storage).toBe("tiled");
+  expect(result.mergedTileCount).toBe(4);
+
+  const seamAdjacentPoints: Array<[number, number]> = [
+    [10, 10],
+    [1190, 10],
+    [10, 1190],
+    [1190, 1190],
+    [1020, 600],
+    [1028, 600],
+    [600, 1020],
+    [600, 1028],
+  ];
+  const blue = [0, 0, 255, 255];
+  expect(await samplePixels(page, result.mergedUrl, seamAdjacentPoints)).toEqual(
+    seamAdjacentPoints.map(() => blue),
+  );
+
+  for (const url of [result.flattenedWithBordersOn, result.remergedWithBordersOnUrl]) {
+    expect(await samplePixels(page, url, seamAdjacentPoints)).toEqual(
+      seamAdjacentPoints.map(() => blue),
+    );
+    expect(await hasExactColor(page, url, [0, 255, 0])).toBe(false);
+  }
 });

@@ -19,7 +19,7 @@ import type { Filter, Texture } from "pixi.js";
 
 import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
 import { TiledRasterView } from "../canvas/TiledRasterView";
-import type { PixelBounds } from "../canvas/TileGrid";
+import type { PixelBounds, TileCoord } from "../canvas/TileGrid";
 import type { Layer, LayerId, LayerKind } from "../state/schema";
 import { toPixiBlendMode } from "../util/blendModes";
 import { ControlLayerDisplayFilter } from "./ControlLayerDisplayFilter";
@@ -53,6 +53,9 @@ export class LayerNode {
   /** Persists across `setTiledSurface()` swaps so a repaint doesn't drop the debug outline. */
   private tileDebugBordersVisible = false;
 
+  /** Persists across `setTiledSurface()` swaps so a repaint doesn't drop the sample mode. */
+  private tileAntialiasingEnabled = true;
+
   private destroyed = false;
 
   constructor(layer: Layer, pixels?: Texture | TiledRasterCanvas) {
@@ -70,6 +73,7 @@ export class LayerNode {
         }
         if (pixels instanceof TiledRasterCanvas) {
           this.tiledView = new TiledRasterView(pixels, `tiles:${layer.id}`);
+          this.tiledView.setAntialiased(this.tileAntialiasingEnabled);
           this.container.addChild(this.tiledView.container);
         } else {
           this.sprite = new Sprite({
@@ -190,6 +194,7 @@ export class LayerNode {
     this.tiledView = new TiledRasterView(surface, `tiles:${this.id}`);
     this.tiledView.container.visible = !this.previewOverride;
     this.tiledView.setDebugBorders(this.tileDebugBordersVisible);
+    this.tiledView.setAntialiased(this.tileAntialiasingEnabled);
     this.container.addChild(this.tiledView.container);
     if (this.lastLayer && !this.previewOverride) this.applyDisplayTreatment(this.lastLayer);
   }
@@ -199,10 +204,21 @@ export class LayerNode {
     this.tiledView?.setVisibleRegion(region);
   }
 
+  /** Hide one persistent tile sprite while a stroke overlay stands in for it. */
+  public setTileSpriteHidden(coord: TileCoord, hidden: boolean): void {
+    this.tiledView?.setTileHidden(coord, hidden);
+  }
+
   /** Debug-only: outline this layer's tiles in green. No-op for non-tiled layers. */
   public setTileDebugBorders(visible: boolean): void {
     this.tileDebugBordersVisible = visible;
     this.tiledView?.setDebugBorders(visible);
+  }
+
+  /** Toggle smooth vs. crisp tile sampling. No-op for non-tiled layers. */
+  public setTileAntialiasing(enabled: boolean): void {
+    this.tileAntialiasingEnabled = enabled;
+    this.tiledView?.setAntialiased(enabled);
   }
 
   /** Temporarily display an undecorated filter result without changing store-owned pixels. */

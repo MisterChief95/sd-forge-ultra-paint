@@ -10,6 +10,20 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Control-layer display luminance-to-alpha — 2026-08-31
+
+Control-layer display treatment now uses true luminance-to-alpha: the rendered
+alpha is `source alpha × Rec. 709 luminance`, so black preprocessor output is
+fully transparent instead of retaining the previous 15% minimum opacity. This
+remains display-only; the source texture, Forge preprocessing request, and
+accepted ControlNet pixels are unchanged.
+
+Files changed: `frontend/src/scene/ControlLayerDisplayFilter.ts`. Verification:
+frontend typecheck, production build, focused Prettier check, and the focused
+Chromium ControlNet filter test all pass. No live Forge/GPU validation was run.
+
+---
+
 ## Preview/filter document lock and canvas cursor ownership — 2026-08-30
 
 Unapplied generation previews now lock the document whether their image is
@@ -114,13 +128,34 @@ Prettier checks passed, production build passed, and focused Playwright coverage
 passed 2/2. No live Forge/GPU validation was run.
 
 ---
-## Infinite tile-backed canvas — IN PROGRESS, 2026-08-30
+## Infinite tile-backed canvas — IN PROGRESS, 2026-08-31
 
-The migration design below remains the target architecture. I0 and the opt-in I1
-vertical slice are substantially implemented. Image upload is now tiled by
-default in production (see below); every other layer-creation path and the
-whole paint pipeline still use the monolithic `RenderTexture` path. I2
-ingestion and chunked compositing have started but are not yet complete.
+### Top-level Mask -> ControlNet -> Raster stack enforcement -- 2026-08-31
+
+`LayerTree` now reconciles root layers as three independent visual sections:
+Mask (top), ControlNet, then regular Raster/Group (bottom). Previously it
+separated only masks, so a generated tiled raster inserted at the top of the
+document stack could render above the ControlNet source it had just used.
+The rule applies to every raster backing, including `TiledRasterCanvas`.
+Focused Playwright coverage creates a tiled generated layer after copying a
+raster to both ControlNet and mask layers, then verifies the live Pixi child
+order remains Mask -> ControlNet -> Raster.
+
+The migration design below remains the target architecture. I0, the opt-in I1
+vertical slice, and I3 (tile-native brush/eraser painting) are substantially
+implemented; I4 (remaining edit operations and production cutover) has
+started. Image upload, blank raster layers, generated-Apply, and merging
+raster/group layers are now tiled by default in production (see below);
+mask/control layer creation and paste-as-mask/paste-as-control still use the
+monolithic `RenderTexture` path (clear/invert-mask and ControlNet filter
+acceptance need to be ported first -- see the "Deferred / notes" list under
+the 2026-08-31 ingestion entry below). A tiled raster layer now supports
+every pixel operation -- brush, eraser, Fill, Clip to Boundary Box, and
+mask/control conversion. I2 ingestion and chunked compositing have started
+and now cover every export route except mask export: `Compositor.flatten()`
+(Save/Generate) and the new chunked merge path both render in device-safe
+chunks; `Compositor.flattenMask()` (inpaint mask export) is the one route
+still allocating one full-boundary-box GPU texture directly.
 
 ### Implementation status — opt-in vertical slice working, 2026-08-30
 
@@ -333,6 +368,298 @@ Next slice: I3, the full paint/history migration -- porting brush/eraser
 strokes (and their live-preview/allow-growth machinery) onto tiled surfaces,
 which is what would make an uploaded layer fully paintable rather than only
 fillable/clippable/convertible.
+
+### I3: tile-native brush and eraser painting -- 2026-08-31
+
+An uploaded (tiled) layer is now fully paintable. New `TiledConsistentOpacityStroke`
+(`frontend/src/paint/TiledConsistentOpacityStroke.ts`) is the per-tile counterpart to
+the existing monolithic `ConsistentOpacityStroke`, sharing its coverage-stamp
+construction (`createCoverageStamp`, now exported) but never touching a persistent
+tile until the stroke ends:
+
+- Each stamp's affine bounding box (via `Matrix.apply` on the stamp's four local
+  corners) selects the touched tile range; a per-tile scratch coverage texture
+  accumulates stamps with the same "max"-blend technique as the monolithic path,
+  scoped to one tile instead of the whole layer.
+- **Live preview never allocates a real tile.** Brush shows a masked overlay
+  sprite (the scratch coverage texture) parented directly into the tiled layer's
+  existing `LayerNode.container`, positioned at the tile's origin -- since
+  `TiledRasterView`'s tile sprites already live in that same untransformed
+  layer-local container, this needed zero changes to the view/node layer. Eraser
+  rebuilds a tile-sized "already erased" preview (a one-time snapshot of the
+  live tile + an off-screen erase-blend render, exactly mirroring the
+  monolithic eraser's reasoning for never using erase blend mode directly in
+  the live scene). **Originally this preview was shown as an opaque overlay on
+  top of the real tile sprite -- see the 2026-08-31 fix note below for why
+  that doesn't work and what replaced it.**
+- Eraser and preserve-alpha brush strokes only ever touch already-allocated
+  tiles (read via `TiledRasterCanvas.visit()`, which is naturally existing-tiles-only);
+  a stamp over an unallocated tile is silently skipped, matching the monolithic
+  "preserve-alpha disables growth" behavior and the plan's "never allocate an
+  absent tile" contract for erasing.
+- **Commit is one atomic transaction.** `end()` opens one `TileEditTransaction`
+  and calls `TiledRasterCanvas.edit()` once per touched tile (allocating missing
+  tiles only for a non-preserve-alpha brush stroke), rendering each tile's final
+  pixels from its scratch coverage/preview texture -- reusing the exact
+  per-tile preserve-alpha alpha-mask-snapshot technique `fillTiledRaster`
+  already established. The committed `TileEditDelta` is recorded through the
+  same `"tile-pixels"` history-entry kind Fill introduced, so undo/redo needed
+  no new history plumbing.
+- `BrushEngine`/`EraserEngine` now branch on `store.getTexture()` vs.
+  `store.getTiledSurface()` and construct whichever stroke class applies; a new
+  minimal structural `TileEditRecorder` interface (just `recordTileEdit`) lets
+  them record history without importing the private `UndoHistory` class --
+  `UltraPaintApp` passes its already-constructed `history` in when building both
+  engines. `UltraPaintApp.beginStroke()` needed no changes: it already only
+  wraps a session in `HistoryStrokeSession` when `beginPixelChange()` returns a
+  pending monolithic snapshot, which is naturally `null` for a tiled layer, so a
+  tiled stroke session (which records its own history) already passed through
+  unwrapped.
+
+This completes the plan's staged I3 exit criterion for the four operations
+originally flagged as monolithic-only in the upload slice (Fill, Clip to
+Boundary Box, mask/control conversion, and now brush/eraser); an uploaded
+layer no longer has any read-only-ish pixel operation. Multi-tile stroke
+crossing was not given its own dedicated test in this slice (the per-tile
+edit/transaction loop is identical to the multi-tile Fill path already
+covered above) -- a fractional-zoom/rotated-layer seam check and an explicit
+2/4-tile-crossing stroke test remain open items from the plan's acceptance
+list if this needs stronger direct coverage later.
+
+Files changed: `frontend/src/paint/TiledConsistentOpacityStroke.ts` (new),
+`frontend/src/paint/ConsistentOpacityStroke.ts`, `frontend/src/paint/BrushEngine.ts`,
+`frontend/src/paint/EraserEngine.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test uploads a solid-color tiled layer, paints a real
+pointer-driven brush stroke and a real pointer-driven eraser stroke (through
+the actual `StrokeController` pointer pipeline, not a direct method call),
+and confirms exact pixel colors/alpha after each stroke and through a full
+undo/undo/redo/redo sequence spanning both strokes. Full Playwright suite:
+64/66 passing, with the same two pre-existing unrelated failures confirmed by
+re-running against the unmodified baseline (the known "resolution modes"
+flake, plus a live-preview SSE-polling timing flake also reproducing without
+any of this slice's changes). No live Forge/GPU validation was run.
+
+**Fix -- 2026-08-31: eraser live preview never appeared on a tiled layer.**
+The Playwright test above only asserts the *committed* result, so it never
+caught this: dragging the eraser tool over a tiled layer showed no visible
+change at all until pointer-up, at which point the erased region appeared
+all at once. Brush's live preview worked correctly the whole time.
+
+Root cause: `TiledRasterView` keeps a tiled layer's persistent tile sprites
+mounted and visible throughout a stroke. The eraser's preview overlay was a
+*later sibling* added on top of that still-visible tile, per the original I3
+design above. Its computed pixels were correct (confirmed via a throttled
+`renderer.extract.pixels()` readback mid-drag), but erased pixels are
+*transparent*, and a transparent pixel drawn over a still-opaque, unmodified
+tile shows the tile -- net zero visible change. Brush's overlay never had
+this problem because it's additive: painted pixels over an unmodified base
+composite correctly regardless of what's underneath.
+
+Three GPU/PixiJS-state theories were tried and ruled out first (all
+harmless, some kept): sampling a private one-time snapshot of the tile
+instead of the live persistent texture directly (`baseSnapshotTexture`,
+still in place -- avoids a real but separate Chromium same-texture hazard
+documented in `ConsistentOpacityStroke.end()`), disabling antialiasing on
+the composite textures, and ping-ponging between two preview `RenderTexture`
+objects to force a genuine reference reassignment on `Sprite.texture`. None
+of these changed the symptom, because the preview's *pixel content* was
+never the problem -- only what it was being composited against was.
+
+The actual fix: hide the underlying persistent tile sprite for the
+stroke's duration instead of overlaying on top of it, then restore it right
+before `commit()` (no frame renders in between, so no flash). New
+`TiledRasterView.setTileHidden()` / `LayerNode.setTileSpriteHidden()` toggle
+one tile sprite's `visible`; `TiledConsistentOpacityStroke` calls this from
+`tileFor()`/`end()` for eraser tiles only (brush is unaffected and still
+overlays normally). `BrushEngine`/`EraserEngine` now pass the `LayerNode`
+itself into the stroke class instead of just its `container`, so it can
+reach this method.
+
+Files changed: `frontend/src/canvas/TiledRasterView.ts`,
+`frontend/src/scene/LayerNode.ts`,
+`frontend/src/paint/TiledConsistentOpacityStroke.ts`,
+`frontend/src/paint/BrushEngine.ts`, `frontend/src/paint/EraserEngine.ts`.
+Verification: frontend typecheck clean; a real (non-synthetic) pointer drag
+recorded per-frame scene state for both tools -- every eraser frame with the
+overlay mounted also had the tile hidden and vice versa, and brush frames
+kept the tile visible throughout, as expected. Not yet covered by an
+automated Playwright assertion of *mid-stroke* visual state (only the
+committed result was already covered) -- worth adding if this regresses
+again silently.
+
+### I4 (partial): tiled blank-layer and generated-Apply ingestion -- 2026-08-31
+
+Two more layer-creation paths now ingest through `TiledRasterCanvas` instead
+of a monolithic `RenderTexture`: **blank raster layer creation**
+(`addBlankLayer`) and **generated-Apply** (`addImageFromDataURL`, the entry
+point `GenerationPreviewBar`'s Apply button and the Python bridge use).
+Paste-as-raster already went through the tiled path for free -- it calls the
+already-tiled `addImageFromFile` -- so it needed no change. Mask/control
+layer creation and paste-as-mask/paste-as-control were deliberately left
+monolithic (see "Deferred" below): they depend on operations that are not
+tiled-aware yet.
+
+- `addBlankLayer()` now calls a new `UltraPaintApp.createBlankTiledSurface(width, height)`,
+  which opens a transaction, calls `transaction.includeBounds()` once to set
+  the surface's logical bounds to the current boundary box, and commits
+  immediately without ever calling `edit()` -- zero tiles are allocated,
+  matching the "a new blank layer owns zero GPU tiles" invariant. Brush/Fill
+  allocate real tiles the first time the layer is actually painted.
+- `addImageFromDataURL()` is now a thin wrapper around the same
+  `createPaintableTiledSurface()` + `addRasterLayerTiled()` pair
+  `addImageFromFile()` already used, keeping its existing explicit
+  `setTransform()` call afterward (positioning the new layer at the current
+  boundary box origin) -- unlike upload, generated-Apply must land exactly
+  where the boundary box is, not at local (0, 0).
+
+**Found and fixed a real bug in existing (I3) Fill code, exposed by blank
+tiled layers**: `fillTiledRaster()` used `allocation: "existing-only"`,
+which was silently correct only because the *only* thing that had ever been
+tiled before this slice was an *upload* -- uploads blit into every tile
+across their full bounds, so "existing-only" and "the layer's whole
+footprint" always coincided. A blank tiled layer starts with real logical
+bounds but zero tiles, so Fill was a silent no-op on one. Fixed by clipping
+the fill region to the surface's current bounds (`intersectBounds()`, new
+free function) and then using `allocation: "allocate-missing"` for a plain
+fill / `"existing-only"` for preserve-alpha (mirroring the brush/eraser
+rule) -- Fill still never *grows* a tiled layer's footprint, matching
+monolithic Fill's fixed-size-target behavior exactly, it just now actually
+populates any of that footprint's tiles that don't exist yet.
+
+**Found and fixed a second latent gap, exposed by the same blank-layer
+change**: `transform-correctness.spec.ts` had a test asserting that painting
+outside a layer's bounds grows its *monolithic* texture (with 512px padding)
+and compensates `transform.x/y` to keep old pixels fixed on screen under
+rotation/flip. Once `addBlankLayer()` produced a tiled surface, that
+premise no longer applied -- a tiled layer's local origin never moves by
+construction (tile `(-1,-1)` just gets allocated at its permanent local
+coordinate), so there is nothing to compensate. Rewrote the test to assert
+the tiled invariant instead: `layer.transform` is *exactly* unchanged after
+painting outside the original bounds, the expected tile coordinates get
+allocated (this one incidentally exercises a stroke spanning all four tiles
+meeting at a corner, a PLAN.md acceptance-list scenario that had no direct
+coverage yet), and the previously-painted pixel's global screen position
+doesn't move. Also updated `dimension-safety.spec.ts`'s dimensions
+assertion, which explicitly (and now correctly) expects `storage: "tiled"`
+on a generated-source layer.
+
+**Deferred / notes for whoever picks up the next slice** (raised and
+consciously deferred while scoping this one, not discovered by accident):
+
+- `layer.image.width/height` does not track a tiled surface's logical bounds
+  after creation. Brush/eraser growth (already shipped in I3) *does* expand
+  `surface.bounds` via `TileEditTransaction.includeBounds()`, but nothing
+  copies that back into `image.width/height` -- so `fitBoundaryBoxToContent()`
+  (`UltraPaintApp.ts`, uses `layer.image.width/height` directly for every
+  raster layer) and anything else reading those fields will see stale
+  dimensions for a tiled layer painted past its original footprint. This was
+  never exercised before this slice because nothing had ever painted outside
+  an *upload's* bounds in a test. Fixing it properly is more than a
+  width/height sync: the schema's `ImageRef` has no bounds-origin field, so a
+  surface whose bounds grow to a *negative* origin (e.g. painting up-and-left
+  of local (0,0)) cannot be represented by `width/height` alone --
+  `TiledImageRef.bounds: PixelBounds` in this document's design section
+  already anticipated this and should be revisited before relying on
+  `image.width/height` for a tiled layer that can grow arbitrarily.
+- **Chunked mask & merge export** is still open: `Compositor.flattenMask()`
+  (inpaint mask export) and `Compositor.flattenToTexture()` (merge
+  selected/visible layers, also used by `mergeVisibleMasksToNewMask()`) each
+  allocate one full-boundary-box `RenderTexture` directly, unlike the
+  already-chunked `Compositor.flatten()` that Save/Generate use. Both are
+  independent of storage format -- pure compositor work, following the same
+  chunk-and-stitch shape `flatten()` already established.
+- **Tiled masks/controls** is the bigger remaining lift: mask/control layer
+  creation is still monolithic everywhere (including when converting *from*
+  a tiled raster layer -- `convertLayerToMask`/`convertLayerToControl`
+  flatten first, so the result is always monolithic today). Switching either
+  creation path to tiled requires first porting `clearSelectedMask()`,
+  `invertSelectedMask()` (both currently `getTexture()`-only), and
+  `acceptFilterResult()` (ControlNet filter-result acceptance, also
+  `getTexture()`-only) to handle a tiled target -- none of those are
+  exercised today because no mask/control layer can be tiled yet, so there's
+  no live bug, just unfinished prerequisite work.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`,
+`frontend/tests/e2e/transform-correctness.spec.ts`,
+`frontend/tests/e2e/dimension-safety.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test creates a blank tiled layer (verifies zero initial
+tiles, correct logical bounds, that Fill still allocates tiles on it) and a
+tiled generated-Apply layer (verifies correct positioning at a non-zero
+boundary box origin); the rewritten `transform-correctness.spec.ts` test and
+the updated `dimension-safety.spec.ts` assertion both pass. Full Playwright
+suite: 65/67 passing, with the same two pre-existing, unrelated,
+baseline-confirmed failures ("resolution modes" and the live-preview
+SSE-polling timing flake). No live Forge/GPU validation was run.
+
+### I4 (partial): chunked, tiled-output layer merge -- 2026-08-31
+
+`mergeLayersToNewLayer()` / `mergeVisibleLayersToNewLayer()` (raster merge)
+now match the plan's own operation-contract table for this row exactly:
+"Render each output chunk straight into a new tile surface. Do not create a
+boundary-box-sized intermediate RT." Previously they went through
+`flattenSelectedToTexture()` -> `Compositor.flattenToTexture()`, which
+allocates one full-boundary-box `RenderTexture` regardless of size -- the
+same unchunked-export gap flagged as deferred in the ingestion entry above.
+
+- New `UltraPaintApp.flattenSelectedToTiledSurface()` iterates chunks the
+  same way `Compositor.flatten()` does (offset loop in tile-size steps,
+  `Matrix` translation per chunk), but each chunk *is* a tile: it opens one
+  `TileEditTransaction`, calls `surface.edit()` once per chunk with
+  `allocation: "allocate-missing"`, and renders `tree.root` (through the
+  same temporarily-forced-renderable/visible selection logic as before)
+  directly onto that tile's persistent target. There is no CPU-canvas
+  stitching step at all -- the tiles produced *are* the final storage, so
+  this is simpler than the chunked `Compositor.flatten()` it's modeled on,
+  not just safer.
+- The renderable/visible-forcing logic that `flattenSelectedToTexture` and
+  the new tiled version both need was extracted into a shared
+  `withOnlySelectedRenderable()` helper; `flattenSelectedToTexture()` itself
+  is unchanged in behavior and still backs `mergeVisibleMasksToNewMask()`
+  (mask merge stays monolithic on purpose -- masks aren't tiled-aware yet,
+  per the previous entry's "Tiled masks/controls" note).
+- `mergeLayersToNewLayer()` now calls `store.addRasterLayerTiled()` instead
+  of `store.addRasterLayer()`, so a merged layer is tiled like everything
+  else a raster operation touches today.
+
+**Found and fixed a real, user-reported bug while wiring this up**: the
+debug tile-border overlay (the green "Tiles" outline toggle in
+`ViewportControls`) was never hidden before any render that captures the
+live scene graph, so toggling it on and then using Save, the Generate
+composite, or (now) Merge baked the green outline permanently into the
+output. Nothing had ever needed to hide it before, since the two other
+render-the-scene-graph call sites either don't exist yet (chunked mask/merge
+export was still unchunked prose until this entry) or predate the debug
+overlay feature. Fixed with a new `UltraPaintApp.withTileDebugBordersHidden()`
+helper (toggles `tree.setTileDebugBorders(false)` for the duration of one
+render, restores after, and is a cheap no-op check when the overlay is
+already off) wrapped around both `Compositor.flatten()` in
+`flattenToDataURL()` and the new chunked merge render loop.
+`layerSourceDataURL()`/thumbnails/`Compositor.flattenMask()` were already
+safe -- they build their own throwaway sprites directly from surface/texture
+data rather than rendering `TiledRasterView`'s live sprites, so they never
+had this exposure.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test fills two 1200x1200 blank layers (opaque red under
+opaque blue, spanning a 2x2 tile grid) and merges them, confirming the
+result is tiled with exactly 4 tiles and reads as solid blue at eight points
+including ones straddling both tile seams; the same test then enables debug
+tile borders, re-runs both `flattenToDataURL()` and another merge, and
+confirms neither output contains a single green (0, 255, 0) pixel anywhere
+in a full-image scan. Full Playwright suite: 66/68 passing (rerun to confirm
+one additional one-off failure was a flake, not a regression), with the
+same two pre-existing, unrelated, baseline-confirmed failures. No live
+Forge/GPU validation was run.
+
+Still open from the "Deferred / notes" list above: mask export
+(`Compositor.flattenMask()`) remains the one unchunked full-boundary-box
+export route now that merge is chunked.
 
 ### Outcome and scope
 
@@ -1264,6 +1591,15 @@ selection when layers are removed, and keeps regular/mask/control selections
 bucket-compatible. Merge preserves the originals and document-space placement;
 mask/control selections are intentionally not mergeable. Verified with
 `npm run typecheck`, `npm run build`, and `git diff --check`.
+
+**Layer context-menu copy/convert actions: IMPLEMENTED (2026-08-31).** The menu
+now separates general, copy, conversion, editing, and destructive actions with
+dividers. Raster and control layers can be copied to a new mask; raster layers can
+also be copied to a new ControlNet layer. The corresponding Convert actions now
+remove the source only after making that copy. Every layer kind has a basic
+duplicate action; textured copies retain their independent pixels and visible
+settings, while groups duplicate as empty groups because the current UI has no
+group nesting workflow.
 
 **Boundary box (Invoke-style operating region): IMPLEMENTED** (superseding the
 original Phase 2.5 item 1 fixed-size canvas controls) — `Document.boundaryBox` is

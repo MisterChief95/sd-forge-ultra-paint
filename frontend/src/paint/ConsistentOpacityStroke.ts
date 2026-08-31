@@ -423,7 +423,7 @@ function copyTextureAtOffset(
   }
 }
 
-function createCoverageStamp(
+export function createCoverageStamp(
   app: Application,
   settings: Readonly<BrushSettings>,
   color: string,

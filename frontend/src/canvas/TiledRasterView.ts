@@ -28,6 +28,9 @@ export class TiledRasterView {
   /** Debug-only outline over each currently-attached tile; null while hidden. */
   private debugBorders: Graphics | null = null;
 
+  /** Sample mode applied to every tile texture, current and future. */
+  private scaleMode: "linear" | "nearest" = "linear";
+
   private destroyed = false;
 
   constructor(
@@ -73,6 +76,18 @@ export class TiledRasterView {
     this.redrawDebugBorders();
   }
 
+  /**
+   * Hide one tile's persistent sprite so a live stroke overlay can stand in for
+   * it. An eraser preview *replaces* a tile rather than adding to it: left
+   * visible underneath, the untouched tile shows straight through the preview's
+   * newly-transparent pixels and nothing appears to change on screen.
+   */
+  public setTileHidden(coord: TileCoord, hidden: boolean): void {
+    if (this.destroyed) return;
+    const sprite = this.#sprites.get(this.surface.grid.key(coord));
+    if (sprite) sprite.visible = !hidden;
+  }
+
   /** Debug-only: outline every currently-attached tile in green. */
   public setDebugBorders(visible: boolean): void {
     if (this.destroyed) return;
@@ -87,6 +102,15 @@ export class TiledRasterView {
       this.container.addChild(this.debugBorders);
     }
     this.redrawDebugBorders();
+  }
+
+  /** Toggle smooth (linear) vs. crisp (nearest) sampling for every tile, current and future. */
+  public setAntialiased(enabled: boolean): void {
+    if (this.destroyed) return;
+    this.scaleMode = enabled ? "linear" : "nearest";
+    for (const sprite of this.#sprites.values()) {
+      sprite.texture.source.scaleMode = this.scaleMode;
+    }
   }
 
   /** Apply display-only filters per tile, avoiding one sparse-span filter target. */
@@ -133,6 +157,7 @@ export class TiledRasterView {
 
     if (existing) {
       existing.texture = event.target;
+      existing.texture.source.scaleMode = this.scaleMode;
       return;
     }
     this.add({
@@ -155,6 +180,7 @@ export class TiledRasterView {
       x: tile.originX,
       y: tile.originY,
     });
+    sprite.texture.source.scaleMode = this.scaleMode;
     if (this.filters) sprite.filters = [...this.filters];
     this.#sprites.set(key, sprite);
     if (this.isVisible(tile.coord)) {

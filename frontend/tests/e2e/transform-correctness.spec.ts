@@ -30,30 +30,7 @@ async function openApp(page: Page): Promise<void> {
   });
 }
 
-async function layerAlpha(page: Page, id: string, x: number, y: number): Promise<number> {
-  return page.evaluate(
-    async ({ id: layerId, x: sampleX, y: sampleY }) => {
-      const hook = (window as TestWindow).__ultraPaintTest as {
-        getActiveUltraPaintApp(): { layerSourceDataURL(id: string): string | null } | null;
-      };
-      const url = hook.getActiveUltraPaintApp()?.layerSourceDataURL(layerId);
-      if (!url) throw new Error("Layer texture is unavailable");
-      const image = new Image();
-      image.src = url;
-      await image.decode();
-      const canvas = document.createElement("canvas");
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("2D canvas context is unavailable");
-      context.drawImage(image, 0, 0);
-      return context.getImageData(sampleX, sampleY, 1, 1).data[3] ?? 0;
-    },
-    { id, x, y },
-  );
-}
-
-test("texture growth preserves painted pixels on a rotated flipped layer", async ({ page }) => {
+test("tile allocation preserves painted pixels on a rotated flipped layer", async ({ page }) => {
   await openApp(page);
   const setup = await page.evaluate(async () => {
     const hook = (window as TestWindow).__ultraPaintTest as {
@@ -62,6 +39,10 @@ test("texture growth preserves painted pixels on a rotated flipped layer", async
         setBoundaryBox(value: object): void;
         setSelectedLayerId(id: string): void;
         setTransform(id: string, value: object): void;
+        getTiledSurface(
+          id: string,
+        ): { diagnosticTileCoords(): { x: number; y: number }[] } | undefined;
+        document: { layers: Array<{ id: string; transform: object }> };
       };
       paintToolStore: { setBrushSettings(value: object): void };
     };
@@ -77,6 +58,9 @@ test("texture growth preserves painted pixels on a rotated flipped layer", async
       scaleY: 0.8,
       rotation: 0.45,
     });
+    const rotatedTransform = {
+      ...hook.layerStore.document.layers.find((l) => l.id === id)?.transform,
+    };
     hook.paintToolStore.setBrushSettings({ radius: 20, hardness: 1, opacity: 1 });
 
     const privateApp = app as unknown as PrivateApp;
@@ -93,9 +77,14 @@ test("texture growth preserves painted pixels on a rotated flipped layer", async
     };
     return {
       id,
+      rotatedTransform,
       inside: toClient({ x: 100, y: 100 }),
+      // Any negative local coordinate lands in tile (-1, -1) at the default
+      // 1024px tile size -- a tiled layer's local origin never moves, unlike
+      // the old monolithic growth path this test used to exercise, so
+      // painting here should allocate that tile without touching transform.
       outside: toClient({ x: -10, y: -10 }),
-      oldPixelGlobal: node.container.toGlobal({ x: 100, y: 100 }),
+      insidePixelGlobal: node.container.toGlobal({ x: 100, y: 100 }),
     };
   });
 
@@ -105,33 +94,38 @@ test("texture growth preserves painted pixels on a rotated flipped layer", async
   const result = await page.evaluate((id) => {
     const hook = (window as TestWindow).__ultraPaintTest as {
       getActiveUltraPaintApp(): {
-        getStore(): {
-          getLayer(id: string): { image: { width: number; height: number } } | undefined;
-        } | null;
+        getStore(): { getLayer(id: string): { transform: object } | undefined } | null;
       } | null;
+      layerStore: {
+        getTiledSurface(
+          id: string,
+        ): { diagnosticTileCoords(): { x: number; y: number }[] } | undefined;
+      };
     };
     const app = hook.getActiveUltraPaintApp();
     const privateApp = app as unknown as PrivateApp;
     const layer = app?.getStore().getLayer(id);
-    if (!layer) throw new Error("Grown layer is unavailable");
+    if (!layer) throw new Error("Painted layer is unavailable");
     const node = privateApp.tree.getNode(id);
     return {
-      width: layer.image.width,
-      height: layer.image.height,
-      oldPixelGlobal: node.container.toGlobal({
-        x: layer.image.width - 256 + 100,
-        y: layer.image.height - 256 + 100,
-      }),
+      transform: { ...layer.transform },
+      tileCoords: hook.layerStore.getTiledSurface(id)?.diagnosticTileCoords(),
+      insidePixelGlobal: node.container.toGlobal({ x: 100, y: 100 }),
     };
   }, setup.id);
 
-  expect(result.width).toBeGreaterThan(256);
-  expect(result.height).toBeGreaterThan(256);
-  expect(result.oldPixelGlobal.x).toBeCloseTo(setup.oldPixelGlobal.x, 5);
-  expect(result.oldPixelGlobal.y).toBeCloseTo(setup.oldPixelGlobal.y, 5);
-  expect(await layerAlpha(page, setup.id, result.width - 156, result.height - 156)).toBeGreaterThan(
-    0,
-  );
+  expect(result.transform).toEqual(setup.rotatedTransform);
+  // The radius-20 stamp at (-10, -10) straddles the origin on both axes, so
+  // this one click allocates all four tiles meeting at (0, 0) -- a bonus
+  // check that a single stroke spanning a 4-tile corner composites correctly.
+  expect(result.tileCoords).toEqual([
+    { x: -1, y: -1 },
+    { x: 0, y: -1 },
+    { x: -1, y: 0 },
+    { x: 0, y: 0 },
+  ]);
+  expect(result.insidePixelGlobal.x).toBeCloseTo(setup.insidePixelGlobal.x, 5);
+  expect(result.insidePixelGlobal.y).toBeCloseTo(setup.insidePixelGlobal.y, 5);
 });
 
 test("Clip to BBox clips through rotated flipped group transforms", async ({ page }) => {

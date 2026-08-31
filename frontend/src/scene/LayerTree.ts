@@ -35,6 +35,9 @@ export class LayerTree {
   /** Applied to every current node and every node created afterward. */
   private tileDebugBordersVisible = false;
 
+  /** Applied to every current node and every node created afterward. */
+  private tileAntialiasingEnabled = true;
+
   private destroyed = false;
 
   constructor(store: LayerStore) {
@@ -61,6 +64,12 @@ export class LayerTree {
   public setTileDebugBorders(visible: boolean): void {
     this.tileDebugBordersVisible = visible;
     for (const node of this.nodes.values()) node.setTileDebugBorders(visible);
+  }
+
+  /** Toggle smooth vs. crisp tile sampling, now and going forward. */
+  public setTileAntialiasing(enabled: boolean): void {
+    this.tileAntialiasingEnabled = enabled;
+    for (const node of this.nodes.values()) node.setTileAntialiasing(enabled);
   }
 
   /**
@@ -115,17 +124,23 @@ export class LayerTree {
       }
       const node = new LayerNode(layer, texture);
       if (this.tileDebugBordersVisible) node.setTileDebugBorders(true);
+      if (!this.tileAntialiasingEnabled) node.setTileAntialiasing(false);
       this.nodes.set(layer.id, node);
     }
 
     // 4. Re-attach in document order, root first then each group.
-    // Mask and regular rows are independent stacks in the UI. Keep every
-    // root mask above regular content regardless of which stack changed
-    // most recently; order within each filtered stack still follows the
-    // document's index-0-is-top convention.
+    // The panel's Mask -> Control -> Raster sections are independent stacks.
+    // Keep that hierarchy in the scene too, so a newly generated tiled raster
+    // cannot be promoted above the ControlNet layer it was generated from.
+    // Order within each section still follows the document's
+    // index-0-is-top convention.
     const rootOrder = [
       ...doc.layerOrder.filter((id) => byId.get(id)?.kind === "mask"),
-      ...doc.layerOrder.filter((id) => byId.get(id)?.kind !== "mask"),
+      ...doc.layerOrder.filter((id) => byId.get(id)?.kind === "control"),
+      ...doc.layerOrder.filter((id) => {
+        const kind = byId.get(id)?.kind;
+        return kind !== "mask" && kind !== "control";
+      }),
     ];
     this.attachOrdered(this.root, rootOrder);
     for (const layer of doc.layers) {

@@ -751,6 +751,35 @@ export class LayerStore {
     this.emit();
   }
 
+  /** Apply the user-visible settings from a same-kind source to a newly created copy. */
+  public copyLayerSettings(id: LayerId, source: Layer): void {
+    const target = this.getLayer(id);
+    if (!target || target.kind !== source.kind) return;
+
+    Object.assign(target, {
+      name: `${source.name} copy`,
+      visible: source.visible,
+      locked: source.locked,
+      preserveAlpha: source.preserveAlpha,
+      opacity: source.opacity,
+      blendMode: source.blendMode,
+      transform: { ...source.transform },
+    });
+    if (target.kind === "mask" && source.kind === "mask") target.color = source.color;
+    if (target.kind === "control" && source.kind === "control") {
+      Object.assign(target, {
+        model: source.model,
+        weight: source.weight,
+        guidanceStart: source.guidanceStart,
+        guidanceEnd: source.guidanceEnd,
+        controlMode: source.controlMode,
+        pixelPerfect: source.pixelPerfect,
+        resizeMode: source.resizeMode,
+      });
+    }
+    this.emit();
+  }
+
   /**
    * Remove a single non-group layer for undo/redo of an "add-layer"
    * mutation only. Unlike {@link removeLayer}, the texture is NOT destroyed
