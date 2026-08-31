@@ -114,6 +114,490 @@ Prettier checks passed, production build passed, and focused Playwright coverage
 passed 2/2. No live Forge/GPU validation was run.
 
 ---
+## Infinite tile-backed canvas — PLANNED, 2026-08-30
+
+This is a design and migration plan only. No runtime code has been changed for
+this feature yet.
+
+### Outcome and scope
+
+Replace each paintable layer's single growing `RenderTexture` with a sparse grid
+of fixed-size render-texture tiles. The document coordinate plane and every
+paintable layer's local coordinate plane become effectively unbounded in both
+positive and negative directions. GPU memory, draw work, and history cost scale
+with touched tiles rather than with the rectangle spanning the furthest pixels.
+
+"Infinite" means an unbounded coordinate model with finite sparse storage. It
+does not mean infinite resident memory or an infinite generation request.
+Generation, save, clipboard, filter, and ControlNet operations still consume a
+finite region, normally `Document.boundaryBox`; those operations must render that
+region in device-safe chunks rather than allocating one region-sized GPU texture.
+
+This replaces the current monolithic growth path in
+`frontend/src/paint/ConsistentOpacityStroke.ts` (`MAX_LAYER_DIMENSION = 8192`,
+512px growth padding) and the `LayerStore` side-map of one
+`Map<LayerId, RenderTexture>`. It also removes the need to compensate a layer's
+transform whenever pixels are added above or left of its old texture origin.
+
+### Current single-texture assumptions that must be migrated
+
+The change is cross-cutting and must not be shipped as only a brush fix. Current
+single-texture callers include:
+
+- `LayerStore`: creation, ownership, removal, replacement, growth, metadata, and
+  add-layer undo extraction/restore;
+- `LayerNode` / `LayerTree`: one sprite per paintable layer;
+- `ConsistentOpacityStroke`: target-sized stroke coverage, eraser preview,
+  preserve-alpha mask, growth copies, and final commit;
+- `UndoHistory`: full-texture snapshots and atomic texture replacement;
+- `Compositor`: normal flatten, merge-to-texture, and mask export;
+- `UltraPaintApp`: fill, mask clear/invert, import, generated-preview apply,
+  paste, mask/control conversion, ControlNet filter acceptance, clip-to-box,
+  thumbnails, clipboard/source export, merge, and mask-content fitting.
+
+All of these routes must either become tile-native or intentionally render a
+finite tile region through one shared chunk compositor before the old
+`getTexture()` contract can be removed.
+
+### Required invariants
+
+1. **Stable layer coordinates.** Allocating a tile never changes
+   `Layer.transform`. Existing pixels must not move when painting crosses a tile
+   edge or crosses local coordinate zero.
+2. **Signed tile coordinates.** Tiles use signed integer `(tileX, tileY)` keys.
+   `tileX = floor(localX / tileSize)` and the same for Y; truncation is incorrect
+   for negative coordinates. Tile rectangles are half-open so a point exactly on
+   the right/bottom edge belongs only to the next tile.
+3. **Sparse allocation.** A new blank raster or mask layer owns zero GPU tiles.
+   Brush, fill, import, generation apply, and explicit blit operations allocate
+   only intersected tiles. Eraser and preserve-alpha brush operations never
+   allocate an absent tile.
+4. **Device-safe textures.** No persistent tile, per-tile stroke scratch, preview,
+   undo snapshot, or compositor chunk may exceed the renderer's supported 2D
+   texture dimension.
+5. **One gesture, one history entry.** A stroke crossing any number of tiles is
+   still one undo step. Undo/redo restores both pixel contents and whether each
+   touched tile existed.
+6. **Serializable document state stays GPU-free.** Pixi objects remain in a raw
+   side store. Serializable metadata may describe tile size and logical bounds,
+   but never stores `RenderTexture`, `Texture`, `Sprite`, or `Container` objects.
+7. **One owner per resource.** The tile surface owns persistent tile textures;
+   `LayerNode` owns tile sprites/views but not their sources; a paint operation
+   owns its scratch/preview textures; history owns snapshots or detached tile
+   textures until replay/eviction.
+8. **Display and export agree.** Layer/group transforms, opacity, visibility,
+   masks, and all existing blend modes must produce the same pixels across tile
+   seams and chunked exports as they do away from seams.
+9. **Culling cannot affect output.** Viewport culling is display-only. Generate,
+   save, merge, mask export, copy, filters, and ControlNet capture must explicitly
+   select tiles for their own finite output region and cannot inherit the current
+   screen's culling state.
+10. **Atomic failure.** A failed multi-tile import, stroke, filter, or history
+    replay leaves the prior surface intact and destroys every unadopted temporary.
+
+### Low-level tile-canvas access API and ownership model
+
+The tile store must be a real access boundary, not merely a public `Map` that
+every paint/edit feature manipulates differently. All signed coordinate math,
+allocation, persistent texture creation/destruction, structural events, bounds,
+and transactional rollback belong behind one low-level API. Higher-level brush,
+fill, import, filter, compositor, and history code may receive a tile handle while
+visiting/editing a region, but must never address the backing map or create/remove
+persistent tiles directly.
+
+Use three deliberately small layers:
+
+1. `TileGrid`: pure geometry only -- signed floor division, tile origins,
+   half-open bounds-to-tile ranges, and deterministic coordinate iteration.
+2. `TiledRasterCanvas`: persistent tile access, ownership, logical bounds,
+   structural subscriptions, and edit transactions. This is the only code that
+   installs, replaces, removes, or destroys persistent tile textures.
+3. Renderer-facing operations (`TileRasterOps` or focused functions): brush
+   render, blit, convert, and chunk composite. They use the canvas visitor/edit
+   API and Pixi renderer, but cannot bypass the canvas's ownership rules.
+
+The exact names may change during implementation, but the boundary should stay
+small and concrete:
+
+```ts
+interface PixelBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface TiledImageRef {
+  source: "upload" | "generated" | "paint";
+  storage: "tiled";
+  tileSize: number;
+  // Layer-local potential-content/edit bounds; null for a truly empty layer.
+  bounds: PixelBounds | null;
+}
+
+interface TileCoord {
+  x: number;
+  y: number;
+}
+
+interface TileVisit {
+  coord: TileCoord;
+  originX: number;
+  originY: number;
+  // Valid for this visit/edit; ownership remains with TiledRasterCanvas.
+  target: RenderTexture;
+}
+
+type TileAllocation = "existing-only" | "allocate-missing";
+
+class TiledRasterCanvas {
+  readonly tileSize: number;
+  readonly bounds: PixelBounds | null;
+  readonly tileCount: number;
+
+  visit(region: PixelBounds, fn: (tile: TileVisit) => void): void;
+  edit(
+    region: PixelBounds,
+    options: { allocation: TileAllocation; transaction: TileEditTransaction },
+    fn: (tile: TileVisit) => void,
+  ): void;
+  beginEdit(label: string): TileEditTransaction;
+  subscribe(fn: (event: TileStructureEvent) => void): () => void;
+  estimateResidentBytes(): number;
+  destroy(): void;
+}
+```
+
+Internally, `TiledRasterCanvas` may use a collision-free signed key such as
+`"-3,12"`; do not
+pack coordinates into 32-bit bitwise integers. Tile origins are always
+`tileX * tileSize`, `tileY * tileSize` in layer-local coordinates. Tile iteration
+is deterministic (Y, then X) for reproducible renders and tests. The internal map
+is not part of the public contract. Test-only diagnostics may expose sorted tile
+coordinates/counts, never mutable storage.
+
+`TileEditTransaction` captures a tile's before-state lazily on first write,
+records an explicit absent state for a newly allocated tile, and owns rollback,
+commit, and extraction of one history delta. A caller cannot partially commit a
+multi-tile edit. Whole-tile detach/adopt operations support clear, undo, and redo
+without a needless copy. Structural events (`added`, `removed`, `replaced`) are
+emitted only after state is internally consistent, allowing `LayerNode` to update
+sprites without learning storage details.
+
+`ImageRef.width/height` should migrate to local `bounds`. Bounds are independent
+of the coarse allocated-tile rectangle: an imported 1500x900 image keeps exact
+1500x900 logical bounds even though its edge tiles are full-sized. Painting and
+fill union their affected local bounds; erasing does not expand them. Automatic
+alpha-tight shrinking is not required on every eraser stroke because that would
+force synchronous GPU readback; clear, clip, and explicit future compaction may
+shrink bounds exactly.
+
+`LayerStore` becomes the owner of a raw
+`Map<LayerId, TiledRasterCanvas>`. Its public pixel boundary is
+`getPixelCanvas(layerId)`, not `getTexture()` and not a tile map. Tile
+allocation/removal emits a canvas-level
+structural notification consumed by its `LayerNode`; ordinary pixel writes do not
+emit document mutations. `touchTexture()` becomes a surface/pixel-version bump
+once per committed operation, preserving the thumbnail invalidation contract.
+
+`LayerNode` remains one container per document layer, but a paintable node owns a
+map of tile sprites beneath that container instead of one sprite. `LayerTree`
+continues to be the only owner of layer hierarchy; each `LayerNode` alone owns the
+children inside its own tile container. Layer transform, opacity, visibility, and
+blend mode remain on the layer container.
+
+Mask/control display filters must not require a filter target spanning the entire
+sparse layer. Apply the existing display treatment to each persistent or preview
+tile sprite (sharing filter programs/uniform state where safe), while export reads
+the undecorated tile textures. The current live mask/eraser preview behavior must
+remain intact.
+
+### Tile size and device limits
+
+- Start with a **1024x1024 logical tile**. At RGBA8 this is 4 MiB per persistent
+  tile before scratch/history copies: small enough for localized edits, large
+  enough to keep sprite/draw-call count modest.
+- At renderer startup, query the active backend's supported 2D texture dimension
+  (WebGL `MAX_TEXTURE_SIZE`; WebGPU `device.limits.maxTextureDimension2D`) behind
+  one capability helper. Use the largest power-of-two tile no greater than 1024
+  when a device cannot support 1024, and fail clearly if the renderer cannot
+  support the brush/transient minimum.
+- Store the selected tile size on the surface. Future document loading can retile
+  content when a saved document's tile size is too large for the current device.
+- The brush stamp itself is also a texture today. Its maximum dimension must be
+  checked against the same capability; this prevents a maximum-radius shortcut
+  from bypassing the tile limit even after layer storage is fixed.
+- Start without gutters. Pixi's clamp-to-edge sampling plus exact shared tile
+  coordinates may be sufficient. A fractional zoom + rotated-layer alpha-seam
+  browser test is a release gate. Add a one-pixel replicated gutter and neighbor
+  edge synchronization only if that test demonstrates seams; do not pay that
+  complexity speculatively.
+
+The current boundary-box UI may remain capped at 8192 for generation usability,
+but the renderer limit must no longer be its GPU limit. A boundary larger than a
+safe render target is split into tile-sized output chunks. Chunks are extracted
+and stitched into one 2D canvas/PNG for the current APIs. Validate the browser's
+2D encoding limit before starting and surface a useful error when a finite export
+itself is too large. This makes an 8192 output work on a renderer whose GPU limit
+is 4096 without pretending the backend can generate an infinite image.
+
+### Coordinate and transform rules
+
+Transform handling is intentionally separated from storage:
+
+- **Tile space is layer-local.** The sparse grid is permanently axis-aligned in
+  the layer's own local pixel plane. A tile at `(2, -1)` stays at local origin
+  `(2 * tileSize, -tileSize)` whether the layer is moved, rotated, scaled,
+  reflected, or placed inside transformed groups.
+- **The scene graph owns presentation transforms.** The existing
+  `LayerNode.container` applies the complete layer transform exactly once to all
+  tile sprites. Changing a transform updates no tile pixels, coordinates, keys,
+  or bounds, so transform editing is cheap and non-destructive.
+- **Document-to-layer queries use the inverse complete transform chain.** Pointer
+  samples remain document-local. Brush, fill, clip, culling, and paste-into-layer
+  convert their document-space points/regions through the layer container (and
+  therefore through every parent group) into layer-local space before calling the
+  low-level tile API.
+- **Candidate lookup is conservative; raster clipping is exact.** Transform all
+  four corners of a document/output rectangle into layer-local space and enumerate
+  the tile range of that local AABB. Rotation/non-uniform scale may include extra
+  candidate tiles, but the actual polygon, stamp, or output chunk clips the render,
+  so no pixels outside the requested region change.
+- **Brush radius remains a document-space visual size.** Reuse the current basis
+  calculation from document unit axes to layer-local axes. Under a 2x layer scale,
+  a document-radius-20 brush writes roughly radius 10 in local pixels; under
+  rotation or non-uniform scale the local stamp becomes the corresponding affine
+  ellipse while its document-space footprint stays circular. Its affine local AABB
+  selects tiles, and `-tileOrigin` translates the same stamp matrix for each tile.
+- **Imports/new generated layers start simple.** Source image pixels occupy local
+  `(0, 0)..(width, height)` and the layer transform places that local origin at the
+  intended document position (for generated Apply, the boundary-box origin). A
+  future paste-into-selected-layer command composes the paste's document transform
+  with the inverse layer/group transform, then uses the same tiled blit API.
+- **Exports keep transforms live.** The compositor defines each chunk in document
+  space, translates only the document root for that chunk, and renders tile sprites
+  through their normal layer/group transforms. It never pre-rotates or pre-scales
+  persistent tile pixels.
+- **Clip/fill must improve on today's assumptions.** The current
+  `clipLayerToBoundaryBox()` arithmetic assumes an axis-aligned positive scale.
+  The tiled version must use the full inverse matrix and a local clip polygon, so
+  rotation, non-uniform scale, negative scale, and transformed parent groups are
+  correct by construction.
+- **Transform changes invalidate culling, not storage.** A layer/group transform
+  mutation recomputes the screen-visible tile set; it does not retile. A separate
+  future explicit "bake/apply transform" command would be a raster operation and
+  is outside this migration.
+- Tile allocation never inserts pixels at the top/left, so the current
+  `growRasterLayer()` transform compensation disappears.
+- Very large coordinates must stay finite and within JavaScript safe integer tile
+  indices. Reject NaN/infinite/unsafe coordinates at the `TileGrid` boundary rather
+  than creating unreachable entries.
+
+### Painting and history
+
+Each stroke becomes a tile transaction:
+
+1. Determine the tiles intersected by each transformed stamp.
+2. For brush, allocate missing target tiles unless preserve-alpha is active. For
+   eraser/preserve-alpha, skip absent tiles.
+3. On first mutation of a tile, lazily record its before-state exactly once:
+   either a snapshot texture or an explicit `absent` marker.
+4. Maintain one consistent-opacity coverage texture per touched tile. Render the
+   same stamp into every intersected tile with tile-origin translation, preserving
+   the current `max`-blend opacity behavior across seams.
+5. Brush preview adds coverage sprites at their tile origins. Eraser preview
+   creates replacement previews only for existing touched tiles. Preserve-alpha
+   uses each tile's pre-stroke alpha snapshot. Keep the existing rule that the
+   final commit uses fresh, never-parented sprites.
+6. Commit all touched tiles atomically, bump the layer pixel version once, and
+   store one history entry containing only those tile deltas.
+
+Undo/redo captures the inverse state of only changed tiles, swaps tile existence
+as well as pixels, and transfers texture ownership explicitly. A clear operation
+can detach complete tiles into history without copying them. History must retain
+the existing 40-entry count limit and gain a measured byte budget; evict oldest
+entries until both limits hold. Choose the initial byte cap after recording real
+peak tile/scratch usage on target GPUs rather than guessing from system RAM.
+
+Cancelled strokes must remove tiles first created by that stroke. Erasing an
+existing tile completely transparent does not initially trigger a synchronous
+readback just to reclaim it; clear/clip can delete known-empty tiles, and an idle
+or explicit compaction pass can be added after profiling.
+
+### Operation contracts
+
+| Flow | Tile-native behavior |
+| --- | --- |
+| Blank raster / mask | Create metadata plus an empty surface; allocate no tile until pixels are written. Preserve the boundary-box-relative starting transform used today. |
+| Upload, paste, generated preview Apply | Use one shared image-ingestion path. Decode dimensions without creating a permanent full-image GPU texture, slice/crop the source into tile-sized regions, and blit those regions into a new surface. The result may still be a new layer, but no full-image sprite/RT remains. |
+| Future paste into an existing layer | Reuse the same `blitImage(pixelCanvas, source, matrix, transaction)` primitive; this should not require another ingestion architecture. |
+| Brush | Allocate every crossed tile on demand and maintain per-tile consistent-opacity coverage/preview. |
+| Eraser | Touch existing intersected tiles only; never allocate transparent space. |
+| Preserve alpha | Touch existing tiles only and mask each commit with that tile's pre-stroke alpha. |
+| Fill boundary box | Transform the box polygon into layer local space, enumerate candidate tiles, allocate them, then render erase+fill clipped to the polygon per tile. Preflight the finite tile count. |
+| Clear mask | Remove all mask tiles atomically; history owns the detached tiles for undo. |
+| Invert mask | Delete tiles outside the boundary, allocate every tile intersecting the box (transparent becomes opaque), and invert/clip per tile. |
+| Clip layer to boundary | Keep the stable layer transform. Delete outside tiles and clear edge-tile pixels outside the transformed box instead of replacing the surface with a cropped monolithic RT. |
+| Filter result acceptance | Tile the finite returned image and atomically replace the target surface region/state; never resize one RT to the result. |
+| Raster-to-mask / raster-to-control | Iterate/clone source tiles, run conversion per tile, preserve local tile coordinates and layer transform, then add the new surface atomically. |
+| Thumbnail | Render allocated/logical bounds directly into a fixed max-size thumbnail target. Never allocate an intermediate at the layer's full sparse span. |
+| Layer copy / raw source export | Export the finite logical bounds in chunks. Empty layers return no pixels. Reject an unencodable enormous sparse span with a useful UI error. |
+| ControlNet capture | Render each visible control layer in the current finite boundary-box coordinate frame, chunked, instead of assuming one untransformed source texture. This also resolves ambiguity once a control layer has negative tiles. |
+| Normal flatten / Save / Generate / Upscale | Render the boundary box chunk-by-chunk, temporarily selecting the tiles intersecting each chunk, then stitch to the existing PNG request shape. Masks and controls remain excluded from the regular composite as today. |
+| Mask flatten | Chunk-render visible undecorated mask tiles to black/white using the current forced-white-alpha treatment, then stitch. |
+| Merge selected/visible | Render each output chunk straight into a new tile surface. Do not create a boundary-box-sized intermediate RT. Preserve the current layer/group blend and stack behavior. |
+| Fit box to raster content | Transform each visible surface's logical bounds through its complete parent chain. |
+| Fit box to composite mask | Extract/scan alpha per allocated mask tile and transform only nontransparent pixel bounds; do not read back an enormous empty bounding rectangle. |
+| Remove / clear / add-layer undo | Transfer or destroy the surface and all owned tile textures exactly once. |
+
+Image ingestion should prefer `createImageBitmap` source-rectangle decoding where
+supported so an oversized input is never uploaded as one GPU texture. A 2D scratch
+canvas fallback may decode the full image in CPU memory, but every upload and
+persistent GPU target remains tile-sized. Process large imports in small batches
+with event-loop yields and roll back the whole surface on failure.
+
+### Viewport culling and compositor mode
+
+Viewport culling reduces draw traversal; it does not by itself free GPU memory.
+For each paintable `LayerNode`, transform the four screen corners to layer-local
+space, derive the candidate tile range, and diff that range against the node's
+currently renderable tile-key set. The node asks `TiledRasterCanvas.visit()` for
+that range rather than scanning all allocated tiles or reaching into its internal
+map, avoiding O(total tiles) work on every pan.
+
+Camera pan/zoom, viewport resize, layer/group transform changes, and tile
+add/remove events invalidate this set. Offscreen operations enter an explicit
+compositor visibility scope for their output chunk and restore the screen scope
+afterward. Do not rely on ambient `visible`/`renderable` flags or Pixi's screen
+culler during direct `renderer.render()` calls.
+
+Chunked compositing is pixel-exact for the current per-pixel blend modes because
+each output pixel depends only on the same-position layer pixels. Any future blur,
+convolution, displacement, or adjustment filter with neighboring-pixel reach must
+declare a halo/padding radius and render overlapping chunk margins before cropping;
+such effects are not part of this migration.
+
+### Staged implementation plan
+
+#### I0 — Baseline and capability probes
+
+- Add focused browser baselines for current paint opacity, eraser, preserve-alpha,
+  masks, transformed fill, merge, import/paste/generated placement, and undo.
+- Add the renderer-capability helper and diagnostics for backend type, max 2D
+  texture dimension, selected tile size, resident tile count, estimated resident
+  bytes, visible tile count, and peak temporary/history bytes.
+- Add pure tests for signed floor division, half-open rectangle-to-tile ranges,
+  negative coordinates, and safe-coordinate rejection.
+
+Exit: no behavior change; existing suite passes and device limits are observable.
+
+#### I1 — Low-level tile canvas and scene vertical slice (opt-in/test-only)
+
+- Add `TileGrid`, `TiledRasterCanvas`, transactional access, explicit
+  ownership/events, logical bounds, and deterministic iteration.
+- Prohibit production callers from importing/internal-accessing the tile map;
+  exercise operations through visit/edit/transaction APIs in focused tests.
+- Teach `LayerNode` to display an opt-in tiled layer, including mask/control
+  display treatment and manual viewport tile selection.
+- Add a test-only/dev creation path; keep production-created layers monolithic
+  while this slice is incomplete.
+- Prove negative tiles, far-separated tiles, transforms, visibility, opacity,
+  normal/advanced blends, mask hatching, control display, destruction, and culling.
+
+Exit: tiled layers render correctly but are not yet the default.
+
+#### I2 — Tiled ingestion and chunk compositor
+
+- Implement shared tiled blit/ingestion for uploads, paste, generated results,
+  mask uploads, and control uploads.
+- Implement output-chunk iteration and CPU stitching for normal, selected-layer,
+  mask, thumbnail, source, and ControlNet exports.
+- Make merge write directly to a new tile surface.
+- Test with an artificially tiny compositor chunk size so ordinary fixtures are
+  forced through multiple chunks, then compare pixels with the current monolithic
+  reference.
+
+Exit: image-in to image-out works without a full-size persistent or output GPU RT.
+
+#### I3 — Tile-native paint and delta history
+
+- Replace monolithic growth with per-tile brush coverage, brush preview, eraser
+  preview, preserve-alpha, and atomic commit.
+- Replace full-layer pixel snapshots with lazy per-tile before states and inverse
+  replay; add a byte budget alongside the count limit.
+- Cover strokes through horizontal, vertical, four-tile, negative-coordinate, and
+  transformed-layer boundaries; verify cancel, undo, and redo restore tile
+  existence and identical pixels.
+
+Exit: painting no longer has an 8192 layer ceiling and produces no visible seams.
+
+#### I4 — Remaining edit operations and production cutover
+
+- Port fill, clear, invert, clip, filter acceptance, conversions, thumbnails,
+  copy/source export, ControlNet capture, content fitting, add/remove/clear, and
+  all add-layer undo paths to surfaces.
+- Switch blank/mask/upload/paste/generated/control creation to tiled by default.
+- Remove the temporary dual-backing path, `getTexture()`, `growRasterLayer()`,
+  `replaceLayerTexture()`, `MAX_LAYER_DIMENSION`, growth padding/copy code, and
+  stale width/height assumptions only after `rg` finds no callers.
+- Update README feature text and the current-status section only at this cutover.
+
+Exit: every paintable layer is tiled and no production code allocates a
+layer-sized RT.
+
+#### I5 — Performance and residency hardening
+
+- Profile draw calls, culling CPU cost, stroke latency, import throughput,
+  compositor throughput, history bytes, and destroy hitches on WebGL and WebGPU.
+- Add transparent-tile compaction only if retained erased tiles are measurable.
+- If real documents exhaust VRAM, add an LRU residency tier: read back offscreen
+  tiles to CPU `ImageData`/lossless blobs (and later IndexedDB with Phase 6
+  persistence), destroy their GPU RTs, and rehydrate before display/edit/export.
+  Do not build this before sparse resident tiles are profiled.
+- Stagger mass destruction/rehydration if profiling shows frame stalls.
+
+Exit: the coordinate plane remains unbounded while resident GPU memory is bounded
+for observed workloads; any remaining ceiling is explicit and user-visible.
+
+### Required acceptance coverage
+
+- One stroke crosses 2 and 4 tile boundaries with no alpha/color discontinuity.
+- Painting at negative local/document coordinates allocates the expected signed
+  tile keys without moving old pixels or the layer transform.
+- Eraser and preserve-alpha across a boundary allocate no absent tiles.
+- Stroke cancel, undo, and redo restore exact pixels and exact tile existence.
+- Paste, upload, and generated Apply spanning partial edge tiles reproduce source
+  pixels and placement; no permanent full-image RT remains.
+- Fractional zoom and rotated/scaled layers show no transparent or dark seams.
+- Transformed fill, mask invert, and clip match the boundary polygon across tiles.
+- Normal/mask/selected merge exports forced through multiple small chunks match a
+  monolithic reference pixel-for-pixel.
+- Viewport culling hides far tiles on screen but does not omit them from an export.
+- Mask hatch/live previews remain display-only; flattened masks stay black/white.
+- ControlNet input is boundary-aligned for tiled/negative/transformed control
+  layers.
+- Removing layers, clearing the document, history eviction, failed import, and app
+  teardown return tile/scratch ownership counters to zero.
+- No `RenderTexture.create` in the migrated surface/paint/compositor paths receives
+  a dimension greater than the negotiated safe size.
+
+### Explicit non-goals for the first cutover
+
+- Infinite generation or a boundary box with no finite export/encoder limit.
+- Document persistence/streaming; the tile schema should enable Phase 6 but does
+  not implement it here.
+- Immediate alpha-tight bounds after every eraser sample.
+- New brush behavior, selection tools, transform gizmos, or spatial filters.
+- A user-facing tile-size setting. Tile size is an internal capability/performance
+  choice until profiling demonstrates a real need for configuration.
+
+Recommended starting choices: 1024 logical pixels per tile, no gutter until a
+browser seam test fails, all touched tiles GPU-resident for the first cutover, and
+manual region-scoped culling. These choices keep the correctness migration small;
+I5 adds eviction/compaction only when measurements justify it.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its
