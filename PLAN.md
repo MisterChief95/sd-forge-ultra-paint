@@ -114,10 +114,225 @@ Prettier checks passed, production build passed, and focused Playwright coverage
 passed 2/2. No live Forge/GPU validation was run.
 
 ---
-## Infinite tile-backed canvas — PLANNED, 2026-08-30
+## Infinite tile-backed canvas — IN PROGRESS, 2026-08-30
 
-This is a design and migration plan only. No runtime code has been changed for
-this feature yet.
+The migration design below remains the target architecture. I0 and the opt-in I1
+vertical slice are substantially implemented. Image upload is now tiled by
+default in production (see below); every other layer-creation path and the
+whole paint pipeline still use the monolithic `RenderTexture` path. I2
+ingestion and chunked compositing have started but are not yet complete.
+
+### Implementation status — opt-in vertical slice working, 2026-08-30
+
+- Added `frontend/src/canvas/TileGrid.ts`: signed floor coordinate math,
+  half-open bounds-to-range conversion, collision-free string keys,
+  deterministic row-major iteration, and safe-coordinate/iteration-count guards.
+- Added `frontend/src/canvas/rendererCapabilities.ts`: the preferred per-tile
+  ceiling is concretely **1024x1024**; WebGL reads `gl.MAX_TEXTURE_SIZE`, WebGPU
+  reads `device.limits.maxTextureDimension2D`, and selection rounds down to the
+  largest supported power of two no greater than 1024. Canvas/unknown backends
+  report no guessed limit rather than pretending an unsafe value is device-safe.
+- Added `TiledRasterCanvas`: a native-private tile map, region visits,
+  allocate-or-existing-only edits, one active atomic transaction, deferred
+  structural add events, rollback on failure, explicit logical-bounds expansion,
+  texture ownership/destruction, resident-byte estimates, and sorted diagnostics.
+  A committed edit returns an owning reversible delta. Applying it atomically
+  swaps tile pixels and exact tile existence, and returns the inverse for redo.
+  This replay is tested but is not yet connected to the application's production
+  history stack.
+- Added `TiledRasterView` and opt-in `LayerNode` support. The surface owns tile
+  textures while the view owns their sprites, reacts to tile add/replace/remove
+  events, applies layer transforms exactly once, supports per-tile mask/control
+  display filters, and attaches only tiles intersecting a requested visible
+  region. Production-created layers remain monolithic during migration.
+- Started I2 chunked output in `Compositor.flatten()`: regular composites can be
+  rendered through bounded device-safe chunks and stitched into one CPU canvas.
+  A forced-small-chunk Playwright comparison passes. Mask, merge, source, and
+  ControlNet output routes still need the shared chunk path.
+- Added the first shared tiled texture-blit operation and a four-tile signed-edge
+  test fixture; it now passes. Root cause of the earlier failure: `TiledRasterCanvas.
+  createTile()` cleared a brand-new tile via `renderer.clear({ target })`, but Pixi 8's
+  `RenderTargetSystem.clear()` never binds `target` first -- it clears whatever
+  framebuffer a prior operation left bound, so allocating a new tile was corrupting
+  the last-used tile from an unrelated surface. Fixed by binding explicitly via
+  `renderer.renderTarget.bind({ target, clear: true, clearColor })` before use. A
+  second, test-only issue was found in the same investigation: `renderer.extract.
+  pixels()`'s `frame` option is ignored by the installed Pixi build (it always
+  returns the full target), so the dev-only `readTilePixel()` hook in
+  `frontend/src/main.ts` now requests the full buffer and indexes it manually by
+  `(x, y, width)` instead of relying on `frame` to crop.
+- Added dev-only creation, drawing, inspection, and tiled-layer hooks plus focused
+  Playwright coverage for signed geometry, capability negotiation, atomic edits,
+  rollback, bounds/events/ownership, exact delta undo/redo, negative tile display,
+  transforms, visible-region culling, destruction, and chunked regular export.
+- `UltraPaintApp` now logs backend, real maximum 2D texture size, and negotiated
+  tile size after renderer initialization. This is diagnostic only and does not
+  alter production layer creation.
+
+### First production ingestion path: image upload — 2026-08-30
+
+`addImageFromFile()` (the drag/drop and layer-panel upload path) now ingests
+through `TiledRasterCanvas` + `blitTexture` instead of one monolithic
+`RenderTexture`. This is the first *production* (non-test-only, non-opt-in)
+tiled layer. Paste and generated-Apply ingestion are unchanged (still
+monolithic); only upload moved.
+
+`LayerStore` gained a real dual-backing model rather than swapping its one
+texture map wholesale:
+- A second raw map, `_tiledSurfaces: Map<LayerId, TiledRasterCanvas>`, sits
+  alongside the existing `_textures` map. A given layer id lives in exactly one
+  of the two maps, never both.
+- `addRasterLayerTiled()` mirrors `addRasterLayer()` but sizes the layer and
+  (if the document was empty) the boundary box from the surface's `bounds`,
+  and stamps `ImageRef.storage = "tiled"` (the `TiledImageRef` shape from the
+  design section above, added to the real schema).
+- `getPixelSurface(id)` returns whichever backing a layer actually has
+  (`RenderTexture | TiledRasterCanvas | undefined`); `LayerTree` now calls this
+  instead of `getTexture()` when constructing a `LayerNode`, so `LayerNode`'s
+  existing opt-in tiled-view support (I1) is what actually renders these layers
+  in production now, unchanged.
+- `removeLayer()`, `clear()`, `extractLayerForUndo()`/`restoreLayerForUndo()`,
+  and the app's add-layer undo/redo history entry all carry and destroy
+  whichever backing is present, so add/undo/redo/remove are symmetric for both
+  monolithic and tiled layers.
+- `getLayerThumbnail()` gained a tiled path: it assembles a throwaway
+  `Container` of the surface's tile sprites and extracts through an explicit
+  `frame` sized to the layer's logical bounds (tiles can extend past those
+  bounds at a partial edge tile, so the frame -- not the container's auto
+  bounds -- decides the crop).
+
+Deliberately NOT touched for this slice, and still monolithic/`getTexture()`-only,
+consistent with the staged plan: brush/eraser painting, Fill, Clip to
+Boundary Box, mask/control conversion, and `flattenMask()`. Each already
+guards on `!texture` and no-ops/returns-false/throws-a-caught-error rather than
+crashing, so an uploaded (tiled) layer is currently read-only-ish for those
+specific operations until their own I3/I4 migration lands -- this was verified
+by inspection of every `getTexture()` call site, not assumed. `Compositor.flatten()`
+and `flattenToTexture()` (Save/Generate's actual output path) needed **no
+changes**: they render `documentRootContainer` -- the live scene graph -- so a
+tiled layer's `TiledRasterView` sprites already composite correctly through the
+existing chunked/monolithic flatten code.
+
+Files changed: `frontend/src/state/schema.ts`, `frontend/src/state/layerStore.svelte.ts`,
+`frontend/src/scene/LayerTree.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/dimension-safety.spec.ts`, `frontend/tests/e2e/tiled-raster-canvas.spec.ts`.
+Verification: frontend typecheck (0 errors/0 warnings), lint, Prettier, and
+production build all pass; the full Playwright suite is unchanged at 59 passing
+(the same 5 pre-existing generation/persistence/LoRA-dialog failures as
+baseline, confirmed unrelated); a new focused Playwright test uploads a
+1500x1100 four-quadrant image, confirms it lands as 4 tiles in a 2x2 grid with
+no monolithic texture, confirms undo/redo/remove correctly transfer and destroy
+the tiled surface, and confirms `flattenToDataURL()` reproduces the exact
+quadrant colors at the exact document size. No live Forge/GPU validation was run.
+
+Next slice: strengthen chunked export coverage with non-uniform pixels, then
+migrate one more ingestion path (paste or generated Apply) or one more pixel
+operation (thumbnail is now done; Fill or Clip to Boundary Box are the next
+most user-visible gaps for an uploaded layer) onto tiled surfaces. Full
+paint/history migration (I3) follows once ingestion is stable across paths.
+
+### Debug tile-border overlay — 2026-08-30
+
+Added a debug outline (1px green rects, document/local-space width like
+`PixelGrid`'s lines) over every attached tile sprite of a tiled layer, toggled
+by a new "Tiles" button in `ViewportControls` next to the existing "Grid"
+toggle. `TiledRasterView.setDebugBorders()` owns one `Graphics` child kept
+last in its container (re-appended on every new tile) and redraws on tile
+add/remove and on `setVisibleRegion()` changes. `LayerNode.setTileDebugBorders()`
+remembers the flag so it survives a `setTiledSurface()` swap; `LayerTree.
+setTileDebugBorders()` applies it to every current node and every node
+created afterward; `UltraPaintApp` exposes `setTileDebugBorders()`/
+`isTileDebugBordersVisible()` and re-applies the flag if a fresh `LayerTree`
+is created. No-op for monolithic (non-tiled) layers.
+
+On viewport culling: `TiledRasterView.setVisibleRegion()` /
+`LayerNode.setTiledVisibleRegion()` already exist (I1) and are covered by
+focused tests, but nothing in production wires them to the live camera
+pan/zoom yet -- there is no automatic per-frame culling today. Tiles outside
+the viewport still render every frame. Automatic culling is designed (see
+"Viewport culling and compositor mode" above) but deferred to I5 pending
+profiling; it would key off `documentRoot`'s world transform the same way
+`PixelGrid.spacingForZoom()` already reads it.
+
+Files changed: `frontend/src/canvas/TiledRasterView.ts`, `frontend/src/scene/LayerNode.ts`,
+`frontend/src/scene/LayerTree.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/src/ui/ViewportControls.svelte`. Verification: frontend typecheck
+(0 errors/0 warnings), lint, Prettier, and production build all pass; the full
+Playwright suite is unchanged (only the same pre-existing, unrelated
+generation/persistence/LoRA-dialog failures); manually verified in the Browser
+pane that uploading a four-quadrant multi-tile image and toggling "Tiles" draws
+an exact green cross at the tile boundaries and cleanly disappears when
+toggled off. No live Forge/GPU validation was run.
+
+### Fill, mask/control conversion, and Clip to Boundary Box on tiled layers — 2026-08-31
+
+Three of the four operations flagged as "still monolithic-only" in the upload
+slice above now work on a tiled (uploaded) raster layer; brush/eraser painting
+is the one deliberately left for its own slice (see below).
+
+- **Read-only extraction** (`convertLayerToMask`, `convertLayerToControl`,
+  `layerSourceDataURL`, `layerSourcePngBlob`): a new `UltraPaintApp.
+  readLayerPixels(id)` returns the live monolithic texture unchanged, or --
+  for a tiled layer -- a throwaway snapshot from a new `flattenToTexture()`
+  (`TileRasterOps.ts`, mirrors the existing `buildTiledThumbnailRoot` pattern:
+  render every tile sprite, offset by `tile.origin - bounds.origin`, into one
+  fresh `RenderTexture` sized to the surface's logical bounds). Callers get a
+  `{ texture, dispose }` pair and always call `dispose()`, which is a no-op for
+  the monolithic case and destroys the snapshot for the tiled case.
+- **Fill** (`fillSelectedLayer`): split into `fillMonolithicRaster` (unchanged
+  logic) and `fillTiledRaster`, which reuses `TiledRasterCanvas.edit()` with
+  `allocation: "existing-only"` (fill never grows a tiled layer's extent,
+  matching the monolithic path's fixed-size target) over the boundary box's
+  bounding rect, replaying the same erase+fill (or preserve-alpha mask) logic
+  per tile with the polygon re-expressed in that tile's local coordinates.
+  The whole multi-tile edit commits as one `TileEditDelta`, recorded as a new
+  `"tile-pixels"` undo-history entry kind; undo/redo just calls `delta.apply()`
+  and swaps the resulting inverse delta onto the other stack -- `TiledRasterView`
+  already resyncs its sprites off the surface's add/remove/replace events, so
+  there's no separate scene-graph bookkeeping for undo.
+- **Clip to Boundary Box** (`clipLayerToBoundaryBox`): a tiled layer has no
+  single texture to crop, so it's flattened first via the same `flattenToTexture()`,
+  then run through the *identical* crop/polygon-mask math already used for
+  monolithic layers. The result is always a monolithic `RenderTexture` --
+  clipping downgrades a tiled layer's storage rather than trying to shrink its
+  tile set natively, since the tile primitives have no "delete a tile going
+  forward" operation today (only undo/redo of a prior add via `TileEditDelta`).
+  `LayerStore.replaceTiledSurfaceWithTexture()` / `restoreTiledSurface()` swap
+  `_tiledSurfaces`/`_textures` and the `image.storage` marker in lockstep, and
+  a new `"tiled-clip"` history entry holds *both* the detached `TiledRasterCanvas`
+  and the new texture with a `direction` flag that flips on every undo/redo --
+  whichever side isn't currently store-owned is what that entry would restore,
+  and what `destroyEntry()` is responsible for freeing if the entry is dropped
+  unapplied. `LayerNode.setTexture()`/`setTiledSurface()` already tear down the
+  other representation, so switching a live node between the two needed no
+  scene-graph changes either.
+
+Not attempted: brush/eraser real-time painting on a tiled layer. Unlike Fill
+(one bounded polygon, one atomic multi-tile transaction), a brush stroke is
+many small incremental writes across a `StrokeSession` with live preview and
+allow-growth semantics, all currently built around one monolithic texture
+(`ConsistentOpacityStroke`, `BrushEngine.beginStroke`) -- that's a real
+architecture change (the I3 "full paint/history migration" milestone), not a
+same-shape port like the three operations above.
+
+Files changed: `frontend/src/canvas/TileRasterOps.ts`,
+`frontend/src/state/layerStore.svelte.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, Prettier, and production build all
+pass; the full Playwright suite is unchanged at 65 tests (only the same
+pre-existing, unrelated "resolution modes" generation-panel failure); a new
+focused Playwright test uploads a 1500x1100 four-quadrant tiled image and
+exercises, in one pass: `convertLayerToMask`/`convertLayerToControl` producing
+correctly-sized new layers, a Fill across all four tiles with undo restoring
+the original per-tile quadrant colors and redo reapplying the fill, and a
+Clip to Boundary Box that shrinks the layer and flips `image.storage`, with
+undo restoring the original tiled surface (`tileCount` back to 4) and redo
+re-clipping. No live Forge/GPU validation was run.
+
+Next slice: I3, the full paint/history migration -- porting brush/eraser
+strokes (and their live-preview/allow-growth machinery) onto tiled surfaces,
+which is what would make an uploaded layer fully paintable rather than only
+fillable/clippable/convertible.
 
 ### Outcome and scope
 
@@ -266,6 +481,13 @@ class TiledRasterCanvas {
   estimateResidentBytes(): number;
   destroy(): void;
 }
+
+class TileEditTransaction {
+  // Brush/fill/import call this; eraser/preserve-alpha deliberately do not.
+  includeBounds(bounds: PixelBounds): void;
+  commit(): TileEditDelta;
+  rollback(): void;
+}
 ```
 
 Internally, `TiledRasterCanvas` may use a collision-free signed key such as
@@ -283,6 +505,11 @@ multi-tile edit. Whole-tile detach/adopt operations support clear, undo, and red
 without a needless copy. Structural events (`added`, `removed`, `replaced`) are
 emitted only after state is internally consistent, allowing `LayerNode` to update
 sprites without learning storage details.
+
+Logical bounds expansion is explicit on the transaction rather than implicit in
+`edit()`: brush, fill, and ingestion include their affected region; eraser and
+preserve-alpha do not. This prevents an erase over empty space from growing a
+layer's finite export span merely because it visited existing candidate tiles.
 
 `ImageRef.width/height` should migrate to local `bounds`. Bounds are independent
 of the coarse allocated-tile rectangle: an imported 1500x900 image keeps exact
@@ -319,9 +546,12 @@ remain intact.
   enough to keep sprite/draw-call count modest.
 - At renderer startup, query the active backend's supported 2D texture dimension
   (WebGL `MAX_TEXTURE_SIZE`; WebGPU `device.limits.maxTextureDimension2D`) behind
-  one capability helper. Use the largest power-of-two tile no greater than 1024
-  when a device cannot support 1024, and fail clearly if the renderer cannot
-  support the brush/transient minimum.
+  one capability helper. PixiJS 8.20 has no unified public max-dimension property,
+  so the helper narrows through its WebGL `gl` / WebGPU `gpu` backend handles;
+  Canvas reports an unknown limit rather than using a guess. Use the largest
+  power-of-two tile no greater than 1024 when a device cannot support 1024, and
+  fail clearly at production cutover if the renderer cannot support the
+  brush/transient minimum.
 - Store the selected tile size on the surface. Future document loading can retile
   content when a saved document's tile size is too large for the current device.
 - The brush stamp itself is also a texture today. Its maximum dimension must be

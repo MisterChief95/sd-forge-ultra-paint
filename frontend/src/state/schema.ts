@@ -138,6 +138,8 @@ export interface ImageRef {
   source: "upload" | "generated" | "paint";
   width: number;
   height: number;
+  /** Present when the layer's pixels live in a sparse `TiledRasterCanvas` rather than one `RenderTexture`. */
+  storage?: "tiled";
 }
 
 /** Editable document-space operating region used by fill and generation. */

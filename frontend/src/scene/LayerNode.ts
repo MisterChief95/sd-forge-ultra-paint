@@ -15,8 +15,11 @@
  */
 
 import { Container, Sprite } from "pixi.js";
-import type { Texture } from "pixi.js";
+import type { Filter, Texture } from "pixi.js";
 
+import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
+import { TiledRasterView } from "../canvas/TiledRasterView";
+import type { PixelBounds } from "../canvas/TileGrid";
 import type { Layer, LayerId, LayerKind } from "../state/schema";
 import { toPixiBlendMode } from "../util/blendModes";
 import { ControlLayerDisplayFilter } from "./ControlLayerDisplayFilter";
@@ -33,9 +36,13 @@ export class LayerNode {
   /** Present for paintable raster, mask, and control layers. */
   private sprite: Sprite | null = null;
 
+  private tiledView: TiledRasterView | null = null;
+
   private texture: Texture | null = null;
 
   private previewOverride: Texture | null = null;
+
+  private previewSprite: Sprite | null = null;
 
   private lastLayer: Layer | null = null;
 
@@ -43,9 +50,12 @@ export class LayerNode {
 
   private controlDisplayFilter: ControlLayerDisplayFilter | null = null;
 
+  /** Persists across `setTiledSurface()` swaps so a repaint doesn't drop the debug outline. */
+  private tileDebugBordersVisible = false;
+
   private destroyed = false;
 
-  constructor(layer: Layer, texture?: Texture) {
+  constructor(layer: Layer, pixels?: Texture | TiledRasterCanvas) {
     this.id = layer.id;
     this.kind = layer.kind;
 
@@ -55,17 +65,20 @@ export class LayerNode {
       case "raster":
       case "mask":
       case "control":
-        if (!texture) {
-          throw new Error(
-            `[ultra-paint] ${layer.kind} layer "${layer.id}" created without a texture`,
-          );
+        if (!pixels) {
+          throw new Error(`[ultra-paint] ${layer.kind} layer "${layer.id}" created without pixels`);
         }
-        this.sprite = new Sprite({
-          texture,
-          label: `sprite:${layer.id}`,
-        });
-        this.texture = texture;
-        this.container.addChild(this.sprite);
+        if (pixels instanceof TiledRasterCanvas) {
+          this.tiledView = new TiledRasterView(pixels, `tiles:${layer.id}`);
+          this.container.addChild(this.tiledView.container);
+        } else {
+          this.sprite = new Sprite({
+            texture: pixels,
+            label: `sprite:${layer.id}`,
+          });
+          this.texture = pixels;
+          this.container.addChild(this.sprite);
+        }
         break;
       case "group":
         break;
@@ -114,10 +127,9 @@ export class LayerNode {
         } else {
           this.maskHatchFilter.setColor(layer.color);
         }
-        // Filter the owning container so temporary live-preview siblings
-        // inherit the same mask display treatment as the persistent sprite.
-        // Reassign after a preview override temporarily cleared the list.
-        c.filters = [this.maskHatchFilter];
+        // Monolithic content filters at the layer container; tiled content
+        // filters each sprite so Pixi never allocates one sparse-span target.
+        this.setPersistentFilters([this.maskHatchFilter]);
         break;
       case "control":
         if (this.maskHatchFilter) {
@@ -128,7 +140,7 @@ export class LayerNode {
           this.controlDisplayFilter = new ControlLayerDisplayFilter();
         }
         c.blendMode = "normal";
-        c.filters = [this.controlDisplayFilter];
+        this.setPersistentFilters([this.controlDisplayFilter]);
         break;
       case "raster":
       case "group":
@@ -140,7 +152,7 @@ export class LayerNode {
           this.controlDisplayFilter.destroy();
           this.controlDisplayFilter = null;
         }
-        c.filters = null;
+        this.setPersistentFilters(null);
         break;
       default: {
         const exhaustive: never = layer;
@@ -154,21 +166,68 @@ export class LayerNode {
    * No-op for groups.
    */
   public setTexture(texture: Texture): void {
-    if (this.destroyed || !this.sprite) return;
+    if (this.destroyed || this.kind === "group") return;
+    this.tiledView?.destroy();
+    this.tiledView = null;
+    if (!this.sprite) {
+      this.sprite = new Sprite({ texture, label: `sprite:${this.id}` });
+      this.container.addChild(this.sprite);
+    }
     this.texture = texture;
-    if (!this.previewOverride) this.sprite.texture = texture;
+    this.sprite.texture = texture;
+    this.sprite.visible = !this.previewOverride;
+    if (this.lastLayer && !this.previewOverride) this.applyDisplayTreatment(this.lastLayer);
+  }
+
+  /** Switch a paintable node to a tile-sprite projection without changing its transform. */
+  public setTiledSurface(surface: TiledRasterCanvas): void {
+    if (this.destroyed || this.kind === "group") return;
+    this.sprite?.removeFromParent();
+    this.sprite?.destroy({ texture: false, textureSource: false });
+    this.sprite = null;
+    this.texture = null;
+    this.tiledView?.destroy();
+    this.tiledView = new TiledRasterView(surface, `tiles:${this.id}`);
+    this.tiledView.container.visible = !this.previewOverride;
+    this.tiledView.setDebugBorders(this.tileDebugBordersVisible);
+    this.container.addChild(this.tiledView.container);
+    if (this.lastLayer && !this.previewOverride) this.applyDisplayTreatment(this.lastLayer);
+  }
+
+  /** Display-only tile selection in layer-local coordinates; null restores all tiles. */
+  public setTiledVisibleRegion(region: PixelBounds | null): void {
+    this.tiledView?.setVisibleRegion(region);
+  }
+
+  /** Debug-only: outline this layer's tiles in green. No-op for non-tiled layers. */
+  public setTileDebugBorders(visible: boolean): void {
+    this.tileDebugBordersVisible = visible;
+    this.tiledView?.setDebugBorders(visible);
   }
 
   /** Temporarily display an undecorated filter result without changing store-owned pixels. */
   public setPreviewOverride(texture: Texture | null): void {
-    if (this.destroyed || !this.sprite) return;
+    if (this.destroyed || (!this.sprite && !this.tiledView)) return;
     this.previewOverride = texture;
+    if (this.sprite) this.sprite.visible = !texture;
+    if (this.tiledView) this.tiledView.container.visible = !texture;
     if (texture) {
-      this.sprite.texture = texture;
+      if (this.previewSprite) {
+        this.previewSprite.texture = texture;
+      } else {
+        this.previewSprite = new Sprite({
+          texture,
+          label: `preview:${this.id}`,
+        });
+        this.container.addChild(this.previewSprite);
+      }
       this.container.filters = null;
+      this.tiledView?.setFilters(null);
       return;
     }
-    if (this.texture) this.sprite.texture = this.texture;
+    this.previewSprite?.removeFromParent();
+    this.previewSprite?.destroy({ texture: false, textureSource: false });
+    this.previewSprite = null;
     if (this.lastLayer) this.applyDisplayTreatment(this.lastLayer);
   }
 
@@ -186,19 +245,32 @@ export class LayerNode {
 
     this.container.removeChildren();
     this.container.filters = null;
+    this.previewOverride = null;
+    this.lastLayer = null;
+    this.texture = null;
+    this.previewSprite?.destroy({ texture: false, textureSource: false });
+    this.previewSprite = null;
+    this.tiledView?.destroy();
+    this.tiledView = null;
+    this.sprite?.destroy({ texture: false, textureSource: false });
+    this.sprite = null;
     this.maskHatchFilter?.destroy();
     this.maskHatchFilter = null;
     this.controlDisplayFilter?.destroy();
     this.controlDisplayFilter = null;
-    this.previewOverride = null;
-    this.lastLayer = null;
-    this.texture = null;
-    this.sprite?.destroy({ texture: false, textureSource: false });
-    this.sprite = null;
     this.container.destroy({ children: false });
   }
 
   public get isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  private setPersistentFilters(filters: readonly Filter[] | null): void {
+    if (this.tiledView) {
+      this.container.filters = null;
+      this.tiledView.setFilters(filters);
+      return;
+    }
+    this.container.filters = filters ? [...filters] : null;
   }
 }

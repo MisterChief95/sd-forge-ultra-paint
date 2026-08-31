@@ -65,7 +65,7 @@ test("oversized image dimensions are reduced before render-texture allocation", 
   expect(fitDimensions(9000, 4500)).toEqual({ width: 8192, height: 4096 });
 });
 
-test("uploaded and generated images use the bounded paintable texture path", async ({ page }) => {
+test("uploaded and generated images use a bounded paintable pixel backing", async ({ page }) => {
   await openApp(page);
   const dimensions = await page.evaluate(async () => {
     const app = (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp();
@@ -81,7 +81,7 @@ test("uploaded and generated images use the bounded paintable texture path", asy
   });
 
   expect(dimensions).toEqual([
-    { source: "upload", width: 1, height: 1 },
+    { source: "upload", width: 1, height: 1, storage: "tiled" },
     { source: "generated", width: 1, height: 1 },
   ]);
 });

@@ -7,6 +7,7 @@
 
   let zoom = $state(1);
   let gridVisible = $state(true);
+  let tileBordersVisible = $state(false);
   let animationFrame: number | null = null;
 
   function updateCameraState(): void {
@@ -14,6 +15,7 @@
     if (app) {
       zoom = app.getZoom();
       gridVisible = app.isGridVisible();
+      tileBordersVisible = app.isTileDebugBordersVisible();
     }
     animationFrame = requestAnimationFrame(updateCameraState);
   }
@@ -34,6 +36,12 @@
     const app = getActiveUltraPaintApp();
     if (!app) return;
     app.setGridVisible(!app.isGridVisible());
+  }
+
+  function toggleTileBorders(): void {
+    const app = getActiveUltraPaintApp();
+    if (!app) return;
+    app.setTileDebugBorders(!app.isTileDebugBordersVisible());
   }
 
   onMount(() => {
@@ -85,5 +93,16 @@
     onclick={toggleGrid}
   >
     Grid
+  </Button>
+  <Button
+    size="sm"
+    pressed={tileBordersVisible}
+    aria-label={tileBordersVisible ? "Hide tile borders" : "Show tile borders"}
+    title={tileBordersVisible
+      ? "Hide tile borders (debug)"
+      : "Show tile borders (debug) -- outlines each tiled layer's GPU tiles in green"}
+    onclick={toggleTileBorders}
+  >
+    Tiles
   </Button>
 </div>

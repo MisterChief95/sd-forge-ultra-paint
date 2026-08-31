@@ -32,6 +32,9 @@ export class LayerTree {
 
   private readonly unsubscribe: Unsubscribe;
 
+  /** Applied to every current node and every node created afterward. */
+  private tileDebugBordersVisible = false;
+
   private destroyed = false;
 
   constructor(store: LayerStore) {
@@ -52,6 +55,12 @@ export class LayerTree {
   /** Number of live scene nodes. Useful for tests and diagnostics. */
   public get nodeCount(): number {
     return this.nodes.size;
+  }
+
+  /** Debug-only: outline every tiled layer's tiles in green, now and going forward. */
+  public setTileDebugBorders(visible: boolean): void {
+    this.tileDebugBordersVisible = visible;
+    for (const node of this.nodes.values()) node.setTileDebugBorders(visible);
   }
 
   /**
@@ -87,7 +96,7 @@ export class LayerTree {
         case "raster":
         case "mask":
         case "control":
-          texture = this.store.getTexture(layer.id);
+          texture = this.store.getPixelSurface(layer.id);
           break;
         case "group":
           texture = undefined;
@@ -104,7 +113,9 @@ export class LayerTree {
         console.warn(`[ultra-paint] ${layer.kind} layer "${layer.id}" has no texture; skipping`);
         continue;
       }
-      this.nodes.set(layer.id, new LayerNode(layer, texture));
+      const node = new LayerNode(layer, texture);
+      if (this.tileDebugBordersVisible) node.setTileDebugBorders(true);
+      this.nodes.set(layer.id, node);
     }
 
     // 4. Re-attach in document order, root first then each group.

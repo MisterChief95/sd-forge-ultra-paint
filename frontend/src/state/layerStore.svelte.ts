@@ -8,6 +8,7 @@
 
 import { RenderTexture } from "pixi.js";
 
+import type { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
 import { clampDimension } from "../util/dimensions";
 
 import type {
@@ -252,6 +253,14 @@ export class LayerStore {
    */
   private readonly _textures = $state.raw(new Map<LayerId, RenderTexture>());
 
+  /**
+   * Sparse-tile backing for a layer, mutually exclusive with `_textures` per
+   * layer id. See `ImageRef.storage` -- a layer has one or the other, never
+   * both. Still raw for the same reason as `_textures`: PixiJS/TiledRasterCanvas
+   * objects must not be Svelte-proxied.
+   */
+  private readonly _tiledSurfaces = $state.raw(new Map<LayerId, TiledRasterCanvas>());
+
   private readonly listeners = new Set<Listener>();
 
   private readonly mutationListeners = new Set<MutationListener>();
@@ -377,6 +386,21 @@ export class LayerStore {
     return this._textures.get(id);
   }
 
+  /** The live sparse-tile surface for a raster layer, if it is tile-backed. */
+  public getTiledSurface(id: LayerId): TiledRasterCanvas | undefined {
+    return this._tiledSurfaces.get(id);
+  }
+
+  /**
+   * Whichever pixel backing `id` actually has -- a monolithic `RenderTexture`
+   * or a sparse `TiledRasterCanvas`. Scene-graph consumers (`LayerTree`) that
+   * only need to display a layer's pixels should use this instead of picking
+   * a specific backing accessor.
+   */
+  public getPixelSurface(id: LayerId): RenderTexture | TiledRasterCanvas | undefined {
+    return this._textures.get(id) ?? this._tiledSurfaces.get(id);
+  }
+
   /** Reactive change counter for a layer's texture; bumped by {@link touchTexture}. */
   public getTextureVersion(id: LayerId): number {
     return this._textureVersions[id] ?? 0;
@@ -499,6 +523,56 @@ export class LayerStore {
     };
 
     this._textures.set(id, texture);
+    this._document.layers.push(layer);
+    this._document.layerOrder.unshift(id);
+    this.emit();
+    this.emitMutation({ kind: "add-layer", layerId: id });
+    return id;
+  }
+
+  /**
+   * Create a raster layer backed by a sparse `TiledRasterCanvas` instead of a
+   * monolithic `RenderTexture`. Same auto-sizing-on-empty-document behavior as
+   * {@link addRasterLayer}. The surface's logical bounds (from whatever pixels
+   * were already blitted into it) become the layer's reported image size.
+   */
+  public addRasterLayerTiled(
+    surface: TiledRasterCanvas,
+    name?: string,
+    source: ImageRef["source"] = "upload",
+  ): LayerId {
+    const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+
+    if (this._document.layers.length === 0) {
+      this._document.boundaryBox = {
+        x: 0,
+        y: 0,
+        width: clampDimension(bounds.width),
+        height: clampDimension(bounds.height),
+      };
+    }
+
+    const id = newId("layer");
+    const layer: RasterLayer = {
+      id,
+      name: name ?? `Layer ${this._document.layers.length + 1}`,
+      kind: "raster",
+      visible: true,
+      locked: false,
+      preserveAlpha: false,
+      opacity: 1,
+      blendMode: "normal",
+      transform: identityTransform(),
+      parentId: null,
+      image: {
+        source,
+        width: bounds.width,
+        height: bounds.height,
+        storage: "tiled",
+      },
+    };
+
+    this._tiledSurfaces.set(id, surface);
     this._document.layers.push(layer);
     this._document.layerOrder.unshift(id);
     this.emit();
@@ -687,9 +761,14 @@ export class LayerStore {
    * former index within its sibling list so {@link restoreLayerForUndo} can
    * put it back exactly where it was.
    */
-  public extractLayerForUndo(
-    id: LayerId,
-  ): { layer: Layer; index: number; texture: RenderTexture | undefined } | undefined {
+  public extractLayerForUndo(id: LayerId):
+    | {
+        layer: Layer;
+        index: number;
+        texture: RenderTexture | undefined;
+        tiledSurface: TiledRasterCanvas | undefined;
+      }
+    | undefined {
     const layer = this.getLayer(id);
     const siblings = this.getSiblingOrder(id);
     if (!layer || !siblings) return undefined;
@@ -701,6 +780,8 @@ export class LayerStore {
     this._document.layers = this._document.layers.filter((candidate) => candidate.id !== id);
     const texture = this._textures.get(id);
     this._textures.delete(id);
+    const tiledSurface = this._tiledSurfaces.get(id);
+    this._tiledSurfaces.delete(id);
 
     this._selectedLayerIds = this._selectedLayerIds.filter((selected) => selected !== id);
     if (this._selectedLayerId === id) {
@@ -708,7 +789,7 @@ export class LayerStore {
     }
 
     this.emit();
-    return { layer, index, texture };
+    return { layer, index, texture, tiledSurface };
   }
 
   /** Reinsert a layer previously removed by {@link extractLayerForUndo}, at the same sibling index. */
@@ -716,8 +797,10 @@ export class LayerStore {
     layer: Layer,
     index: number,
     texture: RenderTexture | undefined,
+    tiledSurface?: TiledRasterCanvas,
   ): void {
     if (texture) this._textures.set(layer.id, texture);
+    if (tiledSurface) this._tiledSurfaces.set(layer.id, tiledSurface);
     this._document.layers.push(layer);
     const siblings = this.getSiblingOrder(layer.id);
     if (siblings) {
@@ -746,6 +829,9 @@ export class LayerStore {
       if (texture && !this.isTextureStillReferenced(texture)) {
         texture.destroy(true);
       }
+      const tiledSurface = this._tiledSurfaces.get(doomedId);
+      this._tiledSurfaces.delete(doomedId);
+      tiledSurface?.destroy();
     }
 
     this._selectedLayerIds = this._selectedLayerIds.filter((selected) => !doomed.has(selected));
@@ -945,6 +1031,62 @@ export class LayerStore {
     return previousTexture;
   }
 
+  /**
+   * Swap a tiled layer's sparse backing for a monolithic texture (e.g. after
+   * clipping to a fixed rect) and clear its "tiled" storage marker. Emits no
+   * LayerStoreMutation, matching {@link replaceLayerTexture}. The returned
+   * surface is no longer store-owned; destroying it is the caller's job.
+   */
+  public replaceTiledSurfaceWithTexture(
+    id: LayerId,
+    expectedSurface: TiledRasterCanvas,
+    texture: RenderTexture,
+    transform: Transform,
+  ): TiledRasterCanvas | null {
+    const layer = this.getLayer(id);
+    const previousSurface = this._tiledSurfaces.get(id);
+    if (
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
+      previousSurface !== expectedSurface
+    ) {
+      return null;
+    }
+
+    this._tiledSurfaces.delete(id);
+    layer.image.storage = undefined;
+    this.replacePaintLayerState(id, layer, texture, { ...transform });
+    return previousSurface;
+  }
+
+  /** Inverse of {@link replaceTiledSurfaceWithTexture}, for undoing a clip that downgraded a tiled layer. */
+  public restoreTiledSurface(
+    id: LayerId,
+    expectedTexture: RenderTexture,
+    surface: TiledRasterCanvas,
+    transform: Transform,
+  ): RenderTexture | null {
+    const layer = this.getLayer(id);
+    const previousTexture = this._textures.get(id);
+    if (
+      !layer ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
+      previousTexture !== expectedTexture
+    ) {
+      return null;
+    }
+
+    const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+    this._textures.delete(id);
+    this._tiledSurfaces.set(id, surface);
+    layer.image.storage = "tiled";
+    layer.image.width = bounds.width;
+    layer.image.height = bounds.height;
+    layer.transform = { ...transform };
+    this.emit();
+    return previousTexture;
+  }
+
   /** Set the operating region without touching layer pixels. */
   public setBoundaryBox(box: BoundaryBox): void {
     const next = this.normaliseBoundaryBox(box);
@@ -1002,6 +1144,10 @@ export class LayerStore {
       texture.destroy(true);
     }
     this._textures.clear();
+    for (const surface of this._tiledSurfaces.values()) {
+      surface.destroy();
+    }
+    this._tiledSurfaces.clear();
     this._document.layers = [];
     this._document.layerOrder = [];
     this._selectedLayerId = null;
