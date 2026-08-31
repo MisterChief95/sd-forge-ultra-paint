@@ -38,6 +38,7 @@ import {
 
 import { Compositor } from "../scene/Compositor";
 import { BoundaryBoxOverlay } from "../scene/BoundaryBoxOverlay";
+import { fitDimensions } from "../util/dimensions";
 import { BrushCursorOverlay } from "../scene/BrushCursorOverlay";
 import { FilterPreviewOverlay } from "../scene/FilterPreviewOverlay";
 import { GenerationPreviewOverlay } from "../scene/GenerationPreviewOverlay";
@@ -1770,13 +1771,16 @@ export class UltraPaintApp {
       throw new Error("[ultra-paint] cannot create a raster layer before the renderer is ready");
     }
 
+    const { width, height } = fitDimensions(sourceTexture.width, sourceTexture.height);
     const renderTexture = RenderTexture.create({
-      width: sourceTexture.width,
-      height: sourceTexture.height,
+      width,
+      height,
       resolution: 1,
       antialias: false,
     });
     const sprite = new Sprite({ texture: sourceTexture });
+    sprite.width = width;
+    sprite.height = height;
 
     try {
       renderer.render({
@@ -1809,7 +1813,21 @@ export class UltraPaintApp {
 async function decodeToTexture(blob: Blob): Promise<Texture> {
   if (typeof createImageBitmap === "function") {
     const bitmap = await createImageBitmap(blob);
-    return Texture.from(bitmap, true);
+    const dimensions = fitDimensions(bitmap.width, bitmap.height);
+    if (dimensions.width === bitmap.width && dimensions.height === bitmap.height) {
+      return Texture.from(bitmap, true);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      bitmap.close();
+      throw new Error("[ultra-paint] cannot resize decoded image");
+    }
+    context.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
+    bitmap.close();
+    return Texture.from(canvas, true);
   }
 
   const url = URL.createObjectURL(blob);
@@ -1820,7 +1838,17 @@ async function decodeToTexture(blob: Blob): Promise<Texture> {
       el.onerror = () => reject(new Error("[ultra-paint] failed to decode image"));
       el.src = url;
     });
-    return Texture.from(image, true);
+    const dimensions = fitDimensions(image.naturalWidth, image.naturalHeight);
+    if (dimensions.width === image.naturalWidth && dimensions.height === image.naturalHeight) {
+      return Texture.from(image, true);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("[ultra-paint] cannot resize decoded image");
+    context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
+    return Texture.from(canvas, true);
   } finally {
     URL.revokeObjectURL(url);
   }
