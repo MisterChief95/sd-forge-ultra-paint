@@ -14,6 +14,8 @@ export class FilterPreviewOverlay {
 
   private readonly unsubscribe: FilterUnsubscribe;
 
+  private readonly unsubscribeStore: () => void;
+
   private overrideLayerId: LayerId | null = null;
 
   private overrideKey: string | null = null;
@@ -27,6 +29,7 @@ export class FilterPreviewOverlay {
     private readonly tree: LayerTree,
   ) {
     this.unsubscribe = filterStore.subscribe(() => this.applyState());
+    this.unsubscribeStore = store.subscribe(() => this.applyState());
     this.applyState();
   }
 
@@ -35,6 +38,7 @@ export class FilterPreviewOverlay {
     this.destroyed = true;
     this.loadToken += 1;
     this.unsubscribe();
+    this.unsubscribeStore();
     this.clearOverride();
     for (const texture of this.textureCache.values()) texture.destroy(true);
     this.textureCache.clear();
@@ -44,6 +48,11 @@ export class FilterPreviewOverlay {
     const layerId = filterStore.targetLayerId;
     const dataUrl = filterStore.previewDataUrl;
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
+
+    if (layerId && !layer) {
+      filterStore.cancel();
+      return;
+    }
 
     this.loadToken += 1;
     if (!layerId || !dataUrl || layer?.kind !== "control") {

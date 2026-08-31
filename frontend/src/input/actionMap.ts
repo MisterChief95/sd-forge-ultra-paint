@@ -1,4 +1,5 @@
 import type { UltraPaintApp } from "../app/UltraPaintApp";
+import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
 import type { PaintTool } from "../state/paintToolStore.svelte";
 import type { Layer } from "../state/schema";
 
@@ -30,6 +31,7 @@ export interface InputAction {
   shortcut: string;
   matches(event: KeyboardEvent): boolean;
   run(app: UltraPaintApp): boolean;
+  mutatesDocument?: boolean;
 }
 
 interface GenerationActions {
@@ -92,6 +94,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y",
     matches: (event) => primaryKey("y")(event) || primaryKey("z", true)(event),
     run: (app) => (app.redo(), true),
+    mutatesDocument: true,
   },
   {
     id: "history.undo",
@@ -99,6 +102,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Ctrl/Cmd+Z",
     matches: primaryKey("z"),
     run: (app) => (app.undo(), true),
+    mutatesDocument: true,
   },
   {
     id: "boundary.fit-to-mask",
@@ -106,6 +110,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Ctrl/Cmd+Shift+B",
     matches: (event) => primaryKey("b", true)(event),
     run: (app) => app.fitBoundaryBoxToCompositeMask(8),
+    mutatesDocument: true,
   },
   {
     id: "layer.clear-mask",
@@ -113,6 +118,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Shift+C",
     matches: key("c", { shiftKey: true }),
     run: (app) => app.clearSelectedMask(),
+    mutatesDocument: true,
   },
   {
     id: "layer.invert-mask",
@@ -120,6 +126,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Shift+V",
     matches: key("v", { shiftKey: true }),
     run: (app) => app.invertSelectedMask(),
+    mutatesDocument: true,
   },
   {
     id: "layer.add-mask",
@@ -131,6 +138,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
       store.setSelectedLayerId(store.addMaskLayer());
       return true;
     },
+    mutatesDocument: true,
   },
   {
     id: "layer.merge-selected",
@@ -150,6 +158,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
         return false;
       }
     },
+    mutatesDocument: true,
   },
   {
     id: "generation.generate",
@@ -184,6 +193,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
       app.fillSelectedLayer();
       return true;
     },
+    mutatesDocument: true,
   },
   {
     id: "layer.toggle-visibility",
@@ -197,6 +207,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
       for (const layer of layers) app.getStore().setVisible(layer.id, visible);
       return true;
     },
+    mutatesDocument: true,
   },
   {
     id: "viewport.fit",
@@ -266,6 +277,7 @@ export function handleInputKeyDown(event: KeyboardEvent, app: UltraPaintApp | nu
     (candidate) => activeMaps.has(candidate.map) && candidate.matches(event),
   );
   if (!action) return false;
+  if (action.mutatesDocument && isDocumentMutationLocked()) return false;
   try {
     if (!action.run(app)) return false;
   } catch (error) {

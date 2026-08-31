@@ -10,6 +10,37 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Preview/filter document lock and canvas cursor ownership — 2026-08-30
+
+Unapplied generation previews now lock the document whether their image is
+currently visible or hidden for A/B comparison; an active ControlNet filter
+preview has the same lock. The shared lock guards paint, boundary-box drags,
+paste/import, document-mutating shortcuts (including undo/redo), and public
+canvas mutation entry points. The layer panel is inert while locked, but the
+generation-preview and filter bars remain available so Apply/Discard/Cancel/
+Accept can resolve the pending state. Removing a filter target now cancels the
+filter and clears its temporary scene override safely.
+
+`StrokeController` is the only canvas cursor writer. It shows `wait` during
+generation, native `not-allowed` for preview/filter locks and non-editable
+paint targets, the brush ring with no system cursor for editable brush/eraser
+targets, and retains the native eyedropper cursor when the document is not
+locked. Pixi boundary hit targets no longer compete to set a cursor.
+
+Files changed: `frontend/src/state/documentInteractionLock.svelte.ts` (new),
+`frontend/src/paint/StrokeController.ts`, `frontend/src/scene/{BrushCursorOverlay,
+BoundaryBoxOverlay,FilterPreviewOverlay}.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/src/input/actionMap.ts`, `frontend/src/App.svelte`, `frontend/src/main.ts`,
+`frontend/src/ui/{LayerPanel,PaintToolbar,ViewportControls,FilterBar}.svelte`,
+`frontend/src/ui/generation/BoundaryBoxControls.svelte`, and
+`frontend/tests/e2e/preview-lock-cursor.spec.ts` (new). Verification: Svelte
+autofixer reported no issues on the modified toolbar/viewport components and
+only pre-existing migration suggestions on the other changed Svelte components;
+frontend typecheck passed with 0 errors/0 warnings; the focused Chromium
+Playwright test passes 2/2. No live Forge/GPU validation was run.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its

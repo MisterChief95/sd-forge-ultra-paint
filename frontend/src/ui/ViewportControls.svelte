@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
 
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import Button from "./lib/Button.svelte";
 
   let zoom = $state(1);
@@ -71,6 +72,7 @@
     size="sm"
     aria-label="Scale boundary box to fit visible layers"
     title="Scale boundary box to fit visible layers (excludes masks)"
+    disabled={isDocumentMutationLocked()}
     onclick={fitBoundaryBoxToContent}
   >
     Fit BB

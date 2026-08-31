@@ -2,6 +2,7 @@
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { saveGeneration } from "../input/actionMap";
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
+  import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
   import brushIcon from "./img/brush-tool-svgrepo-com.svg";
   import eraserIcon from "./img/eraser-svgrepo-com.svg";
@@ -77,6 +78,7 @@
       size="icon"
       title="Fill the selected layer"
       aria-label="Fill the selected layer"
+      disabled={isDocumentMutationLocked()}
       onclick={() => getActiveUltraPaintApp()?.fillSelectedLayer()}
     >
       <img src={fillIcon} alt="" class="h-4 w-4 brightness-0 invert" />

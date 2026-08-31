@@ -42,6 +42,7 @@ import { BrushCursorOverlay } from "../scene/BrushCursorOverlay";
 import { FilterPreviewOverlay } from "../scene/FilterPreviewOverlay";
 import { GenerationPreviewOverlay } from "../scene/GenerationPreviewOverlay";
 import { MagnifierOverlay } from "../scene/MagnifierOverlay";
+import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
 import { PixelGrid } from "../scene/PixelGrid";
 import { BrushEngine } from "../paint/BrushEngine";
 import { EraserEngine } from "../paint/EraserEngine";
@@ -75,7 +76,6 @@ interface ActiveBrushAdjustment {
   startRadius: number;
   startHardness: number;
   startOpacity: number;
-  restingCursor: string;
 }
 
 /**
@@ -167,8 +167,6 @@ export class UltraPaintApp {
   private panClientX = 0;
 
   private panClientY = 0;
-
-  private panRestingCursor = "";
 
   private brushAdjustment: ActiveBrushAdjustment | null = null;
 
@@ -452,12 +450,10 @@ export class UltraPaintApp {
     if (event.button === 0 && this.beginBrushAdjustment(event)) return;
     if (event.button !== 1) return;
     event.preventDefault();
-    this.panRestingCursor = canvas.style.cursor;
     this.panPointerId = event.pointerId;
     this.panClientX = event.clientX;
     this.panClientY = event.clientY;
     canvas.setPointerCapture(event.pointerId);
-    canvas.style.cursor = "grabbing";
   };
 
   /** Restore the tool active before a temporary Alt-held eyedropper switch, if any. */
@@ -572,12 +568,10 @@ export class UltraPaintApp {
   private readonly handlePointerEnd = (event: PointerEvent): void => {
     const canvas = this.viewportCanvas;
     if (canvas && event.pointerId === this.brushAdjustment?.pointerId) {
-      const restingCursor = this.brushAdjustment.restingCursor;
       event.stopImmediatePropagation();
       event.preventDefault();
       this.brushAdjustment = null;
       if (this.brushAdjustmentHud) this.brushAdjustmentHud.style.display = "none";
-      canvas.style.cursor = restingCursor;
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
       }
@@ -585,7 +579,6 @@ export class UltraPaintApp {
     }
     if (!canvas || event.pointerId !== this.panPointerId) return;
     this.panPointerId = null;
-    canvas.style.cursor = this.panRestingCursor;
     if (canvas.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
@@ -607,7 +600,7 @@ export class UltraPaintApp {
       candidate.type.startsWith("image/"),
     );
     const file = item?.getAsFile();
-    if (!file) return;
+    if (!file || isDocumentMutationLocked()) return;
 
     event.preventDefault();
     if (this.pasteRequestHandler) {
@@ -643,12 +636,10 @@ export class UltraPaintApp {
       startRadius: brush.radius,
       startHardness: brush.hardness,
       startOpacity: brush.opacity,
-      restingCursor: canvas.style.cursor,
     };
     event.stopImmediatePropagation();
     event.preventDefault();
     canvas.setPointerCapture(event.pointerId);
-    canvas.style.cursor = "ew-resize";
     this.updateBrushAdjustment(event);
     return true;
   }
@@ -686,6 +677,7 @@ export class UltraPaintApp {
 
   /** Undo the most recent document or pixel operation. */
   public undo(): void {
+    if (isDocumentMutationLocked()) return;
     try {
       this.history?.undo();
     } catch (error) {
@@ -695,6 +687,7 @@ export class UltraPaintApp {
 
   /** Redo the most recently undone document or pixel operation. */
   public redo(): void {
+    if (isDocumentMutationLocked()) return;
     try {
       this.history?.redo();
     } catch (error) {
@@ -703,6 +696,7 @@ export class UltraPaintApp {
   }
 
   private readonly beginStroke = (tool: PaintTool, layerId: LayerId): StrokeSession | null => {
+    if (isDocumentMutationLocked()) return null;
     if (tool !== "brush" && tool !== "eraser") return null;
     const history = this.history;
     const pending = history?.beginPixelChange(layerId) ?? null;
@@ -759,6 +753,7 @@ export class UltraPaintApp {
 
   /** Fill the selected raster layer with the current brush color/opacity. */
   public readonly fillSelectedLayer = (): void => {
+    if (isDocumentMutationLocked()) return;
     const app = this.app;
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
@@ -813,6 +808,7 @@ export class UltraPaintApp {
 
   /** Clear the selected mask's pixels without removing the layer. */
   public clearSelectedMask(): boolean {
+    if (isDocumentMutationLocked()) return false;
     const app = this.app;
     const history = this.history;
     const layerId = this.store.getSelectedLayerId();
@@ -848,6 +844,7 @@ export class UltraPaintApp {
    * Invert Mask.
    */
   public invertSelectedMask(): boolean {
+    if (isDocumentMutationLocked()) return false;
     const app = this.app;
     const history = this.history;
     const layerId = this.store.getSelectedLayerId();
@@ -1007,6 +1004,7 @@ export class UltraPaintApp {
     file: File | Blob,
     source: ImageRef["source"] = "upload",
   ): Promise<LayerId> {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     await this.ready;
     const texture = await decodeToTexture(file);
     const name = file instanceof File ? file.name : undefined;
@@ -1021,6 +1019,7 @@ export class UltraPaintApp {
    * top-level control (ControlNet) layer. Resolves with the new layer's id.
    */
   public async addControlLayerFromFile(file: File | Blob): Promise<LayerId> {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     await this.ready;
     const texture = await decodeToTexture(file);
     const name = file instanceof File ? file.name : undefined;
@@ -1033,6 +1032,7 @@ export class UltraPaintApp {
    * mask layer. Resolves with the new layer's id.
    */
   public async addMaskLayerFromFile(file: File | Blob): Promise<LayerId> {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     await this.ready;
     const app = this.app;
     if (!app) {
@@ -1057,6 +1057,7 @@ export class UltraPaintApp {
    * The source layer is left untouched.
    */
   public convertLayerToMask(id: LayerId): LayerId {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     const app = this.app;
     const layer = this.store.getLayer(id);
     const texture = this.store.getTexture(id);
@@ -1086,6 +1087,7 @@ export class UltraPaintApp {
    * applied later by the ControlNet panel. The source layer is left untouched.
    */
   public convertLayerToControl(id: LayerId): LayerId {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     const layer = this.store.getLayer(id);
     const texture = this.store.getTexture(id);
     if (!layer || layer.kind !== "raster" || !texture) {
@@ -1112,6 +1114,7 @@ export class UltraPaintApp {
    * if the layer and boundary box don't overlap at all.
    */
   public clipLayerToBoundaryBox(id: LayerId): boolean {
+    if (isDocumentMutationLocked()) return false;
     const app = this.app;
     const history = this.history;
     const layer = this.store.getLayer(id);
@@ -1338,6 +1341,7 @@ export class UltraPaintApp {
    * dimensions. Resolves with the new layer's id.
    */
   public async addBlankLayer(name?: string): Promise<LayerId> {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     await this.ready;
     const renderer = this.app?.renderer;
     if (!renderer) {
@@ -1379,6 +1383,7 @@ export class UltraPaintApp {
 
   /** Rasterize selected top-level regular layers into a new document-space layer. */
   public mergeLayersToNewLayer(ids: readonly LayerId[]): LayerId {
+    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     const doc = this.store.getDocument();
     const selected = [...new Set(ids)].filter((id) => {
       const layer = this.store.getLayer(id);
@@ -1546,6 +1551,7 @@ export class UltraPaintApp {
 
   /** Resize the operating region and center it in the current viewport. */
   public resizeBoundaryBox(width: number, height: number): void {
+    if (isDocumentMutationLocked()) return;
     const box = this.store.getDocument().boundaryBox;
     this.store.setBoundaryBox({ ...box, width, height });
     this.centerDocument();
@@ -1557,6 +1563,7 @@ export class UltraPaintApp {
    * fit the camera to it. No-op if there is nothing visible to measure.
    */
   public fitBoundaryBoxToContent(paddingPx = 8): void {
+    if (isDocumentMutationLocked()) return;
     const tree = this.tree;
     if (!tree) return;
 
@@ -1600,6 +1607,7 @@ export class UltraPaintApp {
 
   /** Fit the operating region to non-transparent pixels in visible masks. */
   public fitBoundaryBoxToCompositeMask(paddingPx = 8): boolean {
+    if (isDocumentMutationLocked()) return false;
     const app = this.app;
     const tree = this.tree;
     if (!app || !tree) return false;

@@ -16,6 +16,7 @@ import { getActiveUltraPaintApp } from "./app/UltraPaintApp";
 import { filterStore } from "./state/filterStore.svelte";
 import { layerStore } from "./state/layerStore.svelte";
 import { paintToolStore } from "./state/paintToolStore.svelte";
+import { previewStore } from "./state/previewStore.svelte";
 
 const target = document.getElementById("app");
 if (!target) {
@@ -34,6 +35,7 @@ if (import.meta.env.DEV) {
     layerStore,
     paintToolStore,
     filterStore,
+    previewStore,
   };
 }
 

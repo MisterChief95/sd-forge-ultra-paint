@@ -46,6 +46,7 @@
       filterStore.thresholdA,
       filterStore.thresholdB,
     );
+    if (filterStore.targetLayerId !== targetId) return;
     if (result === null) {
       filterStore.setError("Preview failed -- is ControlNet installed?");
       return;

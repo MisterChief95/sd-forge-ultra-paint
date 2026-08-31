@@ -4,8 +4,11 @@ import { Circle, Container, Graphics, Point, Rectangle } from "pixi.js";
 import type { FederatedPointerEvent } from "pixi.js";
 
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
+import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
+import { filterStore } from "../state/filterStore.svelte";
 import type { PaintToolStore, PaintToolUnsubscribe } from "../state/paintToolStore.svelte";
 import type { BoundaryBox } from "../state/schema";
+import { previewStore } from "../state/previewStore.svelte";
 
 type DragMode = "move" | "nw" | "ne" | "se" | "sw";
 type ResizeMode = Exclude<DragMode, "move">;
@@ -39,6 +42,8 @@ export class BoundaryBoxOverlay {
   private readonly documentPoint = new Point();
   private unsubscribeStore: Unsubscribe | null = null;
   private unsubscribeTools: PaintToolUnsubscribe | null = null;
+  private unsubscribePreview: (() => void) | null = null;
+  private unsubscribeFilter: (() => void) | null = null;
   private active: ActiveDrag | null = null;
   private liveBox: BoundaryBox;
   private lastScale = -1;
@@ -52,16 +57,15 @@ export class BoundaryBoxOverlay {
     this.liveBox = { ...store.getDocument().boundaryBox };
 
     this.body.eventMode = "static";
-    this.body.cursor = "move";
     this.body.hitArea = this.bodyHitArea;
     this.body.on("pointerdown", this.handleBodyPointerDown);
 
     this.border.eventMode = "none";
     this.handles = [
-      this.createHandle("nw", "nwse-resize"),
-      this.createHandle("ne", "nesw-resize"),
-      this.createHandle("se", "nwse-resize"),
-      this.createHandle("sw", "nesw-resize"),
+      this.createHandle("nw"),
+      this.createHandle("ne"),
+      this.createHandle("se"),
+      this.createHandle("sw"),
     ];
 
     this.container.addChild(
@@ -83,6 +87,8 @@ export class BoundaryBoxOverlay {
       }
     });
     this.unsubscribeTools = toolStore.subscribe(() => this.refreshInteractivity());
+    this.unsubscribePreview = previewStore.subscribe(() => this.refreshInteractivity());
+    this.unsubscribeFilter = filterStore.subscribe(() => this.refreshInteractivity());
 
     // PixiJS 8.20 does not map native pointercancel into the federated event
     // boundary, so keep this narrow lifecycle fallback for interrupted drags.
@@ -94,20 +100,23 @@ export class BoundaryBoxOverlay {
     this.unsubscribeStore = null;
     this.unsubscribeTools?.();
     this.unsubscribeTools = null;
+    this.unsubscribePreview?.();
+    this.unsubscribePreview = null;
+    this.unsubscribeFilter?.();
+    this.unsubscribeFilter = null;
     this.canvasElement.removeEventListener("pointercancel", this.handleNativePointerCancel);
     this.active = null;
     this.container.onRender = null;
     this.container.destroy({ children: true });
   }
 
-  private createHandle(mode: ResizeMode, cursor: string): BoundaryHandle {
+  private createHandle(mode: ResizeMode): BoundaryHandle {
     const hitArea = new Circle(0, 0, 1);
     const visual = new Graphics();
     visual.eventMode = "none";
 
     const container = new Container({ label: `ultra-paint:boundary-handle:${mode}` });
     container.eventMode = "static";
-    container.cursor = cursor;
     container.hitArea = hitArea;
     container.addChild(visual);
     container.on("pointerdown", (event) => {
@@ -125,7 +134,7 @@ export class BoundaryBoxOverlay {
 
   private beginDrag(mode: DragMode, event: FederatedPointerEvent): void {
     if (event.button !== 0 || this.active) return;
-    if (this.toolStore.activeTool !== "boundary-box") return;
+    if (this.toolStore.activeTool !== "boundary-box" || isDocumentMutationLocked()) return;
 
     event.preventDefault();
     const point = this.toDocumentPoint(event);
@@ -171,7 +180,7 @@ export class BoundaryBoxOverlay {
   }
 
   private refreshInteractivity(): void {
-    const interactive = this.toolStore.activeTool === "boundary-box";
+    const interactive = this.toolStore.activeTool === "boundary-box" && !isDocumentMutationLocked();
     if (!interactive) this.finishDrag();
     this.container.eventMode = interactive ? "static" : "none";
   }
