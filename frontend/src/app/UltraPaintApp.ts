@@ -65,6 +65,24 @@ import { toHexColor } from "../util/color";
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
 
+function pointInPolygon(
+  point: { x: number; y: number },
+  polygon: readonly { x: number; y: number }[],
+): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const from = polygon[index]!;
+    const to = polygon[previous]!;
+    if (
+      from.y > point.y !== to.y > point.y &&
+      point.x < ((to.x - from.x) * (point.y - from.y)) / (to.y - from.y) + from.x
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 type BrushAdjustmentMode = "size-hardness" | "opacity";
 
 interface ActiveBrushAdjustment {
@@ -1119,29 +1137,59 @@ export class UltraPaintApp {
     if (!app || !history || !layer || !target) return false;
     if (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") return false;
 
+    const tree = this.tree;
+    const node = tree?.getNode(id);
+    if (!tree || !node || !node.container.parent) return false;
+
     const { boundaryBox: box } = this.store.getDocument();
-    const { transform } = layer;
-    const left = Math.max(transform.x, box.x);
-    const top = Math.max(transform.y, box.y);
-    const right = Math.min(transform.x + target.width * transform.scaleX, box.x + box.width);
-    const bottom = Math.min(transform.y + target.height * transform.scaleY, box.y + box.height);
-    if (right <= left || bottom <= top) return false;
+    // The boundary box lives in document-root coordinates. Let Pixi map it
+    // into this layer's texture space, including every ancestor transform.
+    const polygon = [
+      node.container.toLocal({ x: box.x, y: box.y }, tree.root),
+      node.container.toLocal({ x: box.x + box.width, y: box.y }, tree.root),
+      node.container.toLocal({ x: box.x + box.width, y: box.y + box.height }, tree.root),
+      node.container.toLocal({ x: box.x, y: box.y + box.height }, tree.root),
+    ];
+    const localLeft = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.x))));
+    const localTop = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.y))));
+    const localRight = Math.min(
+      target.width,
+      Math.ceil(Math.max(...polygon.map((point) => point.x))),
+    );
+    const localBottom = Math.min(
+      target.height,
+      Math.ceil(Math.max(...polygon.map((point) => point.y))),
+    );
+    if (localRight <= localLeft || localBottom <= localTop) return false;
 
-    const localLeft = (left - transform.x) / transform.scaleX;
-    const localTop = (top - transform.y) / transform.scaleY;
-    const width = Math.round((right - left) / transform.scaleX);
-    const height = Math.round((bottom - top) / transform.scaleY);
-    if (width <= 0 || height <= 0) return false;
-    if (width === target.width && height === target.height && localLeft === 0 && localTop === 0) {
-      return false;
-    }
+    const sourceCorners = [
+      { x: 0, y: 0 },
+      { x: target.width, y: 0 },
+      { x: target.width, y: target.height },
+      { x: 0, y: target.height },
+    ];
+    if (sourceCorners.every((point) => pointInPolygon(point, polygon))) return false;
 
-    const cropped = RenderTexture.create({ width, height, resolution: 1, antialias: false });
-    const sprite = new Sprite({ texture: target });
-    sprite.position.set(-localLeft, -localTop);
+    const width = localRight - localLeft;
+    const height = localBottom - localTop;
+    const cropped = RenderTexture.create({
+      width,
+      height,
+      resolution: target.source.resolution,
+      antialias: target.source.antialias,
+      format: target.source.format,
+      alphaMode: target.source.alphaMode,
+    });
+    const root = new Container();
+    const mask = new Graphics()
+      .poly(polygon.map((point) => ({ x: point.x - localLeft, y: point.y - localTop })))
+      .fill(0xffffff);
+    const sprite = new Sprite({ texture: target, x: -localLeft, y: -localTop });
+    sprite.setMask({ mask, channel: "alpha" });
+    root.addChild(mask, sprite);
     try {
       app.renderer.render({
-        container: sprite,
+        container: root,
         target: cropped,
         clear: true,
         clearColor: [0, 0, 0, 0],
@@ -1150,10 +1198,15 @@ export class UltraPaintApp {
       cropped.destroy(true);
       throw error;
     } finally {
-      sprite.destroy({ texture: false, textureSource: false });
+      sprite.mask = null;
+      root.destroy({ children: true, texture: false, textureSource: false });
     }
 
-    const nextTransform = { ...transform, x: left, y: top };
+    const nextPosition = node.container.parent.toLocal(
+      node.container.toGlobal({ x: localLeft, y: localTop }),
+    );
+    const transform = layer.transform;
+    const nextTransform = { ...transform, x: nextPosition.x, y: nextPosition.y };
     const pending = history.beginPixelChange(id);
     if (!pending) {
       cropped.destroy(true);

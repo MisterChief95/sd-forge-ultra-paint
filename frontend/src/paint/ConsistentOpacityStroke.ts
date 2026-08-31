@@ -210,13 +210,28 @@ export class ConsistentOpacityStroke implements StrokeSession {
     this.strokeTexture = newStrokeTexture;
     this.strokeSprite.texture = newStrokeTexture;
 
-    const replacedTarget = this.store.growRasterLayer(
-      this.layerId,
-      oldTarget,
-      newTarget,
-      horizontal.offset,
-      vertical.offset,
+    const parent = this.layerContainer.parent;
+    const layer = this.store.getLayer(this.layerId);
+    if (!parent || !layer) {
+      this.target = oldTarget;
+      this.strokeTexture = oldStrokeTexture;
+      this.strokeSprite.texture = oldStrokeTexture;
+      newStrokeTexture.destroy(true);
+      newTarget.destroy(true);
+      throw new Error(`[ultra-paint] cannot grow detached layer "${this.layerId}"`);
+    }
+    // The new texture's origin represents (-offset) in the old local space.
+    // Convert that point through Pixi's complete parent chain so rotation,
+    // flips, and transformed groups keep all old pixels fixed on screen.
+    const nextPosition = parent.toLocal(
+      this.layerContainer.toGlobal({ x: -horizontal.offset, y: -vertical.offset }),
     );
+
+    const replacedTarget = this.store.growRasterLayer(this.layerId, oldTarget, newTarget, {
+      ...layer.transform,
+      x: nextPosition.x,
+      y: nextPosition.y,
+    });
     if (replacedTarget !== oldTarget) {
       this.target = oldTarget;
       this.strokeTexture = oldStrokeTexture;

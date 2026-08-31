@@ -890,8 +890,8 @@ export class LayerStore {
   }
 
   /**
-   * Atomically grow a paintable layer's backing texture and compensate its
-   * position for pixels inserted above/left of the old texture origin.
+   * Atomically grow a paintable layer's backing texture with the caller's
+   * already-compensated transform for pixels inserted above/left of its old origin.
    *
    * This deliberately emits only the ordinary document notification, not a
    * LayerStoreMutation: growth belongs to the pixel-history entry for the
@@ -902,8 +902,7 @@ export class LayerStore {
     id: LayerId,
     expectedTexture: RenderTexture,
     texture: RenderTexture,
-    deltaLeft: number,
-    deltaTop: number,
+    transform: Transform,
   ): RenderTexture | null {
     const layer = this.getLayer(id);
     const previousTexture = this._textures.get(id);
@@ -915,11 +914,7 @@ export class LayerStore {
       return null;
     }
 
-    this.replacePaintLayerState(id, layer, texture, {
-      ...layer.transform,
-      x: layer.transform.x - deltaLeft * layer.transform.scaleX,
-      y: layer.transform.y - deltaTop * layer.transform.scaleY,
-    });
+    this.replacePaintLayerState(id, layer, texture, transform);
     return previousTexture;
   }
 
