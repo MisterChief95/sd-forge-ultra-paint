@@ -30,6 +30,10 @@ interface UltraPaintTestHook {
     addBlankLayer(): Promise<string>;
     convertLayerToControl(id: string): string;
     acceptFilterResult(id: string, dataUrl: string): Promise<void>;
+    clearSelectedMask(): boolean;
+    invertSelectedMask(): boolean;
+    clipLayerToBoundaryBox(id: string): boolean;
+    fillSelectedLayer(): void;
     resizeBoundaryBox(width: number, height: number): void;
     undo(): void;
     getZoom(): number;
@@ -46,6 +50,7 @@ interface UltraPaintTestHook {
     };
     setBoundaryBox(box: BoundaryBox): void;
     setSelectedLayerId(id: string | null): void;
+    setLocked(id: string, locked: boolean): void;
     setPreserveAlpha(id: string, preserveAlpha: boolean): void;
     setBlendMode(id: string, mode: "erase"): void;
     setVisible(id: string, visible: boolean): void;
@@ -171,7 +176,7 @@ async function readMaskPixel(page: Page, x: number, y: number): Promise<number[]
  * it stays valid across boundary-box resizes that would otherwise shift or
  * clip {@link flattenMaskToDataURL}'s box-relative export.
  */
-async function readMaskLayerAlpha(
+async function readLayerAlpha(
   page: Page,
   layerId: string,
   x: number,
@@ -787,8 +792,8 @@ test("Shift+V inverts mask coverage inside the boundary box and clears outside i
   // would leave the center unchanged. Sampled via the mask's own raw texture
   // (boundary-box-independent) rather than the box-relative flattened
   // export, since the box gets resized below.
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
 
   // setBoundaryBox never touches an existing mask's own texture/transform,
   // so this leaves the mask's full 256x256 painted texture in place while
@@ -799,12 +804,134 @@ test("Shift+V inverts mask coverage inside the boundary box and clears outside i
     hook.layerStore.setBoundaryBox({ x: 64, y: 64, width: 128, height: 128 });
   });
   await page.keyboard.press("Shift+V");
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 128, 128)).toBe(0);
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(0);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
 
   await page.keyboard.press("Control+Z");
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
-  await expect.poll(() => readMaskLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
+});
+
+test("locked layers reject destructive pixel actions", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(256, 256);
+    hook.paintToolStore.setBrushSettings({ radius: 12, hardness: 1, opacity: 1 });
+  });
+
+  await addMaskLayer(page);
+  await paintCenteredStroke(page);
+  const maskId = await page.evaluate(() => {
+    const layer = (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+      (candidate) => candidate.kind === "mask",
+    );
+    if (!layer?.id) throw new Error("Mask test layer is unavailable");
+    return layer.id;
+  });
+  const maskBefore = await page.evaluate(
+    (id) =>
+      (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+    maskId,
+  );
+  const maskResults = await page.evaluate((id) => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setLocked(id, true);
+    return [app.clearSelectedMask(), app.invertSelectedMask()];
+  }, maskId);
+  expect(maskResults).toEqual([false, false]);
+  expect(
+    await page.evaluate(
+      (id) =>
+        (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+      maskId,
+    ),
+  ).toBe(maskBefore);
+
+  await addBlankLayer(page);
+  await paintCenteredStroke(page);
+  const rasterId = await page.evaluate(() => {
+    const layer = (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+      (candidate) => candidate.kind === "raster",
+    );
+    if (!layer?.id) throw new Error("Raster test layer is unavailable");
+    return layer.id;
+  });
+  const rasterBefore = await page.evaluate(
+    (id) =>
+      (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+    rasterId,
+  );
+  const clipResult = await page.evaluate((id) => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setBoundaryBox({ x: 64, y: 64, width: 128, height: 128 });
+    hook.layerStore.setLocked(id, true);
+    app.fillSelectedLayer();
+    return app.clipLayerToBoundaryBox(id);
+  }, rasterId);
+  expect(clipResult).toBe(false);
+  await expect(page.getByRole("button", { name: "Fill the selected layer" })).toBeDisabled();
+  expect(
+    await page.evaluate(
+      (id) =>
+        (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+      rasterId,
+    ),
+  ).toBe(rasterBefore);
+});
+
+test("preserve alpha clips Fill to existing pixels", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.evaluate(() => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    app.resizeBoundaryBox(256, 256);
+    hook.paintToolStore.setBrushSettings({ radius: 12, hardness: 1, opacity: 1 });
+  });
+  await addBlankLayer(page);
+  await paintCenteredStroke(page);
+  const rasterId = await page.evaluate(() => {
+    const layer = (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+      (candidate) => candidate.kind === "raster",
+    );
+    if (!layer?.id) throw new Error("Raster test layer is unavailable");
+    return layer.id;
+  });
+  await expect.poll(() => readLayerAlpha(page, rasterId, 128, 128)).toBe(255);
+  expect(await readLayerAlpha(page, rasterId, 10, 10)).toBe(0);
+  const beforeFill = await page.evaluate(
+    (id) =>
+      (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+    rasterId,
+  );
+
+  await page.evaluate((id) => {
+    const hook = (window as TestWindow).__ultraPaintTest;
+    const app = hook?.getActiveUltraPaintApp();
+    if (!hook || !app) throw new Error("Ultra Paint test hook is unavailable");
+    hook.layerStore.setPreserveAlpha(id, true);
+    hook.paintToolStore.setBrushSettings({ color: "#ff0000" });
+    app.fillSelectedLayer();
+  }, rasterId);
+
+  await expect.poll(() => readLayerAlpha(page, rasterId, 128, 128)).toBe(255);
+  await expect.poll(() => readLayerAlpha(page, rasterId, 10, 10)).toBe(0);
+  expect(
+    await page.evaluate(
+      (id) =>
+        (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id),
+      rasterId,
+    ),
+  ).not.toBe(beforeFill);
 });
 
 test("mask accordion keeps mask rows separate and its controls working", async ({ page }) => {

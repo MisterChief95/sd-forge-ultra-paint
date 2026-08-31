@@ -763,12 +763,12 @@ export class UltraPaintApp {
       return;
     }
 
-    const history = this.history;
-    const pending = history?.beginPixelChange(layerId) ?? null;
     const settings = this.toolStore.getState().brush;
     const documentRoot = this.tree?.root;
     const layerContainer = this.tree?.getNode(layerId)?.container;
     if (!documentRoot || !layerContainer) return;
+    const history = this.history;
+    const pending = history?.beginPixelChange(layerId) ?? null;
     const box = this.store.getDocument().boundaryBox;
     const corners = [
       layerContainer.toLocal({ x: box.x, y: box.y }, documentRoot),
@@ -785,13 +785,37 @@ export class UltraPaintApp {
       color: new Color(settings.color).toNumber(),
       alpha: settings.opacity,
     });
+    let alphaMaskTexture: RenderTexture | null = null;
+    let alphaMaskSprite: Sprite | null = null;
 
     try {
-      app.renderer.render({
-        container: eraseGraphics,
-        target,
-        clear: false,
-      });
+      if (layer.preserveAlpha) {
+        alphaMaskTexture = RenderTexture.create({
+          width: target.width,
+          height: target.height,
+          resolution: target.source.resolution,
+          antialias: target.source.antialias,
+        });
+        const snapshot = new Sprite({ texture: target });
+        try {
+          app.renderer.render({
+            container: snapshot,
+            target: alphaMaskTexture,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+        } finally {
+          snapshot.destroy({ texture: false, textureSource: false });
+        }
+        alphaMaskSprite = new Sprite({ texture: alphaMaskTexture });
+        fillGraphics.setMask({ mask: alphaMaskSprite, channel: "alpha" });
+      } else {
+        app.renderer.render({
+          container: eraseGraphics,
+          target,
+          clear: false,
+        });
+      }
       app.renderer.render({
         container: fillGraphics,
         target,
@@ -802,6 +826,9 @@ export class UltraPaintApp {
       if (pending) history?.discardPixelChange(pending);
       throw error;
     } finally {
+      fillGraphics.mask = null;
+      alphaMaskSprite?.destroy({ texture: false, textureSource: false });
+      alphaMaskTexture?.destroy(true);
       eraseGraphics.destroy();
       fillGraphics.destroy();
     }
@@ -815,7 +842,7 @@ export class UltraPaintApp {
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
     const target = layerId ? this.store.getTexture(layerId) : undefined;
-    if (!app || !history || !layerId || layer?.kind !== "mask" || !target) {
+    if (!app || !history || !layerId || layer?.kind !== "mask" || layer.locked || !target) {
       return false;
     }
 
@@ -858,6 +885,7 @@ export class UltraPaintApp {
       !history ||
       !layerId ||
       layer?.kind !== "mask" ||
+      layer.locked ||
       !target ||
       !documentRoot ||
       !layerContainer
@@ -1120,7 +1148,7 @@ export class UltraPaintApp {
     const history = this.history;
     const layer = this.store.getLayer(id);
     const target = this.store.getTexture(id);
-    if (!app || !history || !layer || !target) return false;
+    if (!app || !history || !layer || layer.locked || !target) return false;
     if (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") return false;
 
     const { boundaryBox: box } = this.store.getDocument();
@@ -1258,7 +1286,7 @@ export class UltraPaintApp {
     const history = this.history;
     const layer = this.store.getLayer(layerId);
     const target = this.store.getTexture(layerId);
-    if (!app || !history || layer?.kind !== "control" || !target) {
+    if (!app || !history || layer?.kind !== "control" || layer.locked || !target) {
       throw new Error(`[ultra-paint] cannot accept a filter result for layer "${layerId}"`);
     }
 
