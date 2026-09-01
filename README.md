@@ -7,7 +7,7 @@
 </p>
 
 Ultra Paint is a work-in-progress extension that adds a layer-based painting tab to Forge Neo,
-similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces - 
+similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces -
 paint, mask and ControlNet layers - wired directly into Forge's existing generation pipelines.
 
 <img width="1740" height="919" alt="image" src="https://github.com/user-attachments/assets/e564ad75-18ff-4c07-a8a9-4f6f83ea202b" />
@@ -38,6 +38,9 @@ continuously-updated status and roadmap.
   changes.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
   with zoom-tiered spacing.
+- **Layer transforms**: move, center-rotate, corner-scale (free or Shift-constrained),
+  and mirror one selected layer through an undoable, 32px/8px-snapping canvas gizmo
+  without rewriting tiled pixels.
 
 ## Roadmap (WIP)
 
@@ -47,12 +50,12 @@ continuously-updated status and roadmap.
 - Pressure sensitivity-enabled Brush and Eraser
 - Layer masks
 - Inpainting
-    - Forge-native Soft Inpainting
-    - Coherence Pass
+  - Forge-native Soft Inpainting
+  - Coherence Pass
 - ControlNet Integration
-    - Layer-based
-    - Canvas-wide Inpaint ControlNets
- 
+  - Layer-based
+  - Canvas-wide Inpaint ControlNets
+
 ### In-Progress 🏗️
 
 - Tag autocompletion in prompt boxes
@@ -73,8 +76,9 @@ model/LoRA controls, the generation queue, and prompt-tag autocomplete (Phase 1 
 that sub-feature; see `PLAN.md`). Ahead:
 
 - **Phase 4 — Multi-layer ControlNet**: assign any layer to a ControlNet unit slot.
-- **Phase 5 — Groups, transforms, selection, shape tools**: interactive gizmos,
-  marquee/lasso selection, basic vector shapes.
+- **Phase 5 — Groups, transforms, selection, shape tools**: the first single-layer
+  transform gizmo has landed; multi-selection pivots, marquee/lasso selection,
+  and basic vector shapes remain.
 - **Phase 6 — Document persistence**: save/load the actual canvas (layers, pixels,
   boundary box, masks) as a project file, not just generation settings.
 - Known gaps: a clean clone has no `data/tags.csv` or `data/generation-settings.json`
@@ -94,27 +98,27 @@ appears alongside txt2img/img2img.
 
 ## Layout
 
-| Path                    | Purpose                                                                 |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `scripts/`               | Forge callback registrations (tab shell, static mount, and each API route) |
-| `ultra_paint/`            | Importable Python package — config, generation pipeline, API request/response models, model/resolution lookups |
-| `javascript/`             | Auto-injected JS that mounts the SPA's `<iframe>` into the Gradio tab      |
-| `frontend/`               | Svelte 5 + PixiJS v8 + Vite SPA source, built to `frontend/dist/` (see below) |
-| `tests/`                  | Python tests (pytest) for the API routes and generation pipeline           |
-| `frontend/tests/e2e/`     | Playwright end-to-end tests against a real browser                         |
-| `PLAN.md`                 | Living plan/status document — the source of truth for what's implemented   |
+| Path                  | Purpose                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `scripts/`            | Forge callback registrations (tab shell, static mount, and each API route)                                     |
+| `ultra_paint/`        | Importable Python package — config, generation pipeline, API request/response models, model/resolution lookups |
+| `javascript/`         | Auto-injected JS that mounts the SPA's `<iframe>` into the Gradio tab                                          |
+| `frontend/`           | Svelte 5 + PixiJS v8 + Vite SPA source, built to `frontend/dist/` (see below)                                  |
+| `tests/`              | Python tests (pytest) for the API routes and generation pipeline                                               |
+| `frontend/tests/e2e/` | Playwright end-to-end tests against a real browser                                                             |
+| `PLAN.md`             | Living plan/status document — the source of truth for what's implemented                                       |
 
 ### Scripts and routes
 
-| File | Registers |
-| --- | --- |
-| `scripts/ultra_paint_tab.py` | `on_ui_tabs` — a near-empty `gr.HTML` wrapper that the injected JS turns into an iframe |
-| `scripts/ultra_paint_api.py` | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
-| `scripts/ultra_paint_generate_api.py` | `POST /ultra_paint/api/generate` |
-| `scripts/ultra_paint_options_api.py` | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step) |
-| `scripts/ultra_paint_options_api.py` | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence) |
-| `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt` |
-| `scripts/ultra_paint_save_api.py` | `POST /ultra_paint/api/save` |
+| File                                   | Registers                                                                                       |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `scripts/ultra_paint_tab.py`           | `on_ui_tabs` — a near-empty `gr.HTML` wrapper that the injected JS turns into an iframe         |
+| `scripts/ultra_paint_api.py`           | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
+| `scripts/ultra_paint_generate_api.py`  | `POST /ultra_paint/api/generate`                                                                |
+| `scripts/ultra_paint_options_api.py`   | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step)       |
+| `scripts/ultra_paint_options_api.py`   | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence)                            |
+| `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt`                                                               |
+| `scripts/ultra_paint_save_api.py`      | `POST /ultra_paint/api/save`                                                                    |
 
 ## Development
 

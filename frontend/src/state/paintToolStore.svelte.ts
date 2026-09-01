@@ -7,7 +7,7 @@
 import type { BoundaryBox } from "./schema";
 
 /** Available paint-canvas tools. Only brush and eraser create stroke sessions. */
-export type PaintTool = "brush" | "eraser" | "eyedropper" | "boundary-box";
+export type PaintTool = "brush" | "eraser" | "eyedropper" | "transform" | "boundary-box";
 
 export interface BrushSettings {
   /** Brush radius in document pixels. */

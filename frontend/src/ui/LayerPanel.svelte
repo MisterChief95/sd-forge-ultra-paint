@@ -159,10 +159,35 @@
     }
   }
 
-  function handleAddMaskLayer(): void {
-    const id = layerStore.addMaskLayer();
-    layerStore.setSelectedLayerId(id);
-    masksOpen = true;
+  async function handleAddControlLayer(): Promise<void> {
+    const app = getActiveUltraPaintApp();
+    if (!app) {
+      console.error("[ultra-paint] cannot add a control layer before the app is ready");
+      return;
+    }
+    try {
+      const id = await app.addBlankControlLayer();
+      layerStore.setSelectedLayerId(id);
+      controlsOpen = true;
+      expandedControlId = id;
+    } catch (error) {
+      console.error("[ultra-paint] could not add a control layer:", error);
+    }
+  }
+
+  async function handleAddMaskLayer(): Promise<void> {
+    const app = getActiveUltraPaintApp();
+    if (!app) {
+      console.error("[ultra-paint] cannot add a mask layer before the app is ready");
+      return;
+    }
+    try {
+      const id = await app.addBlankMaskLayer();
+      layerStore.setSelectedLayerId(id);
+      masksOpen = true;
+    } catch (error) {
+      console.error("[ultra-paint] could not add a mask layer:", error);
+    }
   }
 
   async function handleControlFiles(event: Event): Promise<void> {
@@ -218,8 +243,9 @@
     const items: ContextMenuItem[] = [
       { label: "Raster Layer", action: () => void handleAddBlankLayer() },
       { label: "Mask Layer", action: handleAddMaskLayer },
+      { label: "Control Layer", action: () => void handleAddControlLayer() },
       {
-        label: "Control Layer",
+        label: "Control Layer from Image",
         action: () => document.getElementById("upaint-control-file-input")?.click(),
       },
       { divider: true },
@@ -248,8 +274,12 @@
     const mergeable = accordionBucket(layer) === "layers" && selected.length > 1;
     const copyable = single !== undefined && single.kind !== "group";
     const maskCopyable =
-      single !== undefined && (single.kind === "raster" || single.kind === "control") && !isPreviewing && !isFiltering;
-    const controlCopyable = single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
+      single !== undefined &&
+      (single.kind === "raster" || single.kind === "control") &&
+      !isPreviewing &&
+      !isFiltering;
+    const controlCopyable =
+      single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
     const filterable =
       single !== undefined &&
       single.kind === "control" &&
@@ -291,19 +321,41 @@
         : []),
       ...(single
         ? [
-            { label: "Duplicate layer", action: () => duplicateLayer(single), disabled: isPreviewing || isFiltering },
+            {
+              label: "Duplicate layer",
+              action: () => duplicateLayer(single),
+              disabled: isPreviewing || isFiltering,
+            },
           ]
         : []),
       ...(maskCopyable || controlCopyable
         ? [
             divider,
-            ...(maskCopyable ? [{ label: "Copy to Mask Layer", action: () => convertLayerToMask(single!) }] : []),
-            ...(controlCopyable ? [{ label: "Copy to Control Layer", action: () => convertLayerToControl(single!) }] : []),
-            ...(maskCopyable ? [{ label: "Convert to Mask Layer", action: () => convertLayerToMask(single!, true) }] : []),
-            ...(controlCopyable ? [{ label: "Convert to Control Layer", action: () => convertLayerToControl(single!, true) }] : []),
+            ...(maskCopyable
+              ? [{ label: "Copy to Mask Layer", action: () => convertLayerToMask(single!) }]
+              : []),
+            ...(controlCopyable
+              ? [{ label: "Copy to Control Layer", action: () => convertLayerToControl(single!) }]
+              : []),
+            ...(maskCopyable
+              ? [
+                  {
+                    label: "Convert to Mask Layer",
+                    action: () => convertLayerToMask(single!, true),
+                  },
+                ]
+              : []),
+            ...(controlCopyable
+              ? [
+                  {
+                    label: "Convert to Control Layer",
+                    action: () => convertLayerToControl(single!, true),
+                  },
+                ]
+              : []),
           ]
         : []),
-      ...((filterable || clippable) ? [divider] : []),
+      ...(filterable || clippable ? [divider] : []),
       ...(filterable ? [{ label: "Filter...", action: () => filterStore.begin(single.id) }] : []),
       ...(clippable
         ? [
@@ -317,7 +369,7 @@
       divider,
       {
         label: selected.length === 1 ? "Delete layer" : `Delete ${selected.length} selected`,
-        action: () => selected.forEach((candidate) => layerStore.removeLayer(candidate.id)),
+        action: () => layerStore.removeLayers(selected.map((candidate) => candidate.id)),
         destructive: true,
       },
     ];

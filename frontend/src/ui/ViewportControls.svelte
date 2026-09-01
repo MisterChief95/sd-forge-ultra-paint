@@ -8,7 +8,6 @@
   let zoom = $state(1);
   let gridVisible = $state(true);
   let tileBordersVisible = $state(false);
-  let antialiasEnabled = $state(true);
   let animationFrame: number | null = null;
 
   function updateCameraState(): void {
@@ -17,7 +16,6 @@
       zoom = app.getZoom();
       gridVisible = app.isGridVisible();
       tileBordersVisible = app.isTileDebugBordersVisible();
-      antialiasEnabled = app.isTileAntialiasingEnabled();
     }
     animationFrame = requestAnimationFrame(updateCameraState);
   }
@@ -44,12 +42,6 @@
     const app = getActiveUltraPaintApp();
     if (!app) return;
     app.setTileDebugBorders(!app.isTileDebugBordersVisible());
-  }
-
-  function toggleAntialiasing(): void {
-    const app = getActiveUltraPaintApp();
-    if (!app) return;
-    app.setTileAntialiasing(!app.isTileAntialiasingEnabled());
   }
 
   onMount(() => {
@@ -112,16 +104,5 @@
     onclick={toggleTileBorders}
   >
     Tiles
-  </Button>
-  <Button
-    size="sm"
-    pressed={antialiasEnabled}
-    aria-label={antialiasEnabled ? "Disable viewport antialiasing" : "Enable viewport antialiasing"}
-    title={antialiasEnabled
-      ? "Disable viewport antialiasing (crisp pixel sampling)"
-      : "Enable viewport antialiasing (smooth sampling)"}
-    onclick={toggleAntialiasing}
-  >
-    AA
   </Button>
 </div>

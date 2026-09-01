@@ -13,6 +13,8 @@
  *     `GroupLayer.children` for groups). There is no nested serialisation.
  */
 
+import type { PixelBounds } from "../canvas/TileGrid";
+
 /** Opaque per-layer identifier. Unique within a document. */
 export type LayerId = string;
 
@@ -140,6 +142,21 @@ export interface ImageRef {
   height: number;
   /** Present when the layer's pixels live in a sparse `TiledRasterCanvas` rather than one `RenderTexture`. */
   storage?: "tiled";
+  /** Tiled backing's immutable tile edge length; omitted for monolithic textures. */
+  tileSize?: number;
+  /**
+   * Layer-local logical bounds for tiled pixels. Unlike width/height, this
+   * retains negative origins after a layer grows up or left of local (0, 0).
+   * `null` represents a truly empty tiled layer.
+   */
+  bounds?: PixelBounds | null;
+}
+
+/** The fully populated metadata shape for a `TiledRasterCanvas`-backed layer. */
+export interface TiledImageRef extends ImageRef {
+  storage: "tiled";
+  tileSize: number;
+  bounds: PixelBounds | null;
 }
 
 /** Editable document-space operating region used by fill and generation. */

@@ -293,6 +293,12 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
       antialias: true,
     });
     const overlaySprite = new Sprite({ texture: strokeTexture });
+    // Persistent tile sprites get the mask hatch/control tint from
+    // `TiledRasterView.setFilters()`; this overlay is a separate scratch
+    // sprite standing in for them during the stroke, so it needs the same
+    // filters applied explicitly to match their display treatment live.
+    const displayFilters = this.node.tileDisplayFilters;
+    if (displayFilters) overlaySprite.filters = [...displayFilters];
 
     const state: TileStrokeState = {
       coord,

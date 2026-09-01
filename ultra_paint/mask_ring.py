@@ -82,23 +82,23 @@ def blur_ring(mask: Image.Image, mask_blur: int) -> Image.Image:
     return Image.fromarray(np.clip(blurred, 0, 255).astype(np.uint8))
 
 
-def feathered_alpha(mask: Image.Image, edge_size: int, mask_blur: int) -> Image.Image:
-    """Compositing alpha for the coherence-pass boundary: blur the mask
-    *first*, then dilate the already-smooth result outward by the ring's
-    own `edge_size / 2` -- grayscale dilation of a monotonic falloff just
-    translates it outward (the max within any window on an increasing ramp
-    is the ramp's own value `radius` pixels further along), so the
-    transition stays perfectly continuous the whole way to 0.
+def dilate_then_blur(mask: Image.Image, edge_size: int, mask_blur: int) -> Image.Image:
+    """Compositing alpha for the coherence-pass boundary: hard-dilate the
+    mask outward by the ring's own `edge_size / 2` first, then blur once.
 
-    Dilating the hard mask first and blurring afterward, clipped to that
-    hard footprint, instead chops the Gaussian falloff mid-curve: the
-    clipped edge sits close to the mask's *original* boundary, well before
-    the blur has decayed anywhere near 0, so composited pixels jump from 0
-    to a large alpha over a single pixel right at that boundary -- a visibly
-    hard step despite the blur."""
-    blurred = blur_ring(mask, mask_blur)
+    Matches how Forge derives its own `mask_for_overlay` from a raw mask
+    (one blur pass over a hard edge -- modules/processing.py:1731-1734) so
+    the paste-back ring gets exactly the softness `mask_blur` asks for.
+    Blurring a mask that was already blurred upstream (e.g. by feeding this
+    a mask Forge itself already softened) stacks a second Gaussian pass on
+    top of the first, widening the semi-transparent band well past
+    `mask_blur` and letting the wrong side visibly show through at the
+    seam."""
     if edge_size <= 0:
-        return blurred
-    half = max(1, round(edge_size / 2))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (half * 2 + 1, half * 2 + 1))
-    return Image.fromarray(cv2.dilate(np.array(blurred, dtype=np.uint8), kernel))
+        dilated = mask
+    else:
+        half = max(1, round(edge_size / 2))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (half * 2 + 1, half * 2 + 1))
+        binary = mask.point(lambda x: 255 if x > 0 else 0)
+        dilated = Image.fromarray(cv2.dilate(np.array(binary, dtype=np.uint8), kernel))
+    return blur_ring(dilated, mask_blur)

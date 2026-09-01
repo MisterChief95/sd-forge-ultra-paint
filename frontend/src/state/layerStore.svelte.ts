@@ -9,6 +9,7 @@
 import { RenderTexture } from "pixi.js";
 
 import type { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
+import type { PixelBounds } from "../canvas/TileGrid";
 import { clampDimension } from "../util/dimensions";
 
 import type {
@@ -25,6 +26,7 @@ import type {
   MaskLayer,
   PaintLayer,
   RasterLayer,
+  TiledImageRef,
   Transform,
 } from "./schema";
 
@@ -34,10 +36,25 @@ export type Listener = (doc: Document) => void;
 /** Unsubscribe handle returned by {@link LayerStore.subscribe}. */
 export type Unsubscribe = () => void;
 
+interface RemovedLayerRecord {
+  layer: Layer;
+  documentIndex: number;
+  texture: RenderTexture | undefined;
+  tiledSurface: TiledRasterCanvas | undefined;
+}
+
+/** Store-owned state detached by one user delete action and transferred to history. */
+export interface LayerRemovalSnapshot {
+  rootIds: readonly LayerId[];
+  placements: readonly { layerId: LayerId; index: number }[];
+  layers: readonly RemovedLayerRecord[];
+  selectedLayerIds: readonly LayerId[];
+}
+
 /** Document mutation details consumed by undo/redo history. */
 export type LayerStoreMutation =
   | { kind: "add-layer"; layerId: LayerId }
-  | { kind: "remove-layer"; layerIds: readonly LayerId[] }
+  | { kind: "remove-layer"; snapshot: LayerRemovalSnapshot }
   | {
       kind: "reorder-layer";
       layerId: LayerId;
@@ -171,24 +188,26 @@ function clipPolygon(
 }
 
 /** True when the transformed rectangle shares non-zero area with `box`. */
-function intersectsBox(width: number, height: number, matrix: Matrix, box: BoundaryBox): boolean {
+function intersectsBox(bounds: PixelBounds, matrix: Matrix, box: BoundaryBox): boolean {
   if (
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    !Number.isFinite(bounds.width) ||
+    !Number.isFinite(bounds.height) ||
     !Number.isFinite(box.width) ||
     !Number.isFinite(box.height) ||
-    width <= 0 ||
-    height <= 0 ||
+    bounds.width <= 0 ||
+    bounds.height <= 0 ||
     box.width <= 0 ||
     box.height <= 0
   ) {
     return false;
   }
   let polygon = [
-    transformPoint(matrix, { x: 0, y: 0 }),
-    transformPoint(matrix, { x: width, y: 0 }),
-    transformPoint(matrix, { x: width, y: height }),
-    transformPoint(matrix, { x: 0, y: height }),
+    transformPoint(matrix, { x: bounds.x, y: bounds.y }),
+    transformPoint(matrix, { x: bounds.x + bounds.width, y: bounds.y }),
+    transformPoint(matrix, { x: bounds.x + bounds.width, y: bounds.y + bounds.height }),
+    transformPoint(matrix, { x: bounds.x, y: bounds.y + bounds.height }),
   ];
   const clipX =
     (x: number) =>
@@ -355,12 +374,9 @@ export class LayerStore {
       if (layer.kind !== "raster" || !this.isEffectivelyVisible(layer, layers)) {
         return false;
       }
-      return intersectsBox(
-        layer.image.width,
-        layer.image.height,
-        this.worldMatrixFor(layer, layers),
-        this._document.boundaryBox,
-      );
+      const bounds = this.getLayerPixelBounds(layer.id);
+      if (!bounds) return false;
+      return intersectsBox(bounds, this.worldMatrixFor(layer, layers), this._document.boundaryBox);
     });
   }
 
@@ -401,6 +417,17 @@ export class LayerStore {
     return this._textures.get(id) ?? this._tiledSurfaces.get(id);
   }
 
+  /** Current layer-local pixel bounds, with a tiled surface as the source of truth. */
+  public getLayerPixelBounds(id: LayerId): PixelBounds | null {
+    const layer = this.getLayer(id);
+    if (!layer || (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")) {
+      return null;
+    }
+    const tiledBounds = this._tiledSurfaces.get(id)?.bounds;
+    if (tiledBounds !== undefined) return tiledBounds;
+    return { x: 0, y: 0, width: layer.image.width, height: layer.image.height };
+  }
+
   /** Reactive change counter for a layer's texture; bumped by {@link touchTexture}. */
   public getTextureVersion(id: LayerId): number {
     return this._textureVersions[id] ?? 0;
@@ -412,6 +439,7 @@ export class LayerStore {
    * signal for UI (e.g. layer thumbnails) to observe.
    */
   public touchTexture(id: LayerId): void {
+    this.syncTiledImageMetadata(id);
     if (!this.getLayer(id)) return;
     this._textureVersions = {
       ...this._textureVersions,
@@ -569,7 +597,9 @@ export class LayerStore {
         width: bounds.width,
         height: bounds.height,
         storage: "tiled",
-      },
+        tileSize: surface.tileSize,
+        bounds: surface.bounds,
+      } satisfies TiledImageRef,
     };
 
     this._tiledSurfaces.set(id, surface);
@@ -688,6 +718,47 @@ export class LayerStore {
     return id;
   }
 
+  /** Create a paintable mask layer backed by sparse tiles. */
+  public addMaskLayerTiled(
+    surface: TiledRasterCanvas,
+    name?: string,
+    color = DEFAULT_MASK_COLOR,
+  ): LayerId {
+    const box = this._document.boundaryBox;
+    const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+    const id = newId("mask");
+    const layer: MaskLayer = {
+      id,
+      name:
+        name ??
+        `Mask ${this._document.layers.filter((candidate) => candidate.kind === "mask").length + 1}`,
+      kind: "mask",
+      visible: true,
+      locked: false,
+      preserveAlpha: false,
+      opacity: 1,
+      blendMode: "normal",
+      transform: { ...identityTransform(), x: box.x, y: box.y },
+      parentId: null,
+      image: {
+        source: "paint",
+        width: bounds.width,
+        height: bounds.height,
+        storage: "tiled",
+        tileSize: surface.tileSize,
+        bounds: surface.bounds,
+      } satisfies TiledImageRef,
+      color: normaliseHexColor(color, DEFAULT_MASK_COLOR),
+    };
+
+    this._tiledSurfaces.set(id, surface);
+    this._document.layers.push(layer);
+    this._document.layerOrder.unshift(id);
+    this.emit();
+    this.emitMutation({ kind: "add-layer", layerId: id });
+    return id;
+  }
+
   /** Create a control (ControlNet) layer backed by the given source texture. */
   public addControlLayer(texture: RenderTexture, name?: string): LayerId {
     const id = newId("control");
@@ -721,6 +792,50 @@ export class LayerStore {
     };
 
     this._textures.set(id, texture);
+    this._document.layers.push(layer);
+    this._document.layerOrder.unshift(id);
+    this.emit();
+    this.emitMutation({ kind: "add-layer", layerId: id });
+    return id;
+  }
+
+  /** Create a ControlNet layer backed by sparse tiles. */
+  public addControlLayerTiled(surface: TiledRasterCanvas, name?: string): LayerId {
+    const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+    const id = newId("control");
+    const layer: ControlLayer = {
+      id,
+      name:
+        name ??
+        `Control ${
+          this._document.layers.filter((candidate) => candidate.kind === "control").length + 1
+        }`,
+      kind: "control",
+      visible: true,
+      locked: false,
+      preserveAlpha: false,
+      opacity: 1,
+      blendMode: "normal",
+      transform: identityTransform(),
+      parentId: null,
+      image: {
+        source: "upload",
+        width: bounds.width,
+        height: bounds.height,
+        storage: "tiled",
+        tileSize: surface.tileSize,
+        bounds: surface.bounds,
+      } satisfies TiledImageRef,
+      model: "None",
+      weight: 1,
+      guidanceStart: 0,
+      guidanceEnd: 1,
+      controlMode: "balanced",
+      pixelPerfect: false,
+      resizeMode: "resize",
+    };
+
+    this._tiledSurfaces.set(id, surface);
     this._document.layers.push(layer);
     this._document.layerOrder.unshift(id);
     this.emit();
@@ -840,36 +955,118 @@ export class LayerStore {
 
   /** Remove `id` and, if it is a group, every descendant. */
   public removeLayer(id: LayerId): void {
-    const layer = this.getLayer(id);
-    if (!layer) return;
+    this.removeLayers([id]);
+  }
 
-    const doomed = this.collectSubtree(id);
-    const siblings = this.getSiblingOrder(id);
-    if (siblings) {
-      const at = siblings.indexOf(id);
-      if (at !== -1) siblings.splice(at, 1);
+  /** Remove several selected roots as one undoable user action. */
+  public removeLayers(ids: readonly LayerId[]): void {
+    const snapshot = this.extractLayersForUndo(ids);
+    if (!snapshot) return;
+
+    if (this.mutationListeners.size === 0) {
+      this.destroyLayerRemovalSnapshot(snapshot);
+      return;
     }
+    this.emitMutation({ kind: "remove-layer", snapshot });
+  }
 
-    this._document.layers = this._document.layers.filter((candidate) => !doomed.has(candidate.id));
+  /** Detach layers and pixel backings without destroying them or recording history. */
+  public extractLayersForUndo(ids: readonly LayerId[]): LayerRemovalSnapshot | undefined {
+    const requested = new Set(ids.filter((id) => this.getLayer(id) !== undefined));
+    if (requested.size === 0) return undefined;
 
-    for (const doomedId of doomed) {
-      const texture = this._textures.get(doomedId);
-      this._textures.delete(doomedId);
-      if (texture && !this.isTextureStillReferenced(texture)) {
-        texture.destroy(true);
+    const rootIds = [...requested].filter((id) => {
+      let parentId = this.getLayer(id)?.parentId ?? null;
+      while (parentId !== null) {
+        if (requested.has(parentId)) return false;
+        parentId = this.getLayer(parentId)?.parentId ?? null;
       }
-      const tiledSurface = this._tiledSurfaces.get(doomedId);
+      return true;
+    });
+    const placements = rootIds.map((layerId) => ({
+      layerId,
+      index: this.getSiblingOrder(layerId)?.indexOf(layerId) ?? -1,
+    }));
+    const doomed = new Set<LayerId>();
+    for (const rootId of rootIds) {
+      for (const doomedId of this.collectSubtree(rootId)) doomed.add(doomedId);
+    }
+
+    const layers = this._document.layers.flatMap((layer, documentIndex) =>
+      doomed.has(layer.id)
+        ? [
+            {
+              layer,
+              documentIndex,
+              texture: this._textures.get(layer.id),
+              tiledSurface: this._tiledSurfaces.get(layer.id),
+            },
+          ]
+        : [],
+    );
+
+    for (const { layerId, index } of [...placements].sort((a, b) => b.index - a.index)) {
+      const siblings = this.getSiblingOrder(layerId);
+      if (siblings && index >= 0) siblings.splice(index, 1);
+    }
+
+    this._document.layers = this._document.layers.filter((layer) => !doomed.has(layer.id));
+    for (const doomedId of doomed) {
+      this._textures.delete(doomedId);
       this._tiledSurfaces.delete(doomedId);
-      tiledSurface?.destroy();
     }
 
+    const selectedLayerIds = [...this._selectedLayerIds];
     this._selectedLayerIds = this._selectedLayerIds.filter((selected) => !doomed.has(selected));
-    if (this._selectedLayerId === null || doomed.has(this._selectedLayerId)) {
-      this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
+    this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
+    this.emit();
+    return { rootIds, placements, layers, selectedLayerIds };
+  }
+
+  /** Restore a detached delete snapshot at its exact document and sibling positions. */
+  public restoreLayersForUndo(snapshot: LayerRemovalSnapshot): void {
+    for (const record of [...snapshot.layers].sort(
+      (left, right) => left.documentIndex - right.documentIndex,
+    )) {
+      const at = Math.max(0, Math.min(record.documentIndex, this._document.layers.length));
+      this._document.layers.splice(at, 0, record.layer);
+      if (record.texture) this._textures.set(record.layer.id, record.texture);
+      if (record.tiledSurface) this._tiledSurfaces.set(record.layer.id, record.tiledSurface);
     }
 
+    for (const placement of [...snapshot.placements].sort(
+      (left, right) => left.index - right.index,
+    )) {
+      const siblings = this.getSiblingOrder(placement.layerId);
+      if (!siblings) continue;
+      siblings.splice(
+        Math.max(0, Math.min(placement.index, siblings.length)),
+        0,
+        placement.layerId,
+      );
+    }
+
+    this._selectedLayerIds = snapshot.selectedLayerIds.filter(
+      (id) => this.getLayer(id) !== undefined,
+    );
+    this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
     this.emit();
-    this.emitMutation({ kind: "remove-layer", layerIds: [...doomed] });
+  }
+
+  /** Release a detached delete snapshot after it falls out of bounded history. */
+  public destroyLayerRemovalSnapshot(snapshot: LayerRemovalSnapshot): void {
+    const textures = new Set(
+      snapshot.layers.flatMap((record) => (record.texture ? [record.texture] : [])),
+    );
+    for (const texture of textures) {
+      if (!this.isTextureStillReferenced(texture)) texture.destroy(true);
+    }
+    const surfaces = new Set(
+      snapshot.layers.flatMap((record) => (record.tiledSurface ? [record.tiledSurface] : [])),
+    );
+    for (const surface of surfaces) {
+      if (!this.isTiledSurfaceStillReferenced(surface)) surface.destroy();
+    }
   }
 
   /** Move `id` within its current parent, clamping index to the valid range. */
@@ -1060,62 +1257,6 @@ export class LayerStore {
     return previousTexture;
   }
 
-  /**
-   * Swap a tiled layer's sparse backing for a monolithic texture (e.g. after
-   * clipping to a fixed rect) and clear its "tiled" storage marker. Emits no
-   * LayerStoreMutation, matching {@link replaceLayerTexture}. The returned
-   * surface is no longer store-owned; destroying it is the caller's job.
-   */
-  public replaceTiledSurfaceWithTexture(
-    id: LayerId,
-    expectedSurface: TiledRasterCanvas,
-    texture: RenderTexture,
-    transform: Transform,
-  ): TiledRasterCanvas | null {
-    const layer = this.getLayer(id);
-    const previousSurface = this._tiledSurfaces.get(id);
-    if (
-      !layer ||
-      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
-      previousSurface !== expectedSurface
-    ) {
-      return null;
-    }
-
-    this._tiledSurfaces.delete(id);
-    layer.image.storage = undefined;
-    this.replacePaintLayerState(id, layer, texture, { ...transform });
-    return previousSurface;
-  }
-
-  /** Inverse of {@link replaceTiledSurfaceWithTexture}, for undoing a clip that downgraded a tiled layer. */
-  public restoreTiledSurface(
-    id: LayerId,
-    expectedTexture: RenderTexture,
-    surface: TiledRasterCanvas,
-    transform: Transform,
-  ): RenderTexture | null {
-    const layer = this.getLayer(id);
-    const previousTexture = this._textures.get(id);
-    if (
-      !layer ||
-      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") ||
-      previousTexture !== expectedTexture
-    ) {
-      return null;
-    }
-
-    const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
-    this._textures.delete(id);
-    this._tiledSurfaces.set(id, surface);
-    layer.image.storage = "tiled";
-    layer.image.width = bounds.width;
-    layer.image.height = bounds.height;
-    layer.transform = { ...transform };
-    this.emit();
-    return previousTexture;
-  }
-
   /** Set the operating region without touching layer pixels. */
   public setBoundaryBox(box: BoundaryBox): void {
     const next = this.normaliseBoundaryBox(box);
@@ -1243,6 +1384,13 @@ export class LayerStore {
     return false;
   }
 
+  private isTiledSurfaceStillReferenced(surface: TiledRasterCanvas): boolean {
+    for (const other of this._tiledSurfaces.values()) {
+      if (other === surface) return true;
+    }
+    return false;
+  }
+
   private isEffectivelyVisible(layer: Layer, layers: ReadonlyMap<LayerId, Layer>): boolean {
     const seen = new Set<LayerId>();
     let current: Layer | undefined = layer;
@@ -1291,9 +1439,31 @@ export class LayerStore {
   ): void {
     this._textures.set(id, texture);
     layer.transform = transform;
+    layer.image.storage = undefined;
+    layer.image.tileSize = undefined;
+    layer.image.bounds = undefined;
     layer.image.width = texture.width;
     layer.image.height = texture.height;
     this.emit();
+  }
+
+  /** Mirror the sparse surface's authoritative logical bounds into serializable metadata. */
+  private syncTiledImageMetadata(id: LayerId): void {
+    const layer = this.getLayer(id);
+    const surface = this._tiledSurfaces.get(id);
+    if (
+      !layer ||
+      !surface ||
+      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
+    ) {
+      return;
+    }
+    const bounds = surface.bounds;
+    layer.image.storage = "tiled";
+    layer.image.tileSize = surface.tileSize;
+    layer.image.bounds = bounds;
+    layer.image.width = bounds?.width ?? 0;
+    layer.image.height = bounds?.height ?? 0;
   }
 }
 

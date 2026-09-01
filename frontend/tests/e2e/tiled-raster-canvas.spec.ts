@@ -78,6 +78,7 @@ type TestWindow = Window & {
       clipLayerToBoundaryBox(id: string): boolean;
       layerSourceDataURL(id: string): string | null;
       flattenToDataURL(chunkSize?: number): string;
+      flattenMaskToDataURL(chunkSize?: number): string | null;
       resizeBoundaryBox(width: number, height: number): void;
       addImageFromFile(file: File): Promise<string>;
       addImageFromDataURL(url: string, name?: string, source?: string): Promise<string>;
@@ -404,6 +405,34 @@ test("stitches a forced multi-chunk export pixel-identically", async ({ page }) 
   expect(result).toEqual({ equal: true, width: 23, height: 19 });
 });
 
+test("stitches a forced multi-chunk mask export pixel-identically", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+    app.resizeBoundaryBox(23, 19);
+    const id = await app.addBlankLayer();
+    hook.layerStore.setSelectedLayerId(id);
+    app.fillSelectedLayer();
+    app.convertLayerToMask(id);
+
+    const singleChunk = app.flattenMaskToDataURL(64);
+    const manyChunks = app.flattenMaskToDataURL(7);
+    if (!singleChunk || !manyChunks) throw new Error("Mask export is unavailable");
+    const image = new Image();
+    image.src = manyChunks;
+    await image.decode();
+    return {
+      equal: manyChunks === singleChunk,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    };
+  });
+
+  expect(result).toEqual({ equal: true, width: 23, height: 19 });
+});
+
 test("blits one source across four signed destination tiles", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const hook = (window as TestWindow).__ultraPaintTest!;
@@ -636,40 +665,60 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
     app.redo();
     const afterFillRedoUrl = app.layerSourceDataURL(id)!;
 
-    // Clip to a smaller box: downgrades the layer to a monolithic texture.
+    // Clip to a smaller box: its bottom edge (y=950) stays above the tile
+    // boundary at y=1024, so the entire bottom tile row falls fully outside it.
     hook!.layerStore.setBoundaryBox({ x: 200, y: 150, width: 1100, height: 800 });
     const clipped = app.clipLayerToBoundaryBox(id);
     // `.image` is mutated in place by undo/redo below, so snapshot each step
     // into a plain object instead of keeping a live reference to it.
     const afterClip = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
+    const tileCountAfterClip = hook!.layerStore.getTiledSurface(id)?.tileCount;
+    const afterClipUrl = app.layerSourceDataURL(id)!;
     app.undo();
     const afterClipUndo = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
     const tileCountAfterClipUndo = hook!.layerStore.getTiledSurface(id)?.tileCount;
     app.redo();
     const afterClipRedo = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
+    const tileCountAfterClipRedo = hook!.layerStore.getTiledSurface(id)?.tileCount;
+
+    hook!.layerStore.setBoundaryBox({ x: 2000, y: 2000, width: 100, height: 100 });
+    const noOverlapClipped = app.clipLayerToBoundaryBox(id);
+    const tileCountAfterNoOverlap = hook!.layerStore.getTiledSurface(id)?.tileCount;
+    const storageAfterNoOverlap = hook!.layerStore.document.layers.find((l) => l.id === id)?.image
+      .storage;
 
     return {
       storageBeforeAnyEdit,
       maskKind: maskLayer?.kind,
       maskDims: { width: maskLayer?.image.width, height: maskLayer?.image.height },
+      maskStorage: maskLayer?.image.storage,
       controlKind: controlLayer?.kind,
       controlDims: { width: controlLayer?.image.width, height: controlLayer?.image.height },
+      controlStorage: controlLayer?.image.storage,
       afterFillUrl,
       afterFillUndoUrl,
       afterFillRedoUrl,
       clipped,
       afterClip,
+      tileCountAfterClip,
+      afterClipUrl,
       afterClipUndo,
       tileCountAfterClipUndo,
       afterClipRedo,
+      tileCountAfterClipRedo,
+      noOverlapClipped,
+      tileCountAfterNoOverlap,
+      storageAfterNoOverlap,
     };
   });
 
   expect(setup.storageBeforeAnyEdit).toBe("tiled");
   expect(setup.maskKind).toBe("mask");
   expect(setup.maskDims).toEqual({ width: 1500, height: 1100 });
+  expect(setup.maskStorage).toBe("tiled");
   expect(setup.controlKind).toBe("control");
   expect(setup.controlDims).toEqual({ width: 1500, height: 1100 });
+  expect(setup.controlStorage).toBe("tiled");
 
   // Points span all four tiles, inside vs. outside the {600,400,300,300} fill rect.
   const points: Array<[number, number]> = [
@@ -705,16 +754,16 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   ]);
 
   expect(setup.clipped).toBe(true);
-  expect(setup.afterClip?.storage).toBeUndefined();
-  expect(setup.afterClip?.width).toBeLessThan(1500);
-  expect(setup.afterClip?.height).toBeLessThan(1100);
+  expect(setup.afterClip?.storage).toBe("tiled");
+  expect(setup.tileCountAfterClip).toBe(2);
   expect(setup.afterClipUndo?.storage).toBe("tiled");
-  expect(setup.afterClipUndo?.width).toBe(1500);
-  expect(setup.afterClipUndo?.height).toBe(1100);
   expect(setup.tileCountAfterClipUndo).toBe(4);
-  expect(setup.afterClipRedo?.storage).toBeUndefined();
-  expect(setup.afterClipRedo?.width).toBe(setup.afterClip?.width);
-  expect(setup.afterClipRedo?.height).toBe(setup.afterClip?.height);
+  expect(setup.afterClipRedo?.storage).toBe("tiled");
+  expect(setup.tileCountAfterClipRedo).toBe(2);
+  expect(await samplePixels(page, setup.afterClipUrl, [[1000, 350]])).toEqual([[0, 255, 0, 255]]);
+  expect(setup.noOverlapClipped).toBe(false);
+  expect(setup.tileCountAfterNoOverlap).toBe(2);
+  expect(setup.storageAfterNoOverlap).toBe("tiled");
 });
 
 test("brush and eraser strokes paint and undo/redo correctly on a tiled raster layer", async ({
@@ -890,9 +939,7 @@ test("blank layers and generated-Apply images ingest through the tiled surface",
   expect(result.hasMonolithicGeneratedTexture).toBe(false);
 });
 
-test("generated tiled rasters stay below their Mask and ControlNet sections", async ({
-  page,
-}) => {
+test("generated tiled rasters stay below their Mask and ControlNet sections", async ({ page }) => {
   const order = await page.evaluate(async () => {
     type AppWithTree = NonNullable<
       ReturnType<NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]>
@@ -1047,4 +1094,64 @@ test("merging visible layers composites chunk-by-chunk into a tiled surface, wit
     );
     expect(await hasExactColor(page, url, [0, 255, 0])).toBe(false);
   }
+});
+
+test("merging layers keeps every layer's content even when the boundary box sits elsewhere", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+      getActiveUltraPaintApp(): ReturnType<
+        NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]
+      > & {
+        mergeVisibleLayersToNewLayer(): string;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // Three 100x100 boxes stacked 150px apart, each painted onto its own
+    // layer by moving the boundary box to that box's slot before filling.
+    const slots: Array<{ y: number; color: string }> = [
+      { y: 0, color: "#ff0000" },
+      { y: 150, color: "#00ff00" },
+      { y: 300, color: "#0000ff" },
+    ];
+    for (const slot of slots) {
+      hook!.layerStore.setBoundaryBox({ x: 0, y: slot.y, width: 100, height: 100 });
+      const id = await app.addBlankLayer();
+      hook!.layerStore.setSelectedLayerId(id);
+      hook!.paintToolStore.setBrushSettings({ color: slot.color, opacity: 1 });
+      app.fillSelectedLayer();
+    }
+
+    // Move the boundary box completely off of the painted content before merging.
+    hook!.layerStore.setBoundaryBox({ x: 5000, y: 5000, width: 50, height: 50 });
+
+    const mergedId = app.mergeVisibleLayersToNewLayer();
+    const mergedLayer = hook!.layerStore.document.layers.find((l) => l.id === mergedId);
+    const mergedUrl = app.layerSourceDataURL(mergedId)!;
+
+    return { transform: mergedLayer?.transform, mergedUrl };
+  });
+
+  // Content starts at document (0,0) (box 1's top-left), so merged-layer-local
+  // coordinates line up with document coordinates.
+  expect(result.transform?.x).toBe(0);
+  expect(result.transform?.y).toBe(0);
+
+  const points: Array<[number, number]> = [
+    [50, 50], // inside box 1
+    [50, 200], // inside box 2
+    [50, 350], // inside box 3
+    [50, 125], // gap between box 1 and box 2 -- should stay transparent
+  ];
+  const [red, green, blue, gap] = await samplePixels(page, result.mergedUrl, points);
+  expect(red).toEqual([255, 0, 0, 255]);
+  expect(green).toEqual([0, 255, 0, 255]);
+  expect(blue).toEqual([0, 0, 255, 255]);
+  expect(gap?.[3]).toBe(0);
 });

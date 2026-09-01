@@ -95,6 +95,8 @@ export class TileEditTransaction {
 
   /** @internal */ boundsToInclude: PixelBounds | null = null;
 
+  /** @internal */ boundsOverride: PixelBounds | null | undefined = undefined;
+
   /** @internal */ active = true;
 
   /** @internal */
@@ -106,6 +108,11 @@ export class TileEditTransaction {
   /** Explicitly expand logical potential-content bounds on successful commit. */
   public includeBounds(bounds: PixelBounds): void {
     this.owner.includeTransactionBounds(this, bounds);
+  }
+
+  /** Replace logical bounds on successful commit; unlike includeBounds(), this may shrink or clear them. */
+  public replaceBounds(bounds: PixelBounds | null): void {
+    this.owner.replaceTransactionBounds(this, bounds);
   }
 
   public commit(): TileEditDelta {
@@ -229,6 +236,26 @@ export class TiledRasterCanvas {
     }
   }
 
+  /** Remove one allocated tile as part of an edit transaction. */
+  public removeTile(coord: TileCoord, transaction: TileEditTransaction): void {
+    this.assertAlive();
+    transaction.assertOwner(this);
+    const key = this.grid.key(coord);
+    const tile = this.#tiles.get(key);
+    if (!tile) return;
+
+    if (!transaction.beforeStates.has(key)) {
+      // Transfer the live target into history: unlike an in-place edit, this
+      // target will no longer be mutated after removal.
+      transaction.beforeStates.set(key, { coord: { ...coord }, snapshot: tile.target });
+    } else {
+      // A prior in-place snapshot already owns the before-state; this target
+      // has become orphaned when the map entry is removed.
+      tile.target.destroy(true);
+    }
+    this.#tiles.delete(key);
+  }
+
   public subscribe(fn: (event: TileStructureEvent) => void): () => void {
     this.assertAlive();
     this.listeners.add(fn);
@@ -268,12 +295,25 @@ export class TiledRasterCanvas {
   }
 
   /** @internal */
+  public replaceTransactionBounds(
+    transaction: TileEditTransaction,
+    bounds: PixelBounds | null,
+  ): void {
+    this.assertAlive();
+    transaction.assertOwner(this);
+    if (bounds) this.grid.rangeFor(bounds);
+    transaction.boundsOverride = bounds ? { ...bounds } : null;
+  }
+
+  /** @internal */
   public commitTransaction(transaction: TileEditTransaction): TileEditDelta {
     this.assertAlive();
     transaction.assertOwner(this);
 
     const boundsBefore = this.bounds;
-    if (transaction.boundsToInclude) {
+    if (transaction.boundsOverride !== undefined) {
+      this.logicalBounds = transaction.boundsOverride ? { ...transaction.boundsOverride } : null;
+    } else if (transaction.boundsToInclude) {
       this.logicalBounds = this.logicalBounds
         ? unionBounds(this.logicalBounds, transaction.boundsToInclude)
         : { ...transaction.boundsToInclude };
@@ -285,14 +325,20 @@ export class TiledRasterCanvas {
     const delta = new TileEditDelta(this, transaction.label, boundsBefore, beforeStates);
 
     for (const state of beforeStates) {
-      if (state.snapshot !== null) continue;
       const tile = this.#tiles.get(this.grid.key(state.coord));
-      if (tile) {
+      if (state.snapshot === null && tile) {
         this.emit({
           type: "added",
           coord: { ...tile.coord },
           target: tile.target,
           previousTarget: null,
+        });
+      } else if (state.snapshot !== null && !tile) {
+        this.emit({
+          type: "removed",
+          coord: { ...state.coord },
+          target: null,
+          previousTarget: state.snapshot,
         });
       }
     }
@@ -363,8 +409,12 @@ export class TiledRasterCanvas {
         }
         continue;
       }
-      if (tile) this.copyTextureInto(state.snapshot, tile.target);
-      state.snapshot.destroy(true);
+      if (tile) {
+        this.copyTextureInto(state.snapshot, tile.target);
+        state.snapshot.destroy(true);
+      } else {
+        this.#tiles.set(key, { coord: { ...state.coord }, target: state.snapshot });
+      }
     }
 
     transaction.active = false;

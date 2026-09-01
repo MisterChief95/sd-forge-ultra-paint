@@ -475,7 +475,7 @@
       </div>
     </Accordion>
 
-    <Accordion title="Inpainting">
+    <Accordion title="Composition">
       <div class="p-2">
         <InpaintControls
           maskBlur={generationSettingsStore.maskBlur}

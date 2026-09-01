@@ -34,8 +34,7 @@ from PIL import Image
 from modules import scripts
 from ultra_paint.mask_ring import blur_ring, compute_ring, scale_edge_size
 
-
-COHERENCE_STEPS = 6
+COHERENCE_STEPS_FRACTION = 0.25  # of the main pass's step count
 COHERENCE_DENOISE_STRENGTH = 0.35
 DEFAULT_EDGE_SIZE = 32
 
@@ -56,6 +55,7 @@ class FastCoherencePass(scripts.Script):
         if not getattr(p, "ultra_paint_fast_coherence_enabled", False):
             return
 
+        # TODO: Allow masking + outpainting
         mask_for_overlay = getattr(p, "mask_for_overlay", None)
         if mask_for_overlay is None:
             return  # not an inpaint job
@@ -115,6 +115,8 @@ class FastCoherencePass(scripts.Script):
         # p.c/p.uc/p.rng/p.image_conditioning are reused completely
         # unmodified -- same shape as the main pass, so no re-derivation
         # needed (see module docstring).
+        coherence_steps = max(2, round(p.steps * COHERENCE_STEPS_FRACTION))
+
         saved = (p.mask, p.nmask, p.denoising_strength)
         p.mask, p.nmask = keep_mask, ring_mask
         p.denoising_strength = COHERENCE_DENOISE_STRENGTH
@@ -125,7 +127,7 @@ class FastCoherencePass(scripts.Script):
                 torch.randn_like(samples),
                 p.c,
                 p.uc,
-                steps=COHERENCE_STEPS,
+                steps=coherence_steps,
                 image_conditioning=getattr(p, "image_conditioning", None),
             )
         finally:

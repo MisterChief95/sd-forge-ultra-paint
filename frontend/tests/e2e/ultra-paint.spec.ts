@@ -17,7 +17,7 @@ interface TestLayer {
   kind?: "raster" | "group" | "mask" | "control";
   color?: string;
   visible?: boolean;
-  image?: { source: string };
+  image?: { source: string; storage?: "tiled" };
   transform: { x: number; y: number };
 }
 
@@ -237,7 +237,7 @@ test("smoke: app loads, mounts its canvas, and logs no errors", async ({ page })
   expect(errors).toEqual([]);
 });
 
-test("pasting an image into the focused canvas adds a layer without consuming prompt pastes", async ({
+test("pasting an image into the focused canvas creates tiled raster, mask, and control layers without consuming prompt pastes", async ({
   page,
 }) => {
   await routeOptions(page);
@@ -278,6 +278,45 @@ test("pasting an image into the focused canvas adds a layer without consuming pr
   await page.getByRole("menuitem", { name: "Raster Layer", exact: true }).click();
   await expect(page.locator("[data-layer-id]")).toHaveCount(1);
   await expect(page.locator("[data-layer-id]")).toContainText("Pasted image.png");
+
+  for (const kind of ["Mask Layer", "Control Layer"] as const) {
+    await page.evaluate(() => {
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        ),
+        (char) => char.charCodeAt(0),
+      );
+      const data = new DataTransfer();
+      data.items.add(new File([png], "Pasted image.png", { type: "image/png" }));
+      const canvas = document.querySelector<HTMLCanvasElement>("#upaint-root canvas");
+      if (!canvas) throw new Error("Paste target is unavailable");
+      canvas.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: data,
+        }),
+      );
+    });
+    await page.getByRole("menuitem", { name: kind, exact: true }).click();
+  }
+
+  await expect(page.locator("[data-layer-id]")).toHaveCount(3);
+  expect(
+    await page.evaluate(() =>
+      (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.map((layer) => ({
+        kind: layer.kind,
+        storage: layer.image?.storage,
+      })),
+    ),
+  ).toEqual(
+    expect.arrayContaining([
+      { kind: "raster", storage: "tiled" },
+      { kind: "mask", storage: "tiled" },
+      { kind: "control", storage: "tiled" },
+    ]),
+  );
 });
 
 test("viewport zoom control reflects wheel zoom and resets to 100%", async ({ page }) => {
@@ -785,6 +824,15 @@ test("Shift+V inverts mask coverage inside the boundary box and clears outside i
     if (!layer?.id) throw new Error("Mask test layer is unavailable");
     return layer.id;
   });
+  expect(
+    await page.evaluate(
+      (id) =>
+        (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+          (layer) => layer.id === id,
+        )?.image?.storage,
+      maskLayerId,
+    ),
+  ).toBe("tiled");
 
   // Center (inside the boundary box shrunk below) is painted; a far corner
   // (outside it) is left untouched -- a discriminating pair: a buggy
@@ -810,6 +858,11 @@ test("Shift+V inverts mask coverage inside the boundary box and clears outside i
   await page.keyboard.press("Control+Z");
   await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
   await expect.poll(() => readLayerAlpha(page, maskLayerId, 10, 10)).toBe(0);
+
+  await page.keyboard.press("Shift+C");
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(0);
+  await page.keyboard.press("Control+Z");
+  await expect.poll(() => readLayerAlpha(page, maskLayerId, 128, 128)).toBe(255);
 });
 
 test("locked layers reject destructive pixel actions", async ({ page }) => {
@@ -2150,6 +2203,15 @@ test("Filter mode bakes a preprocessor result into a control layer, undoably, an
     if (!app || !layer?.id) throw new Error("Blank raster layer is unavailable");
     return app.convertLayerToControl(layer.id);
   });
+  expect(
+    await page.evaluate(
+      (id) =>
+        (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
+          (layer) => layer.id === id,
+        )?.image?.storage,
+      controlLayerId,
+    ),
+  ).toBe("tiled");
 
   const originalDataUrl = await page.evaluate(
     (id) =>

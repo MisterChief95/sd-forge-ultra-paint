@@ -81,7 +81,21 @@ test("uploaded and generated images use a bounded paintable pixel backing", asyn
   });
 
   expect(dimensions).toEqual([
-    { source: "upload", width: 1, height: 1, storage: "tiled" },
-    { source: "generated", width: 1, height: 1, storage: "tiled" },
+    {
+      source: "upload",
+      width: 1,
+      height: 1,
+      storage: "tiled",
+      tileSize: 1024,
+      bounds: { x: 0, y: 0, width: 1, height: 1 },
+    },
+    {
+      source: "generated",
+      width: 1,
+      height: 1,
+      storage: "tiled",
+      tileSize: 1024,
+      bounds: { x: 0, y: 0, width: 1, height: 1 },
+    },
   ]);
 });

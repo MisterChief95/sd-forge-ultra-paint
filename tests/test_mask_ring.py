@@ -1,6 +1,6 @@
 from PIL import Image
 
-from ultra_paint.mask_ring import blur_ring, feathered_alpha, scale_edge_size
+from ultra_paint.mask_ring import blur_ring, dilate_then_blur, scale_edge_size
 
 
 def test_scale_edge_size_converts_canvas_units_to_mask_units():
@@ -29,26 +29,25 @@ def test_blur_ring_zero_blur_is_a_no_op():
     assert blur_ring(mask, 0) is mask
 
 
-def test_feathered_alpha_has_no_hard_step_at_the_source_edge():
-    """Blurring the hard dilated mask and clipping to its own footprint
-    chops the Gaussian falloff mid-curve into a visible jump right at the
-    mask's original edge. `feathered_alpha` blurs *first* (smooth on both
-    sides) then dilates the already-smooth result outward -- grayscale
-    dilation of a monotonic ramp just translates it, so the transition
-    stays continuous the whole way from 0 to ~opaque."""
+def test_dilate_then_blur_dilates_before_blurring():
+    """The paste-back alpha ring dilates the hard mask boundary outward
+    *first*, then applies a single blur pass. Blurring an already-blurred
+    mask a second time (or blurring first and dilating the soft result
+    afterward) both widen the semi-transparent band past what `mask_blur`
+    asks for, letting the wrong side visibly show through at the seam."""
     mask = Image.new("L", (128, 128), 0)
     mask.paste(255, (32, 32, 96, 96))
 
-    feathered = feathered_alpha(mask, 16, 8)
+    result = dilate_then_blur(mask, 16, 8)
 
-    row = [feathered.getpixel((x, 64)) for x in range(10, 40)]
+    row = [result.getpixel((x, 64)) for x in range(10, 40)]
     assert row == sorted(row)  # monotonic, no discontinuity
-    assert max(b - a for a, b in zip(row, row[1:])) <= 15  # no single-pixel jump
-    assert feathered.getpixel((0, 0)) == 0  # far away: untouched
-    assert feathered.getpixel((64, 64)) >= 254  # deep interior: still ~opaque
+    assert result.getpixel((0, 0)) == 0  # far away: untouched
+    assert result.getpixel((64, 64)) >= 254  # deep interior: still ~opaque
 
-    # Dilating a blurred ramp is exactly a translation by the dilation
-    # radius (max-within-window on a monotonic curve == the curve shifted).
-    half = 8  # edge_size=16 -> half=8, matching compute_ring's edge_size/2
-    plain_blur = blur_ring(mask, 8)
-    assert feathered.getpixel((31, 64)) == plain_blur.getpixel((31 + half, 64))
+    # Exactly one blur pass over the hard-dilated mask -- nothing pre-softened.
+    from ultra_paint.mask_ring import compute_ring
+
+    dilated_hard, _, _ = compute_ring(mask, 16)
+    expected = blur_ring(dilated_hard, 8)
+    assert list(result.getdata()) == list(expected.getdata())

@@ -298,6 +298,10 @@ export class StrokeController {
     const isPaintable =
       (selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control") &&
       !selected.locked;
+    if (this.tools.getState().activeTool === "transform") {
+      this.canvas.style.cursor = selected && !selected.locked ? "move" : "not-allowed";
+      return;
+    }
     // The BrushCursorOverlay draws a size-accurate ring for this case;
     // the system cursor would just be a redundant second indicator.
     this.canvas.style.cursor = isPaintTool ? (isPaintable ? "none" : "not-allowed") : "";

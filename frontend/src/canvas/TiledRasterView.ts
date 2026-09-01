@@ -28,9 +28,6 @@ export class TiledRasterView {
   /** Debug-only outline over each currently-attached tile; null while hidden. */
   private debugBorders: Graphics | null = null;
 
-  /** Sample mode applied to every tile texture, current and future. */
-  private scaleMode: "linear" | "nearest" = "linear";
-
   private destroyed = false;
 
   constructor(
@@ -49,6 +46,11 @@ export class TiledRasterView {
 
   public get visibleSpriteCount(): number {
     return this.#visibleKeys.size;
+  }
+
+  /** Current per-tile display filters (mask hatch/control tint), or null. */
+  public get currentFilters(): readonly Filter[] | null {
+    return this.filters;
   }
 
   /**
@@ -104,15 +106,6 @@ export class TiledRasterView {
     this.redrawDebugBorders();
   }
 
-  /** Toggle smooth (linear) vs. crisp (nearest) sampling for every tile, current and future. */
-  public setAntialiased(enabled: boolean): void {
-    if (this.destroyed) return;
-    this.scaleMode = enabled ? "linear" : "nearest";
-    for (const sprite of this.#sprites.values()) {
-      sprite.texture.source.scaleMode = this.scaleMode;
-    }
-  }
-
   /** Apply display-only filters per tile, avoiding one sparse-span filter target. */
   public setFilters(filters: readonly Filter[] | null): void {
     if (this.destroyed) return;
@@ -157,7 +150,6 @@ export class TiledRasterView {
 
     if (existing) {
       existing.texture = event.target;
-      existing.texture.source.scaleMode = this.scaleMode;
       return;
     }
     this.add({
@@ -180,7 +172,6 @@ export class TiledRasterView {
       x: tile.originX,
       y: tile.originY,
     });
-    sprite.texture.source.scaleMode = this.scaleMode;
     if (this.filters) sprite.filters = [...this.filters];
     this.#sprites.set(key, sprite);
     if (this.isVisible(tile.coord)) {

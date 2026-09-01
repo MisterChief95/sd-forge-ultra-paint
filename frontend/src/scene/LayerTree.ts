@@ -35,9 +35,6 @@ export class LayerTree {
   /** Applied to every current node and every node created afterward. */
   private tileDebugBordersVisible = false;
 
-  /** Applied to every current node and every node created afterward. */
-  private tileAntialiasingEnabled = true;
-
   private destroyed = false;
 
   constructor(store: LayerStore) {
@@ -64,12 +61,6 @@ export class LayerTree {
   public setTileDebugBorders(visible: boolean): void {
     this.tileDebugBordersVisible = visible;
     for (const node of this.nodes.values()) node.setTileDebugBorders(visible);
-  }
-
-  /** Toggle smooth vs. crisp tile sampling, now and going forward. */
-  public setTileAntialiasing(enabled: boolean): void {
-    this.tileAntialiasingEnabled = enabled;
-    for (const node of this.nodes.values()) node.setTileAntialiasing(enabled);
   }
 
   /**
@@ -124,7 +115,6 @@ export class LayerTree {
       }
       const node = new LayerNode(layer, texture);
       if (this.tileDebugBordersVisible) node.setTileDebugBorders(true);
-      if (!this.tileAntialiasingEnabled) node.setTileAntialiasing(false);
       this.nodes.set(layer.id, node);
     }
 

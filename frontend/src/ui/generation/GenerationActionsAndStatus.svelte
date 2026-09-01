@@ -80,7 +80,7 @@
 
       <div
         class={[
-          "absolute right-0 top-full z-40 mt-1 min-w-40 flex-col overflow-hidden border bg-(--upaint-surface) p-1 shadow-lg",
+          "absolute right-0 top-full z-40 min-w-40 flex-col overflow-hidden border bg-(--upaint-surface) p-1 shadow-lg",
           menuOpen ? "flex" : "hidden group-hover:flex group-focus-within:flex",
         ]}
         style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"

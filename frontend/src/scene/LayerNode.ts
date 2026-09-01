@@ -53,9 +53,6 @@ export class LayerNode {
   /** Persists across `setTiledSurface()` swaps so a repaint doesn't drop the debug outline. */
   private tileDebugBordersVisible = false;
 
-  /** Persists across `setTiledSurface()` swaps so a repaint doesn't drop the sample mode. */
-  private tileAntialiasingEnabled = true;
-
   private destroyed = false;
 
   constructor(layer: Layer, pixels?: Texture | TiledRasterCanvas) {
@@ -73,7 +70,6 @@ export class LayerNode {
         }
         if (pixels instanceof TiledRasterCanvas) {
           this.tiledView = new TiledRasterView(pixels, `tiles:${layer.id}`);
-          this.tiledView.setAntialiased(this.tileAntialiasingEnabled);
           this.container.addChild(this.tiledView.container);
         } else {
           this.sprite = new Sprite({
@@ -194,7 +190,6 @@ export class LayerNode {
     this.tiledView = new TiledRasterView(surface, `tiles:${this.id}`);
     this.tiledView.container.visible = !this.previewOverride;
     this.tiledView.setDebugBorders(this.tileDebugBordersVisible);
-    this.tiledView.setAntialiased(this.tileAntialiasingEnabled);
     this.container.addChild(this.tiledView.container);
     if (this.lastLayer && !this.previewOverride) this.applyDisplayTreatment(this.lastLayer);
   }
@@ -209,16 +204,20 @@ export class LayerNode {
     this.tiledView?.setTileHidden(coord, hidden);
   }
 
+  /**
+   * Current per-tile display filters (mask hatch/control tint), or null.
+   * A live tiled stroke's overlay sprite isn't one of the persistent tile
+   * sprites `setPersistentFilters()` reaches, so it must apply this itself
+   * to match the mask/control display treatment during the stroke.
+   */
+  public get tileDisplayFilters(): readonly Filter[] | null {
+    return this.tiledView?.currentFilters ?? null;
+  }
+
   /** Debug-only: outline this layer's tiles in green. No-op for non-tiled layers. */
   public setTileDebugBorders(visible: boolean): void {
     this.tileDebugBordersVisible = visible;
     this.tiledView?.setDebugBorders(visible);
-  }
-
-  /** Toggle smooth vs. crisp tile sampling. No-op for non-tiled layers. */
-  public setTileAntialiasing(enabled: boolean): void {
-    this.tileAntialiasingEnabled = enabled;
-    this.tiledView?.setAntialiased(enabled);
   }
 
   /** Temporarily display an undecorated filter result without changing store-owned pixels. */
