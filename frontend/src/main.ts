@@ -63,7 +63,13 @@ if (import.meta.env.DEV) {
           blendMode: "normal",
           transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 },
           parentId: null,
-          image: { source: "paint", width: 0, height: 0 },
+          image: {
+            source: "paint",
+            width: 0,
+            height: 0,
+            tileSize: surface.tileSize,
+            bounds: surface.bounds,
+          },
         },
         surface,
       );

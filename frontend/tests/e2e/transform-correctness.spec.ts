@@ -105,7 +105,7 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
     const hook = (window as TestWindow).__ultraPaintTest as {
       getActiveUltraPaintApp(): {
         getStore(): {
-          getLayer(id: string): { transform: object; image: { storage?: "tiled" } } | undefined;
+          getLayer(id: string): { transform: object; image: object } | undefined;
         } | null;
         undo(): void;
         redo(): void;
@@ -172,10 +172,6 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
       afterRedoImage,
       expectedBoundaryBox,
       fittedBoundaryBox: { ...hook.layerStore.document.boundaryBox },
-      convertedStorage: [
-        app?.getStore().getLayer(maskId)?.image.storage,
-        app?.getStore().getLayer(controlId)?.image.storage,
-      ],
       originalNegativePoint,
       maskNegativePoint: maskNode.container.toGlobal(negativeLocalPoint),
       controlNegativePoint: controlNode.container.toGlobal(negativeLocalPoint),
@@ -197,7 +193,6 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
   expect(result.afterPaintImage).toMatchObject({
     width: 2048,
     height: 2048,
-    storage: "tiled",
     tileSize: 1024,
     bounds: { x: -1024, y: -1024, width: 2048, height: 2048 },
   });
@@ -212,7 +207,6 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
     bounds: { x: -1024, y: -1024, width: 2048, height: 2048 },
   });
   expect(result.fittedBoundaryBox).toEqual(result.expectedBoundaryBox);
-  expect(result.convertedStorage).toEqual(["tiled", "tiled"]);
   expect(result.maskNegativePoint.x).toBeCloseTo(result.originalNegativePoint.x, 5);
   expect(result.maskNegativePoint.y).toBeCloseTo(result.originalNegativePoint.y, 5);
   expect(result.controlNegativePoint.x).toBeCloseTo(result.originalNegativePoint.x, 5);

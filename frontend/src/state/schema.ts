@@ -134,28 +134,19 @@ export type PaintLayer = RasterLayer | MaskLayer | ControlLayer;
 
 /**
  * Metadata about a raster layer's pixels. Deliberately does NOT carry a
- * `RenderTexture` handle -- look the texture up via `LayerStore.getTexture(id)`.
+ * `RenderTexture` handle -- look the surface up via `LayerStore.getTiledSurface(id)`.
  */
 export interface ImageRef {
   source: "upload" | "generated" | "paint";
   width: number;
   height: number;
-  /** Present when the layer's pixels live in a sparse `TiledRasterCanvas` rather than one `RenderTexture`. */
-  storage?: "tiled";
-  /** Tiled backing's immutable tile edge length; omitted for monolithic textures. */
-  tileSize?: number;
+  /** Tiled backing's immutable tile edge length. */
+  tileSize: number;
   /**
    * Layer-local logical bounds for tiled pixels. Unlike width/height, this
    * retains negative origins after a layer grows up or left of local (0, 0).
    * `null` represents a truly empty tiled layer.
    */
-  bounds?: PixelBounds | null;
-}
-
-/** The fully populated metadata shape for a `TiledRasterCanvas`-backed layer. */
-export interface TiledImageRef extends ImageRef {
-  storage: "tiled";
-  tileSize: number;
   bounds: PixelBounds | null;
 }
 

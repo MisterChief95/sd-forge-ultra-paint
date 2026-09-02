@@ -17,7 +17,7 @@ interface TestLayer {
   kind?: "raster" | "group" | "mask" | "control";
   color?: string;
   visible?: boolean;
-  image?: { source: string; storage?: "tiled" };
+  image?: { source: string };
   transform: { x: number; y: number };
 }
 
@@ -305,18 +305,11 @@ test("pasting an image into the focused canvas creates tiled raster, mask, and c
   await expect(page.locator("[data-layer-id]")).toHaveCount(3);
   expect(
     await page.evaluate(() =>
-      (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.map((layer) => ({
-        kind: layer.kind,
-        storage: layer.image?.storage,
-      })),
+      (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.map(
+        (layer) => layer.kind,
+      ),
     ),
-  ).toEqual(
-    expect.arrayContaining([
-      { kind: "raster", storage: "tiled" },
-      { kind: "mask", storage: "tiled" },
-      { kind: "control", storage: "tiled" },
-    ]),
-  );
+  ).toEqual(expect.arrayContaining(["raster", "mask", "control"]));
 });
 
 test("viewport zoom control reflects wheel zoom and resets to 100%", async ({ page }) => {
@@ -824,16 +817,6 @@ test("Shift+V inverts mask coverage inside the boundary box and clears outside i
     if (!layer?.id) throw new Error("Mask test layer is unavailable");
     return layer.id;
   });
-  expect(
-    await page.evaluate(
-      (id) =>
-        (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
-          (layer) => layer.id === id,
-        )?.image?.storage,
-      maskLayerId,
-    ),
-  ).toBe("tiled");
-
   // Center (inside the boundary box shrunk below) is painted; a far corner
   // (outside it) is left untouched -- a discriminating pair: a buggy
   // unclipped invert would flip the corner too, and a clip-but-no-invert bug
@@ -2203,16 +2186,6 @@ test("Filter mode bakes a preprocessor result into a control layer, undoably, an
     if (!app || !layer?.id) throw new Error("Blank raster layer is unavailable");
     return app.convertLayerToControl(layer.id);
   });
-  expect(
-    await page.evaluate(
-      (id) =>
-        (window as TestWindow).__ultraPaintTest?.layerStore.document.layers.find(
-          (layer) => layer.id === id,
-        )?.image?.storage,
-      controlLayerId,
-    ),
-  ).toBe("tiled");
-
   const originalDataUrl = await page.evaluate(
     (id) =>
       (window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()?.layerSourceDataURL(id) ??

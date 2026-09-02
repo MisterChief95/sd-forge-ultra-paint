@@ -63,7 +63,7 @@ type TestLayerNode = {
 type TestLayer = {
   id: string;
   kind: string;
-  image: { storage?: "tiled"; width: number; height: number };
+  image: { width: number; height: number };
   transform: { x: number; y: number; scaleX: number; scaleY: number; rotation: number };
 };
 
@@ -94,7 +94,6 @@ type TestWindow = Window & {
       setTransform(id: string, value: TestLayer["transform"]): void;
       document: { layers: TestLayer[] };
       getTiledSurface(id: string): TestSurface | undefined;
-      getTexture(id: string): TestTarget | undefined;
       removeLayer(id: string): void;
     };
     createTiledRasterCanvas(tileSize?: number): TestSurface;
@@ -638,11 +637,8 @@ test("uploading an image spanning multiple tiles ingests through the tiled surfa
     );
 
     const id = await app.addImageFromFile(new File([blob], "quadrants.png", { type: blob.type }));
-    const layer = hook.layerStore.document.layers.find((candidate) => candidate.id === id);
     const surface = hook.layerStore.getTiledSurface(id);
-    const hasMonolithicTexture = hook.layerStore.getTexture(id) !== undefined;
     if (!surface) throw new Error("uploaded layer has no tiled surface");
-    const imageStorage = layer?.image.storage;
     const tileCoords = surface.diagnosticTileCoords();
 
     app.resizeBoundaryBox(1500, 1100);
@@ -658,8 +654,6 @@ test("uploading an image spanning multiple tiles ingests through the tiled surfa
     const survivedRemoval = hook.layerStore.getTiledSurface(id) !== undefined;
 
     return {
-      imageStorage,
-      hasMonolithicTexture,
       tileCoords,
       dataUrl,
       layerCountAfterUndo,
@@ -668,8 +662,6 @@ test("uploading an image spanning multiple tiles ingests through the tiled surfa
     };
   });
 
-  expect(result.imageStorage).toBe("tiled");
-  expect(result.hasMonolithicTexture).toBe(false);
   expect(result.tileCoords).toEqual([
     { x: 0, y: 0 },
     { x: 1, y: 0 },
@@ -775,7 +767,6 @@ test("pasting a multi-tile image as a mask converts tile-by-tile, straight off t
     return {
       kind: maskLayer?.kind,
       dims: { width: maskLayer?.image.width, height: maskLayer?.image.height },
-      storage: maskLayer?.image.storage,
       transform: maskLayer?.transform,
       maskUrl,
     };
@@ -783,7 +774,6 @@ test("pasting a multi-tile image as a mask converts tile-by-tile, straight off t
 
   expect(setup.kind).toBe("mask");
   expect(setup.dims).toEqual({ width: 1500, height: 1100 });
-  expect(setup.storage).toBe("tiled");
   expect(setup.transform).toEqual({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
 
   const quadrantPoints: Array<[number, number]> = [
@@ -832,8 +822,6 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
     );
     const id = await app.addImageFromFile(new File([blob], "quadrants.png", { type: blob.type }));
-    const storageBeforeAnyEdit = hook!.layerStore.document.layers.find((l) => l.id === id)?.image
-      .storage;
     const sourceTransform = {
       ...hook!.layerStore.document.layers.find((l) => l.id === id)!.transform,
     };
@@ -862,62 +850,45 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
     // boundary at y=1024, so the entire bottom tile row falls fully outside it.
     hook!.layerStore.setBoundaryBox({ x: 200, y: 150, width: 1100, height: 800 });
     const clipped = app.clipLayerToBoundaryBox(id);
-    // `.image` is mutated in place by undo/redo below, so snapshot each step
-    // into a plain object instead of keeping a live reference to it.
-    const afterClip = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
     const tileCountAfterClip = hook!.layerStore.getTiledSurface(id)?.tileCount;
     const afterClipUrl = app.layerSourceDataURL(id)!;
     app.undo();
-    const afterClipUndo = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
     const tileCountAfterClipUndo = hook!.layerStore.getTiledSurface(id)?.tileCount;
     app.redo();
-    const afterClipRedo = { ...hook!.layerStore.document.layers.find((l) => l.id === id)?.image };
     const tileCountAfterClipRedo = hook!.layerStore.getTiledSurface(id)?.tileCount;
 
     hook!.layerStore.setBoundaryBox({ x: 2000, y: 2000, width: 100, height: 100 });
     const noOverlapClipped = app.clipLayerToBoundaryBox(id);
     const tileCountAfterNoOverlap = hook!.layerStore.getTiledSurface(id)?.tileCount;
-    const storageAfterNoOverlap = hook!.layerStore.document.layers.find((l) => l.id === id)?.image
-      .storage;
 
     return {
-      storageBeforeAnyEdit,
       sourceTransform,
       maskKind: maskLayer?.kind,
       maskDims: { width: maskLayer?.image.width, height: maskLayer?.image.height },
-      maskStorage: maskLayer?.image.storage,
       maskTransform: maskLayer?.transform,
       maskUrl,
       controlKind: controlLayer?.kind,
       controlDims: { width: controlLayer?.image.width, height: controlLayer?.image.height },
-      controlStorage: controlLayer?.image.storage,
       controlTransform: controlLayer?.transform,
       controlUrl,
       afterFillUrl,
       afterFillUndoUrl,
       afterFillRedoUrl,
       clipped,
-      afterClip,
       tileCountAfterClip,
       afterClipUrl,
-      afterClipUndo,
       tileCountAfterClipUndo,
-      afterClipRedo,
       tileCountAfterClipRedo,
       noOverlapClipped,
       tileCountAfterNoOverlap,
-      storageAfterNoOverlap,
     };
   });
 
-  expect(setup.storageBeforeAnyEdit).toBe("tiled");
   expect(setup.maskKind).toBe("mask");
   expect(setup.maskDims).toEqual({ width: 1500, height: 1100 });
-  expect(setup.maskStorage).toBe("tiled");
   expect(setup.maskTransform).toEqual(setup.sourceTransform);
   expect(setup.controlKind).toBe("control");
   expect(setup.controlDims).toEqual({ width: 1500, height: 1100 });
-  expect(setup.controlStorage).toBe("tiled");
   expect(setup.controlTransform).toEqual(setup.sourceTransform);
 
   // A per-tile luminance conversion of solid red/green/blue/yellow quadrants
@@ -979,16 +950,12 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   ]);
 
   expect(setup.clipped).toBe(true);
-  expect(setup.afterClip?.storage).toBe("tiled");
   expect(setup.tileCountAfterClip).toBe(2);
-  expect(setup.afterClipUndo?.storage).toBe("tiled");
   expect(setup.tileCountAfterClipUndo).toBe(4);
-  expect(setup.afterClipRedo?.storage).toBe("tiled");
   expect(setup.tileCountAfterClipRedo).toBe(2);
   expect(await samplePixels(page, setup.afterClipUrl, [[1000, 350]])).toEqual([[0, 255, 0, 255]]);
   expect(setup.noOverlapClipped).toBe(false);
   expect(setup.tileCountAfterNoOverlap).toBe(2);
-  expect(setup.storageAfterNoOverlap).toBe("tiled");
 });
 
 test("Clip to BBox deallocates transparent corner tiles from a rotated tiled layer", async ({
@@ -1080,7 +1047,6 @@ test("brush and eraser strokes paint and undo/redo correctly on a tiled raster l
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
     );
     const id = await app.addImageFromFile(new File([blob], "solid.png", { type: blob.type }));
-    const storage = hook!.layerStore.document.layers.find((l) => l.id === id)?.image.storage;
 
     hook!.layerStore.setSelectedLayerId(id);
     hook!.paintToolStore.setBrushSettings({
@@ -1091,10 +1057,8 @@ test("brush and eraser strokes paint and undo/redo correctly on a tiled raster l
       pressureEnabled: false,
     });
 
-    return { id, storage };
+    return { id };
   });
-
-  expect(setup.storage).toBe("tiled");
 
   // Upload auto-sizes the boundary box to the image and centers the camera on
   // it at zoom 1, so canvas-center == document/layer-local center (200, 150).
@@ -1196,28 +1160,20 @@ test("blank layers and generated-Apply images ingest through the tiled surface",
     const generatedLayer = hook.layerStore.document.layers.find((l) => l.id === generatedId);
 
     return {
-      blankStorage: blankLayer?.image.storage,
       blankDims: { width: blankLayer?.image.width, height: blankLayer?.image.height },
       blankTileCountBeforeFill,
       tileCountAfterFill,
-      hasMonolithicBlankTexture: hook.layerStore.getTexture(blankId) !== undefined,
-      generatedStorage: generatedLayer?.image.storage,
       generatedTransform: generatedLayer ? { ...generatedLayer.transform } : undefined,
       generatedDims: { width: generatedLayer?.image.width, height: generatedLayer?.image.height },
-      hasMonolithicGeneratedTexture: hook.layerStore.getTexture(generatedId) !== undefined,
     };
   });
 
-  expect(result.blankStorage).toBe("tiled");
   expect(result.blankDims).toEqual({ width: 500, height: 400 });
   expect(result.blankTileCountBeforeFill).toBe(0);
-  expect(result.hasMonolithicBlankTexture).toBe(false);
   expect(result.tileCountAfterFill).toBeGreaterThan(0);
 
-  expect(result.generatedStorage).toBe("tiled");
   expect(result.generatedDims).toEqual({ width: 120, height: 90 });
   expect(result.generatedTransform).toEqual({ x: 300, y: 200, scaleX: 1, scaleY: 1, rotation: 0 });
-  expect(result.hasMonolithicGeneratedTexture).toBe(false);
 });
 
 test("generated tiled rasters stay below their Mask and ControlNet sections", async ({ page }) => {
@@ -1332,7 +1288,6 @@ test("merging visible layers composites chunk-by-chunk into a tiled surface, wit
     app.fillSelectedLayer();
 
     const mergedId = app.mergeVisibleLayersToNewLayer();
-    const mergedLayer = hook!.layerStore.document.layers.find((l) => l.id === mergedId);
     const mergedTileCount = hook!.layerStore.getTiledSurface(mergedId)?.tileCount;
     const mergedUrl = app.layerSourceDataURL(mergedId)!;
 
@@ -1343,7 +1298,6 @@ test("merging visible layers composites chunk-by-chunk into a tiled surface, wit
     app.setTileDebugBorders(false);
 
     return {
-      storage: mergedLayer?.image.storage,
       mergedTileCount,
       mergedUrl,
       flattenedWithBordersOn,
@@ -1351,7 +1305,6 @@ test("merging visible layers composites chunk-by-chunk into a tiled surface, wit
     };
   });
 
-  expect(result.storage).toBe("tiled");
   expect(result.mergedTileCount).toBe(4);
 
   const seamAdjacentPoints: Array<[number, number]> = [
@@ -1486,7 +1439,6 @@ test("merging visible masks composites chunk-by-chunk into a tiled mask surface"
     return {
       topMaskId,
       bottomMaskId,
-      storage: mergedLayer?.image.storage,
       transform: mergedLayer?.transform,
       mergedTileCount,
       mergedUrl,
@@ -1494,7 +1446,6 @@ test("merging visible masks composites chunk-by-chunk into a tiled mask surface"
   });
 
   expect(result.topMaskId).not.toBe(result.bottomMaskId);
-  expect(result.storage).toBe("tiled");
   expect(result.transform).toEqual({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
   expect(result.mergedTileCount).toBe(4);
 

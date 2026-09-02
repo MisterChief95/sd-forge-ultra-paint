@@ -101,7 +101,7 @@ export class LayerTree {
         case "raster":
         case "mask":
         case "control":
-          texture = this.store.getPixelSurface(layer.id);
+          texture = this.store.getTiledSurface(layer.id);
           break;
         case "group":
           texture = undefined;

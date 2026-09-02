@@ -159,9 +159,8 @@ export class Compositor {
     for (let index = masks.length - 1; index >= 0; index -= 1) {
       const layer = masks[index];
       if (!layer) continue;
-      const texture = store.getTexture(layer.id);
       const surface = store.getTiledSurface(layer.id);
-      if (!texture && !surface) continue;
+      if (!surface) continue;
 
       const layerContainer = new Container({ label: `mask-export:${layer.id}` });
       const transform = layer.transform;
@@ -175,21 +174,15 @@ export class Compositor {
       filter.matrix = [0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0];
       filters.push(filter);
 
-      if (texture) {
-        const sprite = new Sprite({ texture, label: `mask-export-sprite:${layer.id}` });
-        layerContainer.filters = [filter];
-        layerContainer.addChild(sprite);
-      } else {
-        surface!.visitAll((tile) => {
-          const sprite = new Sprite({
-            texture: tile.target,
-            label: `mask-export-tile:${layer.id}:${tile.coord.x},${tile.coord.y}`,
-          });
-          sprite.position.set(tile.originX, tile.originY);
-          sprite.filters = [filter];
-          layerContainer.addChild(sprite);
+      surface.visitAll((tile) => {
+        const sprite = new Sprite({
+          texture: tile.target,
+          label: `mask-export-tile:${layer.id}:${tile.coord.x},${tile.coord.y}`,
         });
-      }
+        sprite.position.set(tile.originX, tile.originY);
+        sprite.filters = [filter];
+        layerContainer.addChild(sprite);
+      });
       root.addChild(layerContainer);
     }
 

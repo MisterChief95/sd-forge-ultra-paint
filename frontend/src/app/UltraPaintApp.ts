@@ -71,7 +71,6 @@ import type {
   LayerId,
   MaskLayer,
   RasterLayer,
-  Transform,
 } from "../state/schema";
 import { toHexColor } from "../util/color";
 import { toPixiBlendMode } from "../util/blendModes";
@@ -83,24 +82,6 @@ import { blitTexture, copyTiledSurfaceTileByTile, flattenToTexture } from "../ca
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
-
-function pointInPolygon(
-  point: { x: number; y: number },
-  polygon: readonly { x: number; y: number }[],
-): boolean {
-  let inside = false;
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
-    const from = polygon[index]!;
-    const to = polygon[previous]!;
-    if (
-      from.y > point.y !== to.y > point.y &&
-      point.x < ((to.x - from.x) * (point.y - from.y)) / (to.y - from.y) + from.x
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
 
 type BrushAdjustmentMode = "size-hardness" | "opacity";
 
@@ -298,7 +279,7 @@ export class UltraPaintApp {
       this.toolStore,
     );
     this.world.addChild(this.boundaryBoxOverlay.container);
-    const history = new UndoHistory(app, this.store, this.tree, HISTORY_LIMIT);
+    const history = new UndoHistory(this.store, HISTORY_LIMIT);
     this.history = history;
     this.transformOverlay = new TransformOverlay(
       app.canvas,
@@ -349,9 +330,9 @@ export class UltraPaintApp {
 
   /**
    * Recenter the camera if the layer being added is the document's first
-   * (i.e. `addRasterLayer` just auto-sized `boundaryBox` to it). Must be
+   * (i.e. `addRasterLayerTiled` just auto-sized `boundaryBox` to it). Must be
    * called with the layer count observed *before* the add, since
-   * `addRasterLayer` mutates `boundaryBox` synchronously and the camera
+   * `addRasterLayerTiled` mutates `boundaryBox` synchronously and the camera
    * would otherwise stay centered on the stale default box size.
    */
   private recenterIfFirstLayer(wasEmpty: boolean): void {
@@ -797,26 +778,10 @@ export class UltraPaintApp {
   private readonly beginStroke = (tool: PaintTool, layerId: LayerId): StrokeSession | null => {
     if (isDocumentMutationLocked()) return null;
     if (tool !== "brush" && tool !== "eraser") return null;
-    const history = this.history;
-    const pending = history?.beginPixelChange(layerId) ?? null;
     const settings = this.toolStore.getState().brush;
-    let session: StrokeSession | null;
-
-    try {
-      session =
-        tool === "brush"
-          ? (this.brushEngine?.beginStroke(layerId, settings) ?? null)
-          : (this.eraserEngine?.beginStroke(layerId, settings) ?? null);
-    } catch (error) {
-      if (pending) history?.discardPixelChange(pending);
-      throw error;
-    }
-
-    if (!session || !history || !pending) {
-      if (pending) history?.discardPixelChange(pending);
-      return session;
-    }
-    return new HistoryStrokeSession(session, history, pending);
+    return tool === "brush"
+      ? (this.brushEngine?.beginStroke(layerId, settings) ?? null)
+      : (this.eraserEngine?.beginStroke(layerId, settings) ?? null);
   };
 
   /**
@@ -828,18 +793,15 @@ export class UltraPaintApp {
   public getLayerThumbnail(id: LayerId, maxSize: number, maskColor?: string): string | null {
     const app = this.app;
     if (!app) return null;
-    const texture = this.store.getTexture(id);
-    const tiledSurface = texture ? undefined : this.store.getTiledSurface(id);
-    if (!texture && !tiledSurface) return null;
+    const tiledSurface = this.store.getTiledSurface(id);
+    if (!tiledSurface) return null;
 
-    const width = texture ? texture.width : (tiledSurface?.bounds?.width ?? 0);
-    const height = texture ? texture.height : (tiledSurface?.bounds?.height ?? 0);
+    const width = tiledSurface.bounds?.width ?? 0;
+    const height = tiledSurface.bounds?.height ?? 0;
     if (width <= 0 || height <= 0) return null;
 
     const resolution = Math.min(1, maxSize / Math.max(width, height));
-    const root: Container = texture
-      ? new Sprite(texture)
-      : this.buildTiledThumbnailRoot(tiledSurface!);
+    const root: Container = this.buildTiledThumbnailRoot(tiledSurface);
     const filter = maskColor ? new ColorMatrixFilter() : undefined;
     if (filter) {
       const { red, green, blue } = new Color(maskColor);
@@ -851,7 +813,7 @@ export class UltraPaintApp {
       // (a full tile is allocated even for a partial-tile image); an explicit
       // frame crops the export to exactly the ingested pixels instead of
       // whatever coarse tile-aligned area the container's auto bounds would use.
-      const frame = tiledSurface ? new Rectangle(0, 0, width, height) : undefined;
+      const frame = new Rectangle(0, 0, width, height);
       const canvas = app.renderer.extract.canvas({ target: root, resolution, frame });
       return (canvas as HTMLCanvasElement).toDataURL("image/png");
     } catch (error) {
@@ -881,9 +843,8 @@ export class UltraPaintApp {
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
     if (!app || !layerId || !layer || layer.kind !== "raster" || layer.locked) return;
-    const target = this.store.getTexture(layerId);
-    const tiledSurface = target ? undefined : this.store.getTiledSurface(layerId);
-    if (!target && !tiledSurface) return;
+    const tiledSurface = this.store.getTiledSurface(layerId);
+    if (!tiledSurface) return;
 
     const settings = this.toolStore.getState().brush;
     const documentRoot = this.tree?.root;
@@ -899,83 +860,13 @@ export class UltraPaintApp {
     const points = corners.flatMap((point) => [point.x, point.y]);
     const fillColor = new Color(settings.color).toNumber();
 
-    if (target) {
-      this.fillMonolithicRaster(app, layerId, layer, target, points, fillColor, settings.opacity);
-    } else if (tiledSurface) {
-      this.fillTiledRaster(app, layerId, layer, tiledSurface, points, fillColor, settings.opacity);
-    }
+    this.fillTiledRaster(app, layerId, layer, tiledSurface, points, fillColor, settings.opacity);
   };
 
-  private fillMonolithicRaster(
-    app: Application,
-    layerId: LayerId,
-    layer: RasterLayer,
-    target: RenderTexture,
-    points: number[],
-    fillColor: number,
-    opacity: number,
-  ): void {
-    const history = this.history;
-    const pending = history?.beginPixelChange(layerId) ?? null;
-    const eraseGraphics = new Graphics();
-    eraseGraphics.poly(points, true).fill({ color: 0xffffff, alpha: 1 });
-    eraseGraphics.blendMode = "erase";
-    const fillGraphics = new Graphics();
-    fillGraphics.poly(points, true).fill({ color: fillColor, alpha: opacity });
-    let alphaMaskTexture: RenderTexture | null = null;
-    let alphaMaskSprite: Sprite | null = null;
-
-    try {
-      if (layer.preserveAlpha) {
-        alphaMaskTexture = RenderTexture.create({
-          width: target.width,
-          height: target.height,
-          resolution: target.source.resolution,
-          antialias: target.source.antialias,
-        });
-        const snapshot = new Sprite({ texture: target });
-        try {
-          app.renderer.render({
-            container: snapshot,
-            target: alphaMaskTexture,
-            clear: true,
-            clearColor: [0, 0, 0, 0],
-          });
-        } finally {
-          snapshot.destroy({ texture: false, textureSource: false });
-        }
-        alphaMaskSprite = new Sprite({ texture: alphaMaskTexture });
-        fillGraphics.setMask({ mask: alphaMaskSprite, channel: "alpha" });
-      } else {
-        app.renderer.render({
-          container: eraseGraphics,
-          target,
-          clear: false,
-        });
-      }
-      app.renderer.render({
-        container: fillGraphics,
-        target,
-        clear: false,
-      });
-      if (pending) history?.commitPixelChange(pending);
-    } catch (error) {
-      if (pending) history?.discardPixelChange(pending);
-      throw error;
-    } finally {
-      fillGraphics.mask = null;
-      alphaMaskSprite?.destroy({ texture: false, textureSource: false });
-      alphaMaskTexture?.destroy(true);
-      eraseGraphics.destroy();
-      fillGraphics.destroy();
-    }
-  }
-
   /**
-   * Tiled counterpart of {@link fillMonolithicRaster}: same erase+fill
-   * per-tile, over only already-allocated tiles (fill never grows a tiled
-   * layer's extent, matching the monolithic path's fixed-size target). One
-   * `TileEditDelta` covers every touched tile so the whole fill undoes atomically.
+   * Erase+fill per-tile, over only already-allocated tiles (fill never grows
+   * a tiled layer's extent). One `TileEditDelta` covers every touched tile
+   * so the whole fill undoes atomically.
    */
   private fillTiledRaster(
     app: Application,
@@ -1070,60 +961,31 @@ export class UltraPaintApp {
     const history = this.history;
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
-    const target = layerId ? this.store.getTexture(layerId) : undefined;
     const surface = layerId ? this.store.getTiledSurface(layerId) : undefined;
-    if (
-      !app ||
-      !history ||
-      !layerId ||
-      layer?.kind !== "mask" ||
-      layer.locked ||
-      (!target && !surface)
-    ) {
+    if (!app || !history || !layerId || layer?.kind !== "mask" || layer.locked || !surface) {
       return false;
     }
 
-    if (surface) {
-      const transaction = surface.beginEdit("clear-mask");
-      try {
-        const bounds = surface.bounds;
-        if (bounds) {
-          surface.edit(bounds, { allocation: "existing-only", transaction }, (tile) => {
-            app.renderer.renderTarget.bind({
-              target: tile.target,
-              clear: true,
-              clearColor: [0, 0, 0, 0],
-            });
-          });
-        }
-        const delta = transaction.commit();
-        if (delta.tileCount > 0) history.recordTileEdit(layerId, delta);
-        else delta.destroy();
-        this.store.touchTexture(layerId);
-        return true;
-      } catch (error) {
-        if (transaction.active) transaction.rollback();
-        throw error;
-      }
-    }
-
-    const pending = history.beginPixelChange(layerId);
-    if (!pending) return false;
-    const empty = new Container();
+    const transaction = surface.beginEdit("clear-mask");
     try {
-      app.renderer.render({
-        container: empty,
-        target: target!,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
-      history.commitPixelChange(pending);
+      const bounds = surface.bounds;
+      if (bounds) {
+        surface.edit(bounds, { allocation: "existing-only", transaction }, (tile) => {
+          app.renderer.renderTarget.bind({
+            target: tile.target,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+        });
+      }
+      const delta = transaction.commit();
+      if (delta.tileCount > 0) history.recordTileEdit(layerId, delta);
+      else delta.destroy();
+      this.store.touchTexture(layerId);
       return true;
     } catch (error) {
-      history.discardPixelChange(pending);
+      if (transaction.active) transaction.rollback();
       throw error;
-    } finally {
-      empty.destroy();
     }
   }
 
@@ -1138,7 +1000,6 @@ export class UltraPaintApp {
     const history = this.history;
     const layerId = this.store.getSelectedLayerId();
     const layer = layerId ? this.store.getLayer(layerId) : undefined;
-    const target = layerId ? this.store.getTexture(layerId) : undefined;
     const surface = layerId ? this.store.getTiledSurface(layerId) : undefined;
     const documentRoot = this.tree?.root;
     const layerContainer = layerId ? this.tree?.getNode(layerId)?.container : undefined;
@@ -1148,7 +1009,7 @@ export class UltraPaintApp {
       !layerId ||
       layer?.kind !== "mask" ||
       layer.locked ||
-      (!target && !surface) ||
+      !surface ||
       !documentRoot ||
       !layerContainer
     ) {
@@ -1162,140 +1023,88 @@ export class UltraPaintApp {
       layerContainer.toLocal({ x: box.x + box.width, y: box.y + box.height }, documentRoot),
       layerContainer.toLocal({ x: box.x, y: box.y + box.height }, documentRoot),
     ];
-    const points = corners.flatMap((point) => [point.x, point.y]);
-
-    if (surface) {
-      const polygonBounds = {
-        x: Math.floor(Math.min(...corners.map((point) => point.x))),
-        y: Math.floor(Math.min(...corners.map((point) => point.y))),
-        width:
-          Math.ceil(Math.max(...corners.map((point) => point.x))) -
-          Math.floor(Math.min(...corners.map((point) => point.x))),
-        height:
-          Math.ceil(Math.max(...corners.map((point) => point.y))) -
-          Math.floor(Math.min(...corners.map((point) => point.y))),
-      };
-      const invertFilter = new ColorMatrixFilter();
-      invertFilter.matrix = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 1];
-      const transaction = surface.beginEdit("invert-mask");
-      const processed = new Set<string>();
-      const invertTile = (tile: {
-        coord: { x: number; y: number };
-        originX: number;
-        originY: number;
-        target: RenderTexture;
-      }): void => {
-        const key = surface.grid.key(tile.coord);
-        if (processed.has(key)) return;
-        processed.add(key);
-
-        const inverted = RenderTexture.create({
-          width: tile.target.width,
-          height: tile.target.height,
-          resolution: tile.target.source.resolution,
-          antialias: tile.target.source.antialias,
-        });
-        const sourceSprite = new Sprite({ texture: tile.target });
-        sourceSprite.filters = [invertFilter];
-        const clippedSprite = new Sprite({ texture: inverted });
-        const clip = new Graphics();
-        clip
-          .poly(
-            corners.flatMap((point) => [point.x - tile.originX, point.y - tile.originY]),
-            true,
-          )
-          .fill(0xffffff);
-        clippedSprite.mask = clip;
-        const root = new Container();
-        root.addChild(clippedSprite, clip);
-        try {
-          app.renderer.render({
-            container: sourceSprite,
-            target: inverted,
-            clear: true,
-            clearColor: [0, 0, 0, 0],
-          });
-          app.renderer.render({
-            container: root,
-            target: tile.target,
-            clear: true,
-            clearColor: [0, 0, 0, 0],
-          });
-        } finally {
-          clippedSprite.mask = null;
-          sourceSprite.filters = null;
-          sourceSprite.destroy({ texture: false, textureSource: false });
-          root.destroy({ children: true, texture: false, textureSource: false });
-          inverted.destroy(true);
-        }
-      };
-
-      try {
-        const bounds = surface.bounds;
-        if (bounds) surface.edit(bounds, { allocation: "existing-only", transaction }, invertTile);
-        if (polygonBounds.width > 0 && polygonBounds.height > 0) {
-          surface.edit(polygonBounds, { allocation: "allocate-missing", transaction }, invertTile);
-          transaction.includeBounds(polygonBounds);
-        }
-        const delta = transaction.commit();
-        if (delta.tileCount > 0) history.recordTileEdit(layerId, delta);
-        else delta.destroy();
-        this.store.touchTexture(layerId);
-        return true;
-      } catch (error) {
-        if (transaction.active) transaction.rollback();
-        throw error;
-      } finally {
-        invertFilter.destroy();
-      }
-    }
-
-    const pending = history.beginPixelChange(layerId);
-    if (!pending) return false;
-
-    // Straight (non-premultiplied) alpha invert: a' = 1 - a, RGB unchanged
-    // (RGB is display-irrelevant for masks -- MaskHatchFilter/flattenMask
-    // both only read alpha -- but preserved anyway for a clean copy).
+    const polygonBounds = {
+      x: Math.floor(Math.min(...corners.map((point) => point.x))),
+      y: Math.floor(Math.min(...corners.map((point) => point.y))),
+      width:
+        Math.ceil(Math.max(...corners.map((point) => point.x))) -
+        Math.floor(Math.min(...corners.map((point) => point.x))),
+      height:
+        Math.ceil(Math.max(...corners.map((point) => point.y))) -
+        Math.floor(Math.min(...corners.map((point) => point.y))),
+    };
     const invertFilter = new ColorMatrixFilter();
     invertFilter.matrix = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 1];
-    const invertedSprite = new Sprite({ texture: target! });
-    invertedSprite.filters = [invertFilter];
+    const transaction = surface.beginEdit("invert-mask");
+    const processed = new Set<string>();
+    const invertTile = (tile: {
+      coord: { x: number; y: number };
+      originX: number;
+      originY: number;
+      target: RenderTexture;
+    }): void => {
+      const key = surface.grid.key(tile.coord);
+      if (processed.has(key)) return;
+      processed.add(key);
 
-    const scratch = RenderTexture.create({
-      width: target!.width,
-      height: target!.height,
-      resolution: target!.source.resolution,
-      antialias: target!.source.antialias,
-    });
-    const clipped = new Graphics();
-    clipped.poly(points, true).fill({ texture: scratch, textureSpace: "global" });
+      const inverted = RenderTexture.create({
+        width: tile.target.width,
+        height: tile.target.height,
+        resolution: tile.target.source.resolution,
+        antialias: tile.target.source.antialias,
+      });
+      const sourceSprite = new Sprite({ texture: tile.target });
+      sourceSprite.filters = [invertFilter];
+      const clippedSprite = new Sprite({ texture: inverted });
+      const clip = new Graphics();
+      clip
+        .poly(
+          corners.flatMap((point) => [point.x - tile.originX, point.y - tile.originY]),
+          true,
+        )
+        .fill(0xffffff);
+      clippedSprite.mask = clip;
+      const root = new Container();
+      root.addChild(clippedSprite, clip);
+      try {
+        app.renderer.render({
+          container: sourceSprite,
+          target: inverted,
+          clear: true,
+          clearColor: [0, 0, 0, 0],
+        });
+        app.renderer.render({
+          container: root,
+          target: tile.target,
+          clear: true,
+          clearColor: [0, 0, 0, 0],
+        });
+      } finally {
+        clippedSprite.mask = null;
+        sourceSprite.filters = null;
+        sourceSprite.destroy({ texture: false, textureSource: false });
+        root.destroy({ children: true, texture: false, textureSource: false });
+        inverted.destroy(true);
+      }
+    };
 
     try {
-      // Pass 1: full-texture alpha inversion into a scratch copy.
-      app.renderer.render({
-        container: invertedSprite,
-        target: scratch,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
-      // Pass 2: paste the inverted copy back, but only inside the
-      // boundary box -- everywhere else in the mask ends up cleared.
-      app.renderer.render({
-        container: clipped,
-        target: target!,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
-      history.commitPixelChange(pending);
+      const bounds = surface.bounds;
+      if (bounds) surface.edit(bounds, { allocation: "existing-only", transaction }, invertTile);
+      if (polygonBounds.width > 0 && polygonBounds.height > 0) {
+        surface.edit(polygonBounds, { allocation: "allocate-missing", transaction }, invertTile);
+        transaction.includeBounds(polygonBounds);
+      }
+      const delta = transaction.commit();
+      if (delta.tileCount > 0) history.recordTileEdit(layerId, delta);
+      else delta.destroy();
+      this.store.touchTexture(layerId);
       return true;
     } catch (error) {
-      history.discardPixelChange(pending);
+      if (transaction.active) transaction.rollback();
       throw error;
     } finally {
-      invertedSprite.destroy({ texture: false, textureSource: false });
       invertFilter.destroy();
-      clipped.destroy();
-      scratch.destroy(true);
     }
   }
 
@@ -1499,47 +1308,26 @@ export class UltraPaintApp {
     }
 
     const tiledSource = this.store.getTiledSurface(id);
-    if (tiledSource) {
-      // Convert tile-by-tile, straight from the source's own tiles -- no
-      // full-boundary-box flatten, and the destination keeps the same tile
-      // origins as the source, so the layer's transform needs no compensation.
-      const converted = copyTiledSurfaceTileByTile(app.renderer, tiledSource, (tile) => {
-        const { pixels, width, height } = app.renderer.extract.pixels({ target: tile.target });
-        return Texture.from(luminanceCoverageCanvas(pixels, width, height), true);
-      });
-      let adopted = false;
-      try {
-        const newId = this.store.addMaskLayerTiled(converted, `${layer.name} (Mask)`);
-        adopted = true;
-        this.store.setTransform(newId, layer.transform);
-        this.store.setSelectedLayerId(newId);
-        return newId;
-      } catch (error) {
-        if (!adopted) converted.destroy();
-        throw error;
-      }
+    if (!tiledSource) {
+      throw new Error(`[ultra-paint] layer "${id}" has no tiled surface`);
     }
-
-    const source = this.readLayerPixels(id);
-    if (!source)
-      throw new Error("[ultra-paint] only a raster or control layer can be copied to a mask");
+    // Convert tile-by-tile, straight from the source's own tiles -- no
+    // full-boundary-box flatten, and the destination keeps the same tile
+    // origins as the source, so the layer's transform needs no compensation.
+    const converted = copyTiledSurfaceTileByTile(app.renderer, tiledSource, (tile) => {
+      const { pixels, width, height } = app.renderer.extract.pixels({ target: tile.target });
+      return Texture.from(luminanceCoverageCanvas(pixels, width, height), true);
+    });
+    let adopted = false;
     try {
-      const { pixels, width, height } = app.renderer.extract.pixels({ target: source.texture });
-      const canvas = luminanceCoverageCanvas(pixels, width, height);
-      const converted = this.createPaintableTiledSurface(Texture.from(canvas, true));
-      let adopted = false;
-      try {
-        const newId = this.store.addMaskLayerTiled(converted, `${layer.name} (Mask)`);
-        adopted = true;
-        this.store.setTransform(newId, this.transformForPixelSnapshot(layer.transform, source));
-        this.store.setSelectedLayerId(newId);
-        return newId;
-      } catch (error) {
-        if (!adopted) converted.destroy();
-        throw error;
-      }
-    } finally {
-      source.dispose();
+      const newId = this.store.addMaskLayerTiled(converted, `${layer.name} (Mask)`);
+      adopted = true;
+      this.store.setTransform(newId, layer.transform);
+      this.store.setSelectedLayerId(newId);
+      return newId;
+    } catch (error) {
+      if (!adopted) converted.destroy();
+      throw error;
     }
   }
 
@@ -1557,43 +1345,24 @@ export class UltraPaintApp {
     }
 
     const tiledSource = this.store.getTiledSurface(id);
-    if (tiledSource) {
-      // Control conversion is a bit-for-bit copy -- ControlNet's
-      // luminance-to-alpha treatment is display-only (ControlLayerDisplayFilter),
-      // never baked into stored pixels -- so this is a pure per-tile GPU copy
-      // with no CPU readback and no full-boundary-box flatten.
-      const copy = copyTiledSurfaceTileByTile(app.renderer, tiledSource);
-      let adopted = false;
-      try {
-        const newId = this.store.addControlLayerTiled(copy, `${layer.name} (Control)`);
-        adopted = true;
-        this.store.setTransform(newId, layer.transform);
-        this.store.setSelectedLayerId(newId);
-        return newId;
-      } catch (error) {
-        if (!adopted) copy.destroy();
-        throw error;
-      }
+    if (!tiledSource) {
+      throw new Error(`[ultra-paint] layer "${id}" has no tiled surface`);
     }
-
-    const source = this.readLayerPixels(id);
-    if (!source)
-      throw new Error("[ultra-paint] only a raster layer can be converted to a control layer");
+    // Control conversion is a bit-for-bit copy -- ControlNet's
+    // luminance-to-alpha treatment is display-only (ControlLayerDisplayFilter),
+    // never baked into stored pixels -- so this is a pure per-tile GPU copy
+    // with no CPU readback and no full-boundary-box flatten.
+    const copy = copyTiledSurfaceTileByTile(app.renderer, tiledSource);
+    let adopted = false;
     try {
-      const copy = this.createPaintableTiledSurface(this.cloneTexture(source.texture));
-      let adopted = false;
-      try {
-        const newId = this.store.addControlLayerTiled(copy, `${layer.name} (Control)`);
-        adopted = true;
-        this.store.setTransform(newId, this.transformForPixelSnapshot(layer.transform, source));
-        this.store.setSelectedLayerId(newId);
-        return newId;
-      } catch (error) {
-        if (!adopted) copy.destroy();
-        throw error;
-      }
-    } finally {
-      source.dispose();
+      const newId = this.store.addControlLayerTiled(copy, `${layer.name} (Control)`);
+      adopted = true;
+      this.store.setTransform(newId, layer.transform);
+      this.store.setSelectedLayerId(newId);
+      return newId;
+    } catch (error) {
+      if (!adopted) copy.destroy();
+      throw error;
     }
   }
 
@@ -1610,33 +1379,30 @@ export class UltraPaintApp {
       return newId;
     }
 
-    const source = this.readLayerPixels(id);
-    if (!source) throw new Error("[ultra-paint] layer has no copyable pixel data");
+    const app = this.app;
+    const tiledSource = app ? this.store.getTiledSurface(id) : null;
+    if (!app || !tiledSource) {
+      throw new Error(`[ultra-paint] layer "${id}" has no tiled surface`);
+    }
+    // No full-boundary-box flatten: copy the source's own tiles directly, so
+    // sparse/oversized tiled layers stay tiled (and unbounded) on duplicate.
+    const copy = copyTiledSurfaceTileByTile(app.renderer, tiledSource);
+    let adopted = false;
     try {
-      const copy = this.cloneTexture(source.texture);
-      const tiledCopy = layer.kind === "raster" ? null : this.createPaintableTiledSurface(copy);
-      let adopted = false;
-      try {
-        const newId =
-          layer.kind === "raster"
-            ? this.store.addRasterLayer(copy)
-            : layer.kind === "mask"
-              ? this.store.addMaskLayerTiled(tiledCopy!)
-              : this.store.addControlLayerTiled(tiledCopy!);
-        adopted = true;
-        this.store.copyLayerSettings(newId, layer);
-        this.store.setTransform(newId, this.transformForPixelSnapshot(layer.transform, source));
-        this.store.setSelectedLayerId(newId);
-        return newId;
-      } catch (error) {
-        if (!adopted) {
-          if (tiledCopy) tiledCopy.destroy();
-          else copy.destroy(true);
-        }
-        throw error;
-      }
-    } finally {
-      source.dispose();
+      const newId =
+        layer.kind === "raster"
+          ? this.store.addRasterLayerTiled(copy)
+          : layer.kind === "mask"
+            ? this.store.addMaskLayerTiled(copy)
+            : this.store.addControlLayerTiled(copy);
+      adopted = true;
+      this.store.copyLayerSettings(newId, layer);
+      this.store.setTransform(newId, layer.transform);
+      this.store.setSelectedLayerId(newId);
+      return newId;
+    } catch (error) {
+      if (!adopted) copy.destroy();
+      throw error;
     }
   }
 
@@ -1652,9 +1418,8 @@ export class UltraPaintApp {
     const layer = this.store.getLayer(id);
     if (!app || !history || !layer || layer.locked) return false;
     if (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control") return false;
-    const monolithicTarget = this.store.getTexture(id);
-    const tiledSurface = monolithicTarget ? undefined : this.store.getTiledSurface(id);
-    if (!monolithicTarget && !tiledSurface) return false;
+    const tiledSurface = this.store.getTiledSurface(id);
+    if (!tiledSurface) return false;
 
     const tree = this.tree;
     const node = tree?.getNode(id);
@@ -1670,189 +1435,92 @@ export class UltraPaintApp {
       node.container.toLocal({ x: box.x, y: box.y + box.height }, tree.root),
     ];
 
-    if (tiledSurface) {
-      const boundsBefore = tiledSurface.bounds;
-      if (!boundsBefore) return false;
-      const left = Math.floor(Math.min(...polygon.map((point) => point.x)));
-      const top = Math.floor(Math.min(...polygon.map((point) => point.y)));
-      const right = Math.ceil(Math.max(...polygon.map((point) => point.x)));
-      const bottom = Math.ceil(Math.max(...polygon.map((point) => point.y)));
-      const newBounds = intersectBounds(
-        { x: left, y: top, width: right - left, height: bottom - top },
-        boundsBefore,
-      );
-      if (!newBounds) return false;
+    const boundsBefore = tiledSurface.bounds;
+    if (!boundsBefore) return false;
+    const left = Math.floor(Math.min(...polygon.map((point) => point.x)));
+    const top = Math.floor(Math.min(...polygon.map((point) => point.y)));
+    const right = Math.ceil(Math.max(...polygon.map((point) => point.x)));
+    const bottom = Math.ceil(Math.max(...polygon.map((point) => point.y)));
+    const newBounds = intersectBounds(
+      { x: left, y: top, width: right - left, height: bottom - top },
+      boundsBefore,
+    );
+    if (!newBounds) return false;
 
-      const transaction = tiledSurface.beginEdit("clip");
-      let delta: TileEditDelta;
-      try {
-        tiledSurface.visitAll((tile) => {
-          const tileBounds = tiledSurface.grid.boundsFor(tile.coord);
-          if (!intersectBounds(tileBounds, newBounds)) {
-            tiledSurface.removeTile(tile.coord, transaction);
-            return;
-          }
-
-          tiledSurface.edit(
-            tileBounds,
-            { allocation: "existing-only", transaction },
-            (editable) => {
-              const scratch = RenderTexture.create({
-                width: editable.target.width,
-                height: editable.target.height,
-                resolution: editable.target.source.resolution,
-                antialias: editable.target.source.antialias,
-                format: editable.target.source.format,
-                alphaMode: editable.target.source.alphaMode,
-              });
-              const mask = new Graphics()
-                .poly(
-                  polygon.map((point) => ({
-                    x: point.x - editable.originX,
-                    y: point.y - editable.originY,
-                  })),
-                )
-                .fill(0xffffff);
-              const sprite = new Sprite({ texture: scratch });
-              sprite.setMask({ mask, channel: "alpha" });
-              const snapshot = new Sprite({ texture: editable.target });
-              const root = new Container();
-              root.addChild(mask, sprite);
-              try {
-                app.renderer.render({
-                  container: snapshot,
-                  target: scratch,
-                  clear: true,
-                  clearColor: [0, 0, 0, 0],
-                });
-                app.renderer.render({
-                  container: root,
-                  target: editable.target,
-                  clear: true,
-                  clearColor: [0, 0, 0, 0],
-                });
-              } finally {
-                sprite.mask = null;
-                snapshot.destroy({ texture: false, textureSource: false });
-                root.destroy({ children: true, texture: false, textureSource: false });
-                scratch.destroy(true);
-              }
-            },
-          );
-          // The axis-aligned candidate range can include corner tiles wholly
-          // outside a rotated clip polygon. Read their masked pixels back
-          // before committing so fully transparent tiles do not stay resident.
-          const { pixels } = app.renderer.extract.pixels({ target: tile.target });
-          for (let offset = 3; offset < pixels.length; offset += 4) {
-            if (pixels[offset] !== 0) return;
-          }
+    const transaction = tiledSurface.beginEdit("clip");
+    let delta: TileEditDelta;
+    try {
+      tiledSurface.visitAll((tile) => {
+        const tileBounds = tiledSurface.grid.boundsFor(tile.coord);
+        if (!intersectBounds(tileBounds, newBounds)) {
           tiledSurface.removeTile(tile.coord, transaction);
-        });
-        transaction.replaceBounds(newBounds);
-        delta = transaction.commit();
-      } catch (error) {
-        if (transaction.active) transaction.rollback();
-        throw error;
-      }
-
-      if (delta.tileCount === 0 && boundsEqual(newBounds, boundsBefore)) {
-        delta.destroy();
-        return false;
-      }
-      history.recordTileEdit(id, delta);
-      return true;
-    }
-
-    const target = monolithicTarget!;
-    const localLeft = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.x))));
-    const localTop = Math.max(0, Math.floor(Math.min(...polygon.map((point) => point.y))));
-    const localRight = Math.min(
-      target.width,
-      Math.ceil(Math.max(...polygon.map((point) => point.x))),
-    );
-    const localBottom = Math.min(
-      target.height,
-      Math.ceil(Math.max(...polygon.map((point) => point.y))),
-    );
-    if (localRight <= localLeft || localBottom <= localTop) {
-      return false;
-    }
-
-    const sourceCorners = [
-      { x: 0, y: 0 },
-      { x: target.width, y: 0 },
-      { x: target.width, y: target.height },
-      { x: 0, y: target.height },
-    ];
-    if (sourceCorners.every((point) => pointInPolygon(point, polygon))) {
-      return false;
-    }
-
-    const width = localRight - localLeft;
-    const height = localBottom - localTop;
-    const cropped = RenderTexture.create({
-      width,
-      height,
-      resolution: target.source.resolution,
-      antialias: target.source.antialias,
-      format: target.source.format,
-      alphaMode: target.source.alphaMode,
-    });
-    const root = new Container();
-    const mask = new Graphics()
-      .poly(polygon.map((point) => ({ x: point.x - localLeft, y: point.y - localTop })))
-      .fill(0xffffff);
-    const sprite = new Sprite({ texture: target, x: -localLeft, y: -localTop });
-    sprite.setMask({ mask, channel: "alpha" });
-    root.addChild(mask, sprite);
-    try {
-      app.renderer.render({
-        container: root,
-        target: cropped,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
-    } catch (error) {
-      cropped.destroy(true);
-      throw error;
-    } finally {
-      sprite.mask = null;
-      root.destroy({ children: true, texture: false, textureSource: false });
-    }
-
-    const nextPosition = node.container.parent.toLocal(
-      node.container.toGlobal({ x: localLeft, y: localTop }),
-    );
-    const transform = layer.transform;
-    const nextTransform = { ...transform, x: nextPosition.x, y: nextPosition.y };
-
-    const pending = history.beginPixelChange(id);
-    if (!pending) {
-      cropped.destroy(true);
-      throw new Error(`[ultra-paint] could not begin clip history for layer "${id}"`);
-    }
-    let adopted = false;
-    try {
-      const previous = this.store.replaceLayerTexture(id, target, cropped, nextTransform);
-      if (previous !== target) throw new Error(`[ultra-paint] clip target layer "${id}" changed`);
-      adopted = true;
-      this.tree?.getNode(id)?.setTexture(cropped);
-      history.commitPixelChange(pending);
-      target.destroy(true);
-      return true;
-    } catch (error) {
-      history.discardPixelChange(pending);
-      if (adopted) {
-        const rolledBack = this.store.replaceLayerTexture(id, cropped, target, transform);
-        if (rolledBack === cropped) {
-          this.tree?.getNode(id)?.setTexture(target);
-          cropped.destroy(true);
+          return;
         }
-      } else {
-        cropped.destroy(true);
-      }
+
+        tiledSurface.edit(tileBounds, { allocation: "existing-only", transaction }, (editable) => {
+          const scratch = RenderTexture.create({
+            width: editable.target.width,
+            height: editable.target.height,
+            resolution: editable.target.source.resolution,
+            antialias: editable.target.source.antialias,
+            format: editable.target.source.format,
+            alphaMode: editable.target.source.alphaMode,
+          });
+          const mask = new Graphics()
+            .poly(
+              polygon.map((point) => ({
+                x: point.x - editable.originX,
+                y: point.y - editable.originY,
+              })),
+            )
+            .fill(0xffffff);
+          const sprite = new Sprite({ texture: scratch });
+          sprite.setMask({ mask, channel: "alpha" });
+          const snapshot = new Sprite({ texture: editable.target });
+          const root = new Container();
+          root.addChild(mask, sprite);
+          try {
+            app.renderer.render({
+              container: snapshot,
+              target: scratch,
+              clear: true,
+              clearColor: [0, 0, 0, 0],
+            });
+            app.renderer.render({
+              container: root,
+              target: editable.target,
+              clear: true,
+              clearColor: [0, 0, 0, 0],
+            });
+          } finally {
+            sprite.mask = null;
+            snapshot.destroy({ texture: false, textureSource: false });
+            root.destroy({ children: true, texture: false, textureSource: false });
+            scratch.destroy(true);
+          }
+        });
+        // The axis-aligned candidate range can include corner tiles wholly
+        // outside a rotated clip polygon. Read their masked pixels back
+        // before committing so fully transparent tiles do not stay resident.
+        const { pixels } = app.renderer.extract.pixels({ target: tile.target });
+        for (let offset = 3; offset < pixels.length; offset += 4) {
+          if (pixels[offset] !== 0) return;
+        }
+        tiledSurface.removeTile(tile.coord, transaction);
+      });
+      transaction.replaceBounds(newBounds);
+      delta = transaction.commit();
+    } catch (error) {
+      if (transaction.active) transaction.rollback();
       throw error;
     }
+
+    if (delta.tileCount === 0 && boundsEqual(newBounds, boundsBefore)) {
+      delta.destroy();
+      return false;
+    }
+    history.recordTileEdit(id, delta);
+    return true;
   }
 
   /**
@@ -1936,126 +1604,50 @@ export class UltraPaintApp {
     const app = this.app;
     const history = this.history;
     const layer = this.store.getLayer(layerId);
-    const target = this.store.getTexture(layerId);
     const surface = this.store.getTiledSurface(layerId);
-    if (!app || !history || layer?.kind !== "control" || layer.locked || (!target && !surface)) {
+    if (!app || !history || layer?.kind !== "control" || layer.locked || !surface) {
       throw new Error(`[ultra-paint] cannot accept a filter result for layer "${layerId}"`);
     }
 
     const response = await fetch(dataUrl);
     const decoded = await decodeToTexture(await response.blob());
 
-    if (surface) {
-      const bounds = surface.bounds;
-      if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
-        decoded.destroy(true);
-        throw new Error(`[ultra-paint] filter target layer "${layerId}" has no pixel bounds`);
-      }
-      const transaction = surface.beginEdit("accept-control-filter");
-      try {
-        surface.edit(bounds, { allocation: "allocate-missing", transaction }, (tile) => {
-          const sprite = new Sprite({ texture: decoded });
-          sprite.position.set(bounds.x - tile.originX, bounds.y - tile.originY);
-          sprite.width = bounds.width;
-          sprite.height = bounds.height;
-          try {
-            app.renderer.render({
-              container: sprite,
-              target: tile.target,
-              clear: true,
-              clearColor: [0, 0, 0, 0],
-            });
-          } finally {
-            sprite.destroy({ texture: false, textureSource: false });
-          }
-        });
-        transaction.includeBounds(bounds);
-        const delta = transaction.commit();
-        if (delta.tileCount === 0) {
-          delta.destroy();
-          throw new Error(`[ultra-paint] filter result did not change layer "${layerId}"`);
-        }
-        history.recordTileEdit(layerId, delta);
-        this.store.touchTexture(layerId);
-        return;
-      } catch (error) {
-        if (transaction.active) transaction.rollback();
-        throw error;
-      } finally {
-        decoded.destroy(true);
-      }
+    const bounds = surface.bounds;
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+      decoded.destroy(true);
+      throw new Error(`[ultra-paint] filter target layer "${layerId}" has no pixel bounds`);
     }
-
-    let replacement: RenderTexture | null = null;
-    let sprite: Sprite | null = null;
+    const transaction = surface.beginEdit("accept-control-filter");
     try {
-      replacement = RenderTexture.create({
-        width: target!.width,
-        height: target!.height,
-        resolution: target!.source.resolution,
-        antialias: target!.source.antialias,
-        format: target!.source.format,
-        alphaMode: target!.source.alphaMode,
+      surface.edit(bounds, { allocation: "allocate-missing", transaction }, (tile) => {
+        const sprite = new Sprite({ texture: decoded });
+        sprite.position.set(bounds.x - tile.originX, bounds.y - tile.originY);
+        sprite.width = bounds.width;
+        sprite.height = bounds.height;
+        try {
+          app.renderer.render({
+            container: sprite,
+            target: tile.target,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+        } finally {
+          sprite.destroy({ texture: false, textureSource: false });
+        }
       });
-      sprite = new Sprite({ texture: decoded });
-      sprite.width = target!.width;
-      sprite.height = target!.height;
-      app.renderer.render({
-        container: sprite,
-        target: replacement,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
+      transaction.includeBounds(bounds);
+      const delta = transaction.commit();
+      if (delta.tileCount === 0) {
+        delta.destroy();
+        throw new Error(`[ultra-paint] filter result did not change layer "${layerId}"`);
+      }
+      history.recordTileEdit(layerId, delta);
+      this.store.touchTexture(layerId);
     } catch (error) {
-      replacement?.destroy(true);
+      if (transaction.active) transaction.rollback();
       throw error;
     } finally {
-      sprite?.destroy({ texture: false, textureSource: false });
       decoded.destroy(true);
-    }
-
-    if (!replacement) {
-      throw new Error(`[ultra-paint] could not render a filter result for layer "${layerId}"`);
-    }
-
-    const pending = history.beginPixelChange(layerId);
-    if (!pending) {
-      replacement.destroy(true);
-      throw new Error(`[ultra-paint] could not begin filter history for layer "${layerId}"`);
-    }
-
-    let adopted = false;
-    try {
-      const previous = this.store.replaceLayerTexture(
-        layerId,
-        target!,
-        replacement,
-        layer.transform,
-      );
-      if (previous !== target!) {
-        throw new Error(`[ultra-paint] filter target layer "${layerId}" changed`);
-      }
-      adopted = true;
-      this.tree?.getNode(layerId)?.setTexture(replacement);
-      history.commitPixelChange(pending);
-      target!.destroy(true);
-    } catch (error) {
-      history.discardPixelChange(pending);
-      if (adopted) {
-        const rolledBack = this.store.replaceLayerTexture(
-          layerId,
-          replacement,
-          target!,
-          layer.transform,
-        );
-        if (rolledBack === replacement) {
-          this.tree?.getNode(layerId)?.setTexture(target!);
-          replacement.destroy(true);
-        }
-      } else {
-        replacement.destroy(true);
-      }
-      throw error;
     }
   }
 
@@ -2097,8 +1689,8 @@ export class UltraPaintApp {
       throw new Error("Select at least two raster or group layers to merge");
     }
     // Snapshot the stack order before adding the merged layer -- `doc` is a
-    // live reference, and `addRasterLayer` below mutates `doc.layerOrder` in
-    // place (it unshifts the new id), which would shift every index read
+    // live reference, and `addRasterLayerTiled` below mutates `doc.layerOrder`
+    // in place (it unshifts the new id), which would shift every index read
     // from it afterward and place the merged layer one slot too low.
     const preOrder = [...doc.layerOrder];
     const bounds = this.getSelectionBounds(selected);
@@ -2303,9 +1895,8 @@ export class UltraPaintApp {
     const root = new Container({ label: "ultra-paint:mask-merge" });
     try {
       for (const layer of ordered) {
-        const texture = this.store.getTexture(layer.id);
         const surface = this.store.getTiledSurface(layer.id);
-        if (!texture && !surface) continue;
+        if (!surface) continue;
 
         const layerContainer = new Container({ label: `mask-merge:${layer.id}` });
         layerContainer.position.set(layer.transform.x, layer.transform.y);
@@ -2314,15 +1905,11 @@ export class UltraPaintApp {
         layerContainer.alpha = layer.opacity;
         layerContainer.blendMode = toPixiBlendMode(layer.blendMode);
 
-        if (texture) {
-          layerContainer.addChild(new Sprite({ texture }));
-        } else {
-          surface!.visitAll((tile) => {
-            const sprite = new Sprite({ texture: tile.target });
-            sprite.position.set(tile.originX, tile.originY);
-            layerContainer.addChild(sprite);
-          });
-        }
+        surface.visitAll((tile) => {
+          const sprite = new Sprite({ texture: tile.target });
+          sprite.position.set(tile.originX, tile.originY);
+          layerContainer.addChild(sprite);
+        });
         root.addChild(layerContainer);
       }
 
@@ -2558,20 +2145,17 @@ export class UltraPaintApp {
 
     for (const layer of doc.layers) {
       if (layer.kind !== "mask" || !this.isEffectivelyVisible(layer, byId)) continue;
-      const monolithicTexture = this.store.getTexture(layer.id);
-      const tiledSurface = monolithicTexture ? undefined : this.store.getTiledSurface(layer.id);
+      const tiledSurface = this.store.getTiledSurface(layer.id);
       const node = tree.getNode(layer.id);
-      if ((!monolithicTexture && !tiledSurface) || !node) continue;
+      if (!tiledSurface || !node) continue;
 
       // A tiled mask's flattened snapshot is positioned at its surface's
       // logical bounds origin, not layer-local (0, 0) -- same offset
       // `readLayerPixels()` exposes via `originX`/`originY` for other
       // consumers (see `transformForPixelSnapshot()`).
-      const texture = tiledSurface
-        ? flattenToTexture(app.renderer, tiledSurface)
-        : monolithicTexture!;
-      const boundsOriginX = tiledSurface ? (tiledSurface.bounds?.x ?? 0) : 0;
-      const boundsOriginY = tiledSurface ? (tiledSurface.bounds?.y ?? 0) : 0;
+      const texture = flattenToTexture(app.renderer, tiledSurface);
+      const boundsOriginX = tiledSurface.bounds?.x ?? 0;
+      const boundsOriginY = tiledSurface.bounds?.y ?? 0;
       try {
         const origin = tree.root.toLocal({ x: 0, y: 0 }, node.container);
         const xUnit = tree.root.toLocal({ x: 1, y: 0 }, node.container);
@@ -2600,7 +2184,7 @@ export class UltraPaintApp {
           maxY = Math.max(maxY, y0, y0 + ay, y0 + cy, y0 + ay + cy);
         }
       } finally {
-        if (tiledSurface) texture.destroy(true);
+        texture.destroy(true);
       }
     }
 
@@ -2683,15 +2267,12 @@ export class UltraPaintApp {
   }
 
   /**
-   * Read-only access to a paintable layer's pixels regardless of backing.
-   * Monolithic layers return their live texture (`dispose` is a no-op);
-   * tiled layers get a throwaway flattened snapshot the caller must dispose.
+   * Read-only access to a paintable layer's pixels: a throwaway flattened
+   * snapshot the caller must dispose.
    */
   private readLayerPixels(
     id: LayerId,
   ): { texture: RenderTexture; originX: number; originY: number; dispose: () => void } | undefined {
-    const texture = this.store.getTexture(id);
-    if (texture) return { texture, originX: 0, originY: 0, dispose: () => {} };
     const tiledSurface = this.store.getTiledSurface(id);
     const renderer = this.app?.renderer;
     if (!tiledSurface || !renderer) return undefined;
@@ -2703,48 +2284,6 @@ export class UltraPaintApp {
       originY: bounds?.y ?? 0,
       dispose: () => flattened.destroy(true),
     };
-  }
-
-  /** Preserve world placement after a non-zero tiled origin is flattened to texture (0, 0). */
-  private transformForPixelSnapshot(
-    transform: Transform,
-    snapshot: { originX: number; originY: number },
-  ): Transform {
-    if (snapshot.originX === 0 && snapshot.originY === 0) return transform;
-    const scaledX = snapshot.originX * transform.scaleX;
-    const scaledY = snapshot.originY * transform.scaleY;
-    const cosine = Math.cos(transform.rotation);
-    const sine = Math.sin(transform.rotation);
-    return {
-      ...transform,
-      x: transform.x + scaledX * cosine - scaledY * sine,
-      y: transform.y + scaledX * sine + scaledY * cosine,
-    };
-  }
-
-  /** Copy a live texture into a fresh, independent `RenderTexture`. Does not destroy `source`. */
-  private cloneTexture(source: RenderTexture): RenderTexture {
-    const renderer = this.app?.renderer;
-    if (!renderer) {
-      throw new Error("[ultra-paint] cannot clone a texture before the renderer is ready");
-    }
-
-    const copy = RenderTexture.create({
-      width: source.width,
-      height: source.height,
-      resolution: source.source.resolution,
-      antialias: source.source.antialias,
-    });
-    const sprite = new Sprite({ texture: source });
-    try {
-      renderer.render({ container: sprite, target: copy, clear: true, clearColor: [0, 0, 0, 0] });
-      return copy;
-    } catch (error) {
-      copy.destroy(true);
-      throw error;
-    } finally {
-      sprite.destroy({ texture: false, textureSource: false });
-    }
   }
 
   /**
@@ -2904,20 +2443,6 @@ function luminanceCoverageCanvas(
   return canvas;
 }
 
-interface PendingPixelChange {
-  layerId: LayerId;
-  snapshot: RenderTexture;
-  transform: Transform;
-  active: boolean;
-}
-
-interface PixelHistoryEntry {
-  kind: "pixels";
-  layerId: LayerId;
-  snapshot: RenderTexture;
-  transform: Transform;
-}
-
 /** Undo step for a tiled-surface edit (e.g. Fill on an uploaded layer). */
 interface TilePixelHistoryEntry {
   kind: "tile-pixels";
@@ -2942,7 +2467,6 @@ interface RemovedLayerHistoryEntry {
   kind: "removed-layer";
   layer: Layer;
   index: number;
-  texture: RenderTexture | undefined;
   tiledSurface: TiledRasterCanvas | undefined;
 }
 
@@ -2959,45 +2483,12 @@ interface DeleteLayersHistoryEntry {
 }
 
 type HistoryEntry =
-  | PixelHistoryEntry
   | TilePixelHistoryEntry
   | StateHistoryEntry
   | AddLayerHistoryEntry
   | RemovedLayerHistoryEntry
   | DeletedLayersHistoryEntry
   | DeleteLayersHistoryEntry;
-
-class HistoryStrokeSession implements StrokeSession {
-  public readonly spacing: number;
-
-  private ended = false;
-
-  constructor(
-    private readonly session: StrokeSession,
-    private readonly history: UndoHistory,
-    private readonly pending: PendingPixelChange,
-  ) {
-    this.spacing = session.spacing;
-  }
-
-  public addPoints(points: Parameters<StrokeSession["addPoints"]>[0]): void {
-    this.session.addPoints(points);
-  }
-
-  public end(points: Parameters<StrokeSession["end"]>[0], cancelled: boolean): void {
-    if (this.ended) return;
-    this.ended = true;
-    try {
-      this.session.end(points, cancelled);
-    } finally {
-      if (points.length > 0) {
-        this.history.commitPixelChange(this.pending);
-      } else {
-        this.history.discardPixelChange(this.pending);
-      }
-    }
-  }
-}
 
 class UndoHistory {
   private readonly undoStack: HistoryEntry[] = [];
@@ -3008,63 +2499,11 @@ class UndoHistory {
 
   private replaying = false;
 
-  private pendingPixelChanges = 0;
-
   constructor(
-    private readonly app: Application,
     private readonly store: LayerStore,
-    private readonly tree: LayerTree,
     private readonly limit: number,
   ) {
     this.unsubscribeMutations = store.subscribeMutations(this.recordStoreMutation);
-  }
-
-  public beginPixelChange(layerId: LayerId): PendingPixelChange | null {
-    const target = this.store.getTexture(layerId);
-    const layer = this.store.getLayer(layerId);
-    if (
-      !target ||
-      !layer ||
-      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
-    ) {
-      return null;
-    }
-
-    const pending: PendingPixelChange = {
-      layerId,
-      snapshot: this.copyTexture(target),
-      transform: { ...layer.transform },
-      active: true,
-    };
-    this.pendingPixelChanges += 1;
-    return pending;
-  }
-
-  public commitPixelChange(pending: PendingPixelChange): void {
-    if (!this.finishPending(pending)) return;
-    const target = this.store.getTexture(pending.layerId);
-    const layer = this.store.getLayer(pending.layerId);
-    if (
-      !target ||
-      !layer ||
-      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
-    ) {
-      pending.snapshot.destroy(true);
-      this.clear();
-      return;
-    }
-    this.record({
-      kind: "pixels",
-      layerId: pending.layerId,
-      snapshot: pending.snapshot,
-      transform: pending.transform,
-    });
-    this.store.touchTexture(pending.layerId);
-  }
-
-  public discardPixelChange(pending: PendingPixelChange): void {
-    if (!this.finishPending(pending)) return;
-    pending.snapshot.destroy(true);
   }
 
   /** Record an already-committed tiled-surface edit (e.g. Fill) as one undo step. */
@@ -3079,14 +2518,9 @@ class UndoHistory {
   }
 
   public undo(): void {
-    if (this.pendingPixelChanges > 0) return;
     const entry = this.undoStack.pop();
     if (!entry) return;
 
-    if (entry.kind === "pixels") {
-      this.restorePixelEntry(entry, this.undoStack, this.redoStack);
-      return;
-    }
     if (entry.kind === "tile-pixels") {
       this.restoreTileEntry(entry, this.undoStack, this.redoStack);
       return;
@@ -3114,14 +2548,9 @@ class UndoHistory {
   }
 
   public redo(): void {
-    if (this.pendingPixelChanges > 0) return;
     const entry = this.redoStack.pop();
     if (!entry) return;
 
-    if (entry.kind === "pixels") {
-      this.restorePixelEntry(entry, this.redoStack, this.undoStack);
-      return;
-    }
     if (entry.kind === "tile-pixels") {
       this.restoreTileEntry(entry, this.redoStack, this.undoStack);
       return;
@@ -3162,7 +2591,7 @@ class UndoHistory {
   private redoAddLayer(entry: RemovedLayerHistoryEntry): void {
     try {
       this.replaying = true;
-      this.store.restoreLayerForUndo(entry.layer, entry.index, entry.texture, entry.tiledSurface);
+      this.store.restoreLayerForUndo(entry.layer, entry.index, entry.tiledSurface);
       this.undoStack.push({ kind: "add-layer", layerId: entry.layer.id });
     } finally {
       this.replaying = false;
@@ -3245,74 +2674,6 @@ class UndoHistory {
     this.trimUndoStack();
   }
 
-  private finishPending(pending: PendingPixelChange): boolean {
-    if (!pending.active) return false;
-    pending.active = false;
-    this.pendingPixelChanges = Math.max(0, this.pendingPixelChanges - 1);
-    return true;
-  }
-
-  private restorePixelEntry(
-    entry: PixelHistoryEntry,
-    sourceStack: HistoryEntry[],
-    destinationStack: HistoryEntry[],
-  ): void {
-    const target = this.store.getTexture(entry.layerId);
-    const layer = this.store.getLayer(entry.layerId);
-    if (
-      !target ||
-      !layer ||
-      (layer.kind !== "raster" && layer.kind !== "mask" && layer.kind !== "control")
-    ) {
-      entry.snapshot.destroy(true);
-      this.clear();
-      return;
-    }
-
-    let inverse: RenderTexture;
-    try {
-      inverse = this.copyTexture(target);
-    } catch (error) {
-      sourceStack.push(entry);
-      throw error;
-    }
-
-    let restored: RenderTexture;
-    try {
-      restored = this.copyTexture(entry.snapshot);
-    } catch (error) {
-      // Neither texture has reached the store yet in this branch.
-      inverse.destroy(true);
-      sourceStack.push(entry);
-      throw error;
-    }
-
-    const inverseTransform = { ...layer.transform };
-    const replaced = this.store.replaceLayerTexture(
-      entry.layerId,
-      target,
-      restored,
-      entry.transform,
-    );
-    if (replaced !== target) {
-      inverse.destroy(true);
-      restored.destroy(true);
-      sourceStack.push(entry);
-      throw new Error(`[ultra-paint] failed to restore paintable layer "${entry.layerId}"`);
-    }
-
-    this.tree.getNode(entry.layerId)?.setTexture(restored);
-    target.destroy(true);
-    entry.snapshot.destroy(true);
-    destinationStack.push({
-      kind: "pixels",
-      layerId: entry.layerId,
-      snapshot: inverse,
-      transform: inverseTransform,
-    });
-    this.store.touchTexture(entry.layerId);
-  }
-
   /**
    * Swap a tiled edit's delta for its inverse. `TileEditDelta.apply()` already
    * emits the add/remove/replace events `TiledRasterView` needs to resync
@@ -3339,45 +2700,6 @@ class UndoHistory {
     }
     destinationStack.push({ kind: "tile-pixels", layerId: entry.layerId, delta: inverse });
     this.store.touchTexture(entry.layerId);
-  }
-
-  private copyTexture(source: RenderTexture): RenderTexture {
-    const snapshot = RenderTexture.create({
-      width: source.width,
-      height: source.height,
-      resolution: source.source.resolution,
-      antialias: false,
-      format: source.source.format,
-      alphaMode: source.source.alphaMode,
-    });
-
-    try {
-      this.copyTextureInto(source, snapshot);
-      return snapshot;
-    } catch (error) {
-      snapshot.destroy(true);
-      throw error;
-    }
-  }
-
-  private copyTextureInto(source: RenderTexture, destination: RenderTexture): void {
-    if (
-      source.source.pixelWidth !== destination.source.pixelWidth ||
-      source.source.pixelHeight !== destination.source.pixelHeight
-    ) {
-      throw new Error("[ultra-paint] cannot restore a layer snapshot with different dimensions");
-    }
-
-    this.app.renderer.renderTarget.copyToTexture(
-      source,
-      destination,
-      { x: 0, y: 0 },
-      {
-        width: source.source.pixelWidth,
-        height: source.source.pixelHeight,
-      },
-      { x: 0, y: 0 },
-    );
   }
 
   private applyStateMutation(mutation: LayerStoreMutation, usePrevious: boolean): void {
@@ -3464,10 +2786,8 @@ class UndoHistory {
   }
 
   private destroyEntry(entry: HistoryEntry): void {
-    if (entry.kind === "pixels") entry.snapshot.destroy(true);
     if (entry.kind === "tile-pixels") entry.delta.destroy();
     if (entry.kind === "removed-layer") {
-      entry.texture?.destroy(true);
       entry.tiledSurface?.destroy();
     }
     if (entry.kind === "deleted-layers") {

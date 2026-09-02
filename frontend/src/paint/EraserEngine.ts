@@ -4,7 +4,6 @@ import type { LayerTree } from "../scene/LayerTree";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BrushSettings } from "../state/paintToolStore.svelte";
 import type { LayerId } from "../state/schema";
-import { ConsistentOpacityStroke } from "./ConsistentOpacityStroke";
 import type { StrokeSession } from "./StrokeController";
 import type { TileEditRecorder } from "./TiledConsistentOpacityStroke";
 import { TiledConsistentOpacityStroke } from "./TiledConsistentOpacityStroke";
@@ -24,26 +23,6 @@ export class EraserEngine {
     const node = this.tree.getNode(layerId);
     if (!node || (node.kind !== "raster" && node.kind !== "mask" && node.kind !== "control")) {
       return null;
-    }
-
-    const texture = this.store.getTexture(layerId);
-    if (texture) {
-      return new ConsistentOpacityStroke(
-        this.app,
-        this.documentRoot,
-        node.container,
-        this.store,
-        layerId,
-        texture,
-        settings,
-        {
-          color: "#ffffff",
-          commitBlendMode: "erase",
-          livePreview: "replace-layer-texture",
-          // ponytail: preserveAlpha doesn't apply to erasing (it would make erase a no-op); revisit if a "protect pixels from erase" mode is ever requested.
-          setPreviewTexture: (previewTexture) => node.setTexture(previewTexture),
-        },
-      );
     }
 
     const surface = this.store.getTiledSurface(layerId);
