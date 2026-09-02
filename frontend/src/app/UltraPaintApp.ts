@@ -2050,16 +2050,25 @@ export class UltraPaintApp {
     }
     try {
       return this.withTiledCullingCleared(() =>
-        this.withTileDebugBordersHidden(() =>
-          Compositor.flatten(app, tree.root, doc.boundaryBox, chunkSize),
-        ),
+        this.withTileDebugBordersHidden(() => {
+          // `tree.root` must be back under `world` *before` `withTiledCullingCleared`'s
+          // `finally` recomputes per-layer culling -- that recompute walks each
+          // node's container up to the camera-transformed `world`, and with
+          // `tree.root` still detached it sees no camera at all, producing an
+          // undersized region that clips real content until something else
+          // (e.g. toggling a layer) forces a correctly-parented recompute.
+          try {
+            return Compositor.flatten(app, tree.root, doc.boundaryBox, chunkSize);
+          } finally {
+            parent?.addChildAt(tree.root, insertIndex);
+          }
+        }),
       );
     } finally {
       for (const entry of sceneVisibility) {
         entry.node.container.renderable = entry.renderable;
         entry.node.container.visible = entry.visible;
       }
-      parent?.addChildAt(tree.root, insertIndex);
     }
   }
 
