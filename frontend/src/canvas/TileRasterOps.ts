@@ -1,6 +1,7 @@
-import { Container, RenderTexture, Sprite, Texture } from "pixi.js";
+import { Container, Matrix, Rectangle, RenderTexture, Sprite, Texture } from "pixi.js";
 import type { Renderer } from "pixi.js";
 
+import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "./rendererCapabilities";
 import type { TileEditTransaction, TileVisit } from "./TiledRasterCanvas";
 import { TiledRasterCanvas } from "./TiledRasterCanvas";
 import type { PixelBounds } from "./TileGrid";
@@ -38,33 +39,94 @@ export function blitTexture(
 }
 
 /**
- * Render every tile into one fresh `RenderTexture` sized to the surface's
- * logical bounds, for read-only paths (single-image source export) that
- * genuinely need a monolithic snapshot. Caller owns the result.
+ * Render every tile into a CPU-owned canvas sized to the surface's logical
+ * bounds, for read-only paths (single-image source export, pixel scanning)
+ * that need one flattened snapshot.
+ *
+ * A sparse layer can be wider or taller than the renderer's max texture
+ * dimension, so this never allocates one monolithic `RenderTexture` sized to
+ * the whole layer. Instead it renders device-safe chunks (mirroring
+ * `Compositor`'s chunked flatten) and stitches each into the output canvas,
+ * destroying every chunk texture as it goes.
  */
-export function flattenToTexture(renderer: Renderer, surface: TiledRasterCanvas): RenderTexture {
+export function flattenToCanvas(
+  renderer: Renderer,
+  surface: TiledRasterCanvas,
+  requestedChunkSize?: number,
+): { canvas: HTMLCanvasElement; originX: number; originY: number } {
   const bounds = surface.bounds ?? { x: 0, y: 0, width: 1, height: 1 };
-  const texture = RenderTexture.create({
-    width: Math.max(1, bounds.width),
-    height: Math.max(1, bounds.height),
-    resolution: 1,
-    antialias: false,
-  });
+  const width = Math.max(1, bounds.width);
+  const height = Math.max(1, bounds.height);
+
+  const capabilities = getTileRendererCapabilities(renderer);
+  const chunkSize = requestedChunkSize ?? capabilities.selectedTileSize ?? PREFERRED_TILE_SIZE;
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError(`flattenToCanvas() needs a positive integer chunk size, got ${chunkSize}`);
+  }
+  if (
+    capabilities.maxTextureDimension2D !== null &&
+    chunkSize > capabilities.maxTextureDimension2D
+  ) {
+    throw new RangeError(
+      `flattenToCanvas() chunk ${chunkSize} exceeds renderer limit ${capabilities.maxTextureDimension2D}`,
+    );
+  }
+
+  const output = document.createElement("canvas");
+  output.width = width;
+  output.height = height;
+  if (output.width !== width || output.height !== height) {
+    throw new RangeError(
+      `flattenToCanvas() output ${width}x${height} exceeds this browser's canvas limit`,
+    );
+  }
+  const context = output.getContext("2d");
+  if (!context) throw new Error("[ultra-paint] could not create the flattenToCanvas output canvas");
+
   const root = new Container();
   surface.visitAll((tile) => {
     const sprite = new Sprite({ texture: tile.target });
     sprite.position.set(tile.originX - bounds.x, tile.originY - bounds.y);
     root.addChild(sprite);
   });
+
   try {
-    renderer.render({ container: root, target: texture, clear: true, clearColor: [0, 0, 0, 0] });
-    return texture;
-  } catch (error) {
-    texture.destroy(true);
-    throw error;
+    const transform = new Matrix();
+    for (let offsetY = 0; offsetY < height; offsetY += chunkSize) {
+      for (let offsetX = 0; offsetX < width; offsetX += chunkSize) {
+        const chunkWidth = Math.min(chunkSize, width - offsetX);
+        const chunkHeight = Math.min(chunkSize, height - offsetY);
+        transform.set(1, 0, 0, 1, -offsetX, -offsetY);
+        const chunk = RenderTexture.create({
+          width: chunkWidth,
+          height: chunkHeight,
+          resolution: 1,
+          antialias: false,
+        });
+        try {
+          renderer.render({
+            container: root,
+            target: chunk,
+            transform,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+          const chunkCanvas = renderer.extract.canvas({
+            target: chunk,
+            frame: new Rectangle(0, 0, chunkWidth, chunkHeight),
+            resolution: 1,
+          });
+          context.drawImage(chunkCanvas as CanvasImageSource, offsetX, offsetY);
+        } finally {
+          chunk.destroy(true);
+        }
+      }
+    }
   } finally {
     root.destroy({ children: true, texture: false, textureSource: false });
   }
+
+  return { canvas: output, originX: bounds.x, originY: bounds.y };
 }
 
 /**

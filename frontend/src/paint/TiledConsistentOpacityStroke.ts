@@ -126,7 +126,7 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
       );
       const stampAlpha = this.opacityPressure ? pressure : 1;
 
-      for (const coord of this.tileRangeForStamp(sizeScale)) {
+      for (const coord of this.tileRangeForStamp()) {
         const state = this.tileFor(coord);
         if (!state) continue;
 
@@ -370,6 +370,10 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
       overlaySprite.blendMode = "normal";
       if (this.options.preserveAlpha) {
         state.alphaMaskSprite = new Sprite({ texture: baseTarget! });
+        // Mask and overlay share `layerContainer`, so the mask must sit at the
+        // same tile-local origin as the overlay (set below) or it samples the
+        // wrong region of the base tile on every non-origin tile.
+        state.alphaMaskSprite.position.set(bounds.x, bounds.y);
         overlaySprite.setMask({ mask: state.alphaMaskSprite, channel: "alpha" });
         this.layerContainer.addChild(state.alphaMaskSprite);
       }
@@ -403,8 +407,12 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
   }
 
   /** Tile coordinates intersecting the current stamp's affine bounding box. */
-  private *tileRangeForStamp(sizeScale: number): Generator<TileCoord> {
-    const half = this.stampHalfExtent * sizeScale;
+  private *tileRangeForStamp(): Generator<TileCoord> {
+    // `this.transform` already bakes `sizeScale` into its a/b/c/d (see
+    // `addPoints`), so the corners below must use the stamp's unscaled local
+    // half-extent -- multiplying by `sizeScale` again would compound it to
+    // pressure^2 while the rendered stamp only scales by pressure^1.
+    const half = this.stampHalfExtent;
     const corners = [
       this.transform.apply({ x: -half, y: -half }),
       this.transform.apply({ x: half, y: -half }),

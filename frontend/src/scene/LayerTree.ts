@@ -37,10 +37,20 @@ export class LayerTree {
 
   private destroyed = false;
 
-  constructor(store: LayerStore) {
+  /**
+   * Invoked after every {@link reconcile} pass. Layer/ancestor transforms are
+   * applied to node containers inside `reconcile`, so the camera-driven tile
+   * culling in `UltraPaintApp` has to be recomputed here too -- otherwise a
+   * layer move/rotate/scale (including a group ancestor's) leaves the
+   * previously-attached tile set stale until the next pan/zoom.
+   */
+  private readonly onReconciled?: () => void;
+
+  constructor(store: LayerStore, onReconciled?: () => void) {
     this.store = store;
     this.root = new Container({ label: "ultra-paint:document-root" });
     this.root.eventMode = "none";
+    this.onReconciled = onReconciled;
 
     this.unsubscribe = store.subscribe((doc) => this.reconcile(doc));
     // Adopt whatever is already in the store (non-empty on re-mount).
@@ -144,6 +154,11 @@ export class LayerTree {
       if (!groupNode) continue;
       this.attachOrdered(groupNode.container, layer.children);
     }
+
+    // Container transforms (this layer's own, or an ancestor group's) just
+    // changed above. Recompute per-tile-layer culling from the current
+    // camera against the new world transforms.
+    this.onReconciled?.();
   }
 
   /** Detach every node and drop the subscription. Leaves `root` empty. */

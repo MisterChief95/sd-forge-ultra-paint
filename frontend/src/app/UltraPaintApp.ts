@@ -78,7 +78,7 @@ import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rend
 import type { TileAllocation, TileEditDelta } from "../canvas/TiledRasterCanvas";
 import type { PixelBounds } from "../canvas/TileGrid";
 import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
-import { blitTexture, copyTiledSurfaceTileByTile, flattenToTexture } from "../canvas/TileRasterOps";
+import { blitTexture, copyTiledSurfaceTileByTile, flattenToCanvas } from "../canvas/TileRasterOps";
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
@@ -263,7 +263,7 @@ export class UltraPaintApp {
     app.canvas.style.display = "block";
     root.replaceChildren(app.canvas);
 
-    this.tree = new LayerTree(this.store);
+    this.tree = new LayerTree(this.store, () => this.updateTiledVisibleRegions());
     if (this.tileDebugBordersVisible) this.tree.setTileDebugBorders(true);
     this.world = new Container({ label: "ultra-paint:world" });
     this.viewportPositioned =
@@ -395,6 +395,30 @@ export class UltraPaintApp {
       if (maxX <= minX || maxY <= minY) return;
       node.setTiledVisibleRegion({ x: minX, y: minY, width: maxX - minX, height: maxY - minY });
     });
+  }
+
+  /**
+   * Viewport culling detaches a tiled layer's off-screen tile sprites, which
+   * is invisible during normal display but silently drops content from any
+   * operation that reads the live scene tree instead of the full tile
+   * surface -- export (`Compositor.flatten`), the selected-layers merge
+   * render, and selection-bounds measurement all walk `node.container`
+   * directly. Clear every tiled node's culling before `fn` runs so it sees
+   * every tile, then restore culling from the live camera in `finally` (not
+   * whatever region existed before, which may be stale by the time `fn`
+   * returns).
+   */
+  private withTiledCullingCleared<T>(fn: () => T): T {
+    const tree = this.tree;
+    if (!tree) return fn();
+    tree.forEachNode((node) => {
+      if (node.hasTiledView) node.setTiledVisibleRegion(null);
+    });
+    try {
+      return fn();
+    } finally {
+      this.updateTiledVisibleRegions();
+    }
   }
 
   private mountViewportControls(canvas: HTMLCanvasElement, root: HTMLElement): void {
@@ -796,8 +820,9 @@ export class UltraPaintApp {
     const tiledSurface = this.store.getTiledSurface(id);
     if (!tiledSurface) return null;
 
-    const width = tiledSurface.bounds?.width ?? 0;
-    const height = tiledSurface.bounds?.height ?? 0;
+    const bounds = tiledSurface.bounds;
+    const width = bounds?.width ?? 0;
+    const height = bounds?.height ?? 0;
     if (width <= 0 || height <= 0) return null;
 
     const resolution = Math.min(1, maxSize / Math.max(width, height));
@@ -813,7 +838,7 @@ export class UltraPaintApp {
       // (a full tile is allocated even for a partial-tile image); an explicit
       // frame crops the export to exactly the ingested pixels instead of
       // whatever coarse tile-aligned area the container's auto bounds would use.
-      const frame = new Rectangle(0, 0, width, height);
+      const frame = new Rectangle(bounds?.x ?? 0, bounds?.y ?? 0, width, height);
       const canvas = app.renderer.extract.canvas({ target: root, resolution, frame });
       return (canvas as HTMLCanvasElement).toDataURL("image/png");
     } catch (error) {
@@ -970,11 +995,15 @@ export class UltraPaintApp {
     try {
       const bounds = surface.bounds;
       if (bounds) {
-        surface.edit(bounds, { allocation: "existing-only", transaction }, (tile) => {
-          app.renderer.renderTarget.bind({
-            target: tile.target,
-            clear: true,
-            clearColor: [0, 0, 0, 0],
+        surface.visitAll((tile) => {
+          const tileBounds = surface.grid.boundsFor(tile.coord);
+          if (!intersectBounds(tileBounds, bounds)) return;
+          surface.edit(tileBounds, { allocation: "existing-only", transaction }, (editable) => {
+            app.renderer.renderTarget.bind({
+              target: editable.target,
+              clear: true,
+              clearColor: [0, 0, 0, 0],
+            });
           });
         });
       }
@@ -1090,7 +1119,14 @@ export class UltraPaintApp {
 
     try {
       const bounds = surface.bounds;
-      if (bounds) surface.edit(bounds, { allocation: "existing-only", transaction }, invertTile);
+      if (bounds) {
+        surface.visitAll((tile) => {
+          const tileBounds = surface.grid.boundsFor(tile.coord);
+          if (intersectBounds(tileBounds, bounds)) {
+            surface.edit(tileBounds, { allocation: "existing-only", transaction }, invertTile);
+          }
+        });
+      }
       if (polygonBounds.width > 0 && polygonBounds.height > 0) {
         surface.edit(polygonBounds, { allocation: "allocate-missing", transaction }, invertTile);
         transaction.includeBounds(polygonBounds);
@@ -1520,6 +1556,7 @@ export class UltraPaintApp {
       return false;
     }
     history.recordTileEdit(id, delta);
+    this.store.touchTexture(id);
     return true;
   }
 
@@ -1531,46 +1568,23 @@ export class UltraPaintApp {
    * no registered texture (group layers, or before the app is ready).
    */
   public layerSourceDataURL(id: LayerId): string | null {
-    const app = this.app;
-    if (!app) return null;
+    if (!this.app) return null;
     const source = this.readLayerPixels(id);
-    if (!source) return null;
-    try {
-      const canvas = app.renderer.extract.canvas({ target: source.texture, resolution: 1 });
-      return typeof canvas.toDataURL === "function" ? canvas.toDataURL("image/png") : null;
-    } finally {
-      source.dispose();
-    }
+    return source ? source.canvas.toDataURL("image/png") : null;
   }
 
   /** Encode one textured layer's untransformed source pixels as PNG. */
   public async layerSourcePngBlob(id: LayerId): Promise<Blob | null> {
     await this.ready;
-    const app = this.app;
-    if (!app) return null;
+    if (!this.app) return null;
     const source = this.readLayerPixels(id);
     if (!source) return null;
-
-    try {
-      const canvas = app.renderer.extract.canvas({ target: source.texture, resolution: 1 }) as {
-        convertToBlob?: (options?: { type?: string }) => Promise<Blob>;
-        toBlob?: (callback: (blob: Blob | null) => void, type?: string) => void;
-      };
-      if (typeof canvas.convertToBlob === "function") {
-        return await canvas.convertToBlob({ type: "image/png" });
-      }
-      if (typeof canvas.toBlob === "function") {
-        return await new Promise<Blob>((resolve, reject) => {
-          canvas.toBlob?.(
-            (blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed"))),
-            "image/png",
-          );
-        });
-      }
-      return null;
-    } finally {
-      source.dispose();
-    }
+    return await new Promise<Blob>((resolve, reject) => {
+      source.canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed"))),
+        "image/png",
+      );
+    });
   }
 
   /**
@@ -1768,33 +1782,35 @@ export class UltraPaintApp {
     if (!tree) {
       throw new Error("[ultra-paint] cannot merge layers before the app is ready");
     }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const id of ids) {
-      const node = tree.getNode(id);
-      if (!node) continue;
-      // getBounds() is in stage (global/screen) space, which includes the
-      // camera pan/zoom applied above `tree.root` -- reproject the AABB
-      // corners into `tree.root`'s own (document) space before unioning.
-      const bounds = node.container.getBounds();
-      const topLeft = tree.root.toLocal({ x: bounds.x, y: bounds.y });
-      const bottomRight = tree.root.toLocal({
-        x: bounds.x + bounds.width,
-        y: bounds.y + bounds.height,
-      });
-      minX = Math.min(minX, topLeft.x);
-      minY = Math.min(minY, topLeft.y);
-      maxX = Math.max(maxX, bottomRight.x);
-      maxY = Math.max(maxY, bottomRight.y);
-    }
-    if (!Number.isFinite(minX)) {
-      throw new Error("[ultra-paint] selected layers have no visible content to merge");
-    }
-    minX = Math.floor(minX);
-    minY = Math.floor(minY);
-    return { x: minX, y: minY, width: Math.ceil(maxX) - minX, height: Math.ceil(maxY) - minY };
+    return this.withTiledCullingCleared(() => {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const id of ids) {
+        const node = tree.getNode(id);
+        if (!node) continue;
+        // getBounds() is in stage (global/screen) space, which includes the
+        // camera pan/zoom applied above `tree.root` -- reproject the AABB
+        // corners into `tree.root`'s own (document) space before unioning.
+        const bounds = node.container.getBounds();
+        const topLeft = tree.root.toLocal({ x: bounds.x, y: bounds.y });
+        const bottomRight = tree.root.toLocal({
+          x: bounds.x + bounds.width,
+          y: bounds.y + bounds.height,
+        });
+        minX = Math.min(minX, topLeft.x);
+        minY = Math.min(minY, topLeft.y);
+        maxX = Math.max(maxX, bottomRight.x);
+        maxY = Math.max(maxY, bottomRight.y);
+      }
+      if (!Number.isFinite(minX)) {
+        throw new Error("[ultra-paint] selected layers have no visible content to merge");
+      }
+      minX = Math.floor(minX);
+      minY = Math.floor(minY);
+      return { x: minX, y: minY, width: Math.ceil(maxX) - minX, height: Math.ceil(maxY) - minY };
+    });
   }
 
   /**
@@ -1815,48 +1831,50 @@ export class UltraPaintApp {
       throw new Error(`[ultra-paint] cannot merge ${box.width}x${box.height} of content`);
     }
 
-    return this.withOnlySelectedRenderable(ids, () =>
-      this.withTileDebugBordersHidden(() => {
-        const root = tree.root;
-        const previousMask = root.mask;
-        root.mask = null;
-        const tileSize =
-          getTileRendererCapabilities(app.renderer).selectedTileSize ?? PREFERRED_TILE_SIZE;
-        const surface = new TiledRasterCanvas(app.renderer, tileSize);
-        const transform = new Matrix();
+    return this.withTiledCullingCleared(() =>
+      this.withOnlySelectedRenderable(ids, () =>
+        this.withTileDebugBordersHidden(() => {
+          const root = tree.root;
+          const previousMask = root.mask;
+          root.mask = null;
+          const tileSize =
+            getTileRendererCapabilities(app.renderer).selectedTileSize ?? PREFERRED_TILE_SIZE;
+          const surface = new TiledRasterCanvas(app.renderer, tileSize);
+          const transform = new Matrix();
 
-        try {
-          const transaction = surface.beginEdit("merge");
           try {
-            for (let offsetY = 0; offsetY < box.height; offsetY += tileSize) {
-              for (let offsetX = 0; offsetX < box.width; offsetX += tileSize) {
-                const region = { x: offsetX, y: offsetY, width: tileSize, height: tileSize };
-                transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
-                surface.edit(region, { allocation: "allocate-missing", transaction }, (tile) => {
-                  app.renderer.render({
-                    container: root,
-                    target: tile.target,
-                    transform,
-                    clear: true,
-                    clearColor: [0, 0, 0, 0],
+            const transaction = surface.beginEdit("merge");
+            try {
+              for (let offsetY = 0; offsetY < box.height; offsetY += tileSize) {
+                for (let offsetX = 0; offsetX < box.width; offsetX += tileSize) {
+                  const region = { x: offsetX, y: offsetY, width: tileSize, height: tileSize };
+                  transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
+                  surface.edit(region, { allocation: "allocate-missing", transaction }, (tile) => {
+                    app.renderer.render({
+                      container: root,
+                      target: tile.target,
+                      transform,
+                      clear: true,
+                      clearColor: [0, 0, 0, 0],
+                    });
                   });
-                });
+                }
               }
+              transaction.includeBounds({ x: 0, y: 0, width: box.width, height: box.height });
+              transaction.commit().destroy();
+            } catch (error) {
+              transaction.rollback();
+              throw error;
             }
-            transaction.includeBounds({ x: 0, y: 0, width: box.width, height: box.height });
-            transaction.commit().destroy();
+            return surface;
           } catch (error) {
-            transaction.rollback();
+            surface.destroy();
             throw error;
+          } finally {
+            root.mask = previousMask;
           }
-          return surface;
-        } catch (error) {
-          surface.destroy();
-          throw error;
-        } finally {
-          root.mask = previousMask;
-        }
-      }),
+        }),
+      ),
     );
   }
 
@@ -2031,8 +2049,10 @@ export class UltraPaintApp {
       entry.node.container.visible = include && entry.layer.visible;
     }
     try {
-      return this.withTileDebugBordersHidden(() =>
-        Compositor.flatten(app, tree.root, doc.boundaryBox, chunkSize),
+      return this.withTiledCullingCleared(() =>
+        this.withTileDebugBordersHidden(() =>
+          Compositor.flatten(app, tree.root, doc.boundaryBox, chunkSize),
+        ),
       );
     } finally {
       for (const entry of sceneVisibility) {
@@ -2153,38 +2173,37 @@ export class UltraPaintApp {
       // logical bounds origin, not layer-local (0, 0) -- same offset
       // `readLayerPixels()` exposes via `originX`/`originY` for other
       // consumers (see `transformForPixelSnapshot()`).
-      const texture = flattenToTexture(app.renderer, tiledSurface);
-      const boundsOriginX = tiledSurface.bounds?.x ?? 0;
-      const boundsOriginY = tiledSurface.bounds?.y ?? 0;
-      try {
-        const origin = tree.root.toLocal({ x: 0, y: 0 }, node.container);
-        const xUnit = tree.root.toLocal({ x: 1, y: 0 }, node.container);
-        const yUnit = tree.root.toLocal({ x: 0, y: 1 }, node.container);
-        const a = xUnit.x - origin.x;
-        const b = xUnit.y - origin.y;
-        const c = yUnit.x - origin.x;
-        const d = yUnit.y - origin.y;
-        const extracted = app.renderer.extract.pixels(texture);
-        const stepX = texture.width / extracted.width;
-        const stepY = texture.height / extracted.height;
-        const ax = a * stepX;
-        const ay = b * stepX;
-        const cx = c * stepY;
-        const cy = d * stepY;
+      //
+      // `flattenToCanvas()` stitches device-safe render chunks into a
+      // CPU-owned canvas rather than one monolithic GPU texture, so a mask
+      // wider/taller than the renderer's max texture dimension still scans.
+      const {
+        canvas,
+        originX: boundsOriginX,
+        originY: boundsOriginY,
+      } = flattenToCanvas(app.renderer, tiledSurface);
+      const context = canvas.getContext("2d");
+      if (!context) continue;
 
-        for (let offset = 3, pixel = 0; offset < extracted.pixels.length; offset += 4, pixel += 1) {
-          if (extracted.pixels[offset] === 0) continue;
-          const x = boundsOriginX + (pixel % extracted.width) * stepX;
-          const y = boundsOriginY + Math.floor(pixel / extracted.width) * stepY;
-          const x0 = origin.x + a * x + c * y;
-          const y0 = origin.y + b * x + d * y;
-          minX = Math.min(minX, x0, x0 + ax, x0 + cx, x0 + ax + cx);
-          minY = Math.min(minY, y0, y0 + ay, y0 + cy, y0 + ay + cy);
-          maxX = Math.max(maxX, x0, x0 + ax, x0 + cx, x0 + ax + cx);
-          maxY = Math.max(maxY, y0, y0 + ay, y0 + cy, y0 + ay + cy);
-        }
-      } finally {
-        texture.destroy(true);
+      const origin = tree.root.toLocal({ x: 0, y: 0 }, node.container);
+      const xUnit = tree.root.toLocal({ x: 1, y: 0 }, node.container);
+      const yUnit = tree.root.toLocal({ x: 0, y: 1 }, node.container);
+      const a = xUnit.x - origin.x;
+      const b = xUnit.y - origin.y;
+      const c = yUnit.x - origin.x;
+      const d = yUnit.y - origin.y;
+      const { data, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+
+      for (let offset = 3, pixel = 0; offset < data.length; offset += 4, pixel += 1) {
+        if (data[offset] === 0) continue;
+        const x = boundsOriginX + (pixel % width);
+        const y = boundsOriginY + Math.floor(pixel / width);
+        const x0 = origin.x + a * x + c * y;
+        const y0 = origin.y + b * x + d * y;
+        minX = Math.min(minX, x0, x0 + a, x0 + c, x0 + a + c);
+        minY = Math.min(minY, y0, y0 + b, y0 + d, y0 + b + d);
+        maxX = Math.max(maxX, x0, x0 + a, x0 + c, x0 + a + c);
+        maxY = Math.max(maxY, y0, y0 + b, y0 + d, y0 + b + d);
       }
     }
 
@@ -2268,22 +2287,17 @@ export class UltraPaintApp {
 
   /**
    * Read-only access to a paintable layer's pixels: a throwaway flattened
-   * snapshot the caller must dispose.
+   * CPU canvas stitched from device-safe render chunks (see
+   * `flattenToCanvas()`), so a layer larger than the renderer's max texture
+   * dimension still works.
    */
   private readLayerPixels(
     id: LayerId,
-  ): { texture: RenderTexture; originX: number; originY: number; dispose: () => void } | undefined {
+  ): { canvas: HTMLCanvasElement; originX: number; originY: number } | undefined {
     const tiledSurface = this.store.getTiledSurface(id);
     const renderer = this.app?.renderer;
     if (!tiledSurface || !renderer) return undefined;
-    const bounds = tiledSurface.bounds;
-    const flattened = flattenToTexture(renderer, tiledSurface);
-    return {
-      texture: flattened,
-      originX: bounds?.x ?? 0,
-      originY: bounds?.y ?? 0,
-      dispose: () => flattened.destroy(true),
-    };
+    return flattenToCanvas(renderer, tiledSurface);
   }
 
   /**

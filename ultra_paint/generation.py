@@ -630,13 +630,6 @@ def run_generation(
             # stack a second Gaussian pass on top of that one.
             hard_mask = derive_outpaint_mask(composite_image)
 
-            import os
-
-            debug_dir = os.path.join(os.path.dirname(__file__), "..", "debug_dump")
-            os.makedirs(debug_dir, exist_ok=True)
-            composite_image.save(os.path.join(debug_dir, "01_incoming_composite.png"))
-            hard_mask.save(os.path.join(debug_dir, "02_hard_mask.png"))
-
             filled_rgb = fill_transparent_region(composite_image, hard_mask)
             # `hard_mask` contains only 0/255, so paste is direct pixel
             # substitution: every seed pixel is either untouched source RGB
@@ -650,7 +643,6 @@ def run_generation(
                 if mask_image is not None
                 else hard_mask
             )
-            composite_image.save(os.path.join(debug_dir, "03_seeded_composite.png"))
 
     p = (
         build_txt2img_processing(composite_image, gen_params, control_layers)
