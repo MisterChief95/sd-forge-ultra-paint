@@ -82,6 +82,8 @@ type TestWindow = Window & {
       resizeBoundaryBox(width: number, height: number): void;
       addImageFromFile(file: File): Promise<string>;
       addImageFromDataURL(url: string, name?: string, source?: string): Promise<string>;
+      addMaskLayerFromFile(file: File): Promise<string>;
+      mergeVisibleMasksToNewMask(): string;
       undo(): void;
       redo(): void;
     } | null;
@@ -89,6 +91,7 @@ type TestWindow = Window & {
     layerStore: {
       setSelectedLayerId(id: string | null): void;
       setBoundaryBox(box: { x: number; y: number; width: number; height: number }): void;
+      setTransform(id: string, value: TestLayer["transform"]): void;
       document: { layers: TestLayer[] };
       getTiledSurface(id: string): TestSurface | undefined;
       getTexture(id: string): TestTarget | undefined;
@@ -379,6 +382,126 @@ test("keeps signed tile pixels local under layer rotation and scale", async ({ p
   expect(result.bounds.height).toBeCloseTo(32);
 });
 
+test("a rotated layer keeps a fractional-zoom stroke continuous across four tile seams", async ({
+  page,
+}) => {
+  const setup = await page.evaluate(async () => {
+    type Hook = {
+      getActiveUltraPaintApp(): { ready: Promise<void>; addBlankLayer(): Promise<string> } | null;
+      layerStore: {
+        setBoundaryBox(box: { x: number; y: number; width: number; height: number }): void;
+        setSelectedLayerId(id: string): void;
+        setTransform(
+          id: string,
+          transform: { x: number; y: number; scaleX: number; scaleY: number; rotation: number },
+        ): void;
+      };
+      paintToolStore: {
+        setBrushSettings(settings: {
+          color?: string;
+          radius?: number;
+          hardness?: number;
+          opacity?: number;
+        }): void;
+      };
+    };
+    type PrivateApp = {
+      app: { renderer: { width: number; height: number } };
+      world: { position: { set(x: number, y: number): void }; scale: { set(value: number): void } };
+      tree: {
+        getNode(id: string): {
+          container: { toGlobal(point: { x: number; y: number }): { x: number; y: number } };
+        };
+      };
+    };
+
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // The diagonal crosses the corner shared by tiles (0,0), (1,0), (0,1), and
+    // (1,1), with both a rotated layer and a 0.63 camera scale in effect.
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 2048, height: 2048 });
+    const id = await app.addBlankLayer();
+    hook.layerStore.setSelectedLayerId(id);
+    hook.layerStore.setTransform(id, {
+      x: 180,
+      y: 90,
+      scaleX: 0.82,
+      scaleY: 0.82,
+      rotation: 0.31,
+    });
+    hook.paintToolStore.setBrushSettings({
+      color: "#e11d48",
+      radius: 64,
+      hardness: 1,
+      opacity: 1,
+    });
+
+    const privateApp = app as unknown as PrivateApp;
+    const node = privateApp.tree.getNode(id);
+    privateApp.world.scale.set(0.63);
+    privateApp.world.position.set(0, 0);
+    const seam = node.container.toGlobal({ x: 1024, y: 1024 });
+    privateApp.world.position.set(
+      privateApp.app.renderer.width / 2 - seam.x,
+      privateApp.app.renderer.height / 2 - seam.y,
+    );
+    const canvas = document.querySelector<HTMLCanvasElement>("#upaint-root canvas");
+    if (!canvas) throw new Error("Canvas is unavailable");
+    const bounds = canvas.getBoundingClientRect();
+    const toClient = (point: { x: number; y: number }) => {
+      const global = node.container.toGlobal(point);
+      return {
+        x: bounds.x + (global.x * bounds.width) / privateApp.app.renderer.width,
+        y: bounds.y + (global.y * bounds.height) / privateApp.app.renderer.height,
+      };
+    };
+    return { id, from: toClient({ x: 960, y: 960 }), to: toClient({ x: 1088, y: 1088 }) };
+  });
+
+  await page.mouse.move(setup.from.x, setup.from.y);
+  await page.mouse.down();
+  await page.mouse.move(setup.to.x, setup.to.y, { steps: 24 });
+  await page.mouse.up();
+
+  const result = await page.evaluate(async (id) => {
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const surface = hook.layerStore.getTiledSurface(id);
+    if (!surface) throw new Error("Painted tiled surface is unavailable");
+    const seamPixels = await Promise.all(
+      [
+        { x: 1023, y: 1023 },
+        { x: 1024, y: 1023 },
+        { x: 1023, y: 1024 },
+        { x: 1024, y: 1024 },
+      ].map(async (point) => {
+        let tile: TestVisit | null = null;
+        surface.visit({ ...point, width: 1, height: 1 }, (visit) => {
+          tile = visit;
+        });
+        if (!tile) throw new Error(`Missing tile at ${point.x},${point.y}`);
+        return hook.readTilePixel(tile.target, point.x - tile.originX, point.y - tile.originY);
+      }),
+    );
+    return { coords: surface.diagnosticTileCoords(), seamPixels };
+  }, setup.id);
+
+  expect(result.coords).toEqual([
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 1, y: 1 },
+  ]);
+  expect(result.seamPixels).toEqual([
+    [225, 29, 72, 255],
+    [225, 29, 72, 255],
+    [225, 29, 72, 255],
+    [225, 29, 72, 255],
+  ]);
+});
+
 test("stitches a forced multi-chunk export pixel-identically", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const hook = (window as TestWindow).__ultraPaintTest!;
@@ -615,6 +738,70 @@ async function samplePixels(
   );
 }
 
+test("pasting a multi-tile image as a mask converts tile-by-tile, straight off the ingested surface", async ({
+  page,
+}) => {
+  const setup = await page.evaluate(async () => {
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // Same 1500x1100 quadrant image as the upload/conversion tests -- spans
+    // a 2x2 tile grid at the default 1024 tile size.
+    const canvas = document.createElement("canvas");
+    canvas.width = 1500;
+    canvas.height = 1100;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#ff0000";
+    ctx.fillRect(0, 0, 750, 550);
+    ctx.fillStyle = "#00ff00";
+    ctx.fillRect(750, 0, 750, 550);
+    ctx.fillStyle = "#0000ff";
+    ctx.fillRect(0, 550, 750, 550);
+    ctx.fillStyle = "#ffff00";
+    ctx.fillRect(750, 550, 750, 550);
+    const blob: Blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
+    );
+
+    const maskId = await app.addMaskLayerFromFile(
+      new File([blob], "quadrants.png", { type: blob.type }),
+    );
+    const maskLayer = hook.layerStore.document.layers.find((l) => l.id === maskId);
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 1500, height: 1100 });
+    const maskUrl = app.flattenMaskToDataURL()!;
+
+    return {
+      kind: maskLayer?.kind,
+      dims: { width: maskLayer?.image.width, height: maskLayer?.image.height },
+      storage: maskLayer?.image.storage,
+      transform: maskLayer?.transform,
+      maskUrl,
+    };
+  });
+
+  expect(setup.kind).toBe("mask");
+  expect(setup.dims).toEqual({ width: 1500, height: 1100 });
+  expect(setup.storage).toBe("tiled");
+  expect(setup.transform).toEqual({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+
+  const quadrantPoints: Array<[number, number]> = [
+    [300, 200],
+    [1200, 200],
+    [300, 900],
+    [1200, 900],
+  ];
+  const maskGray = (r: number, g: number, b: number) =>
+    Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+  expect(await samplePixels(page, setup.maskUrl, quadrantPoints)).toEqual([
+    [maskGray(255, 0, 0), maskGray(255, 0, 0), maskGray(255, 0, 0), 255],
+    [maskGray(0, 255, 0), maskGray(0, 255, 0), maskGray(0, 255, 0), 255],
+    [maskGray(0, 0, 255), maskGray(0, 0, 255), maskGray(0, 0, 255), 255],
+    [maskGray(255, 255, 0), maskGray(255, 255, 0), maskGray(255, 255, 0), 255],
+  ]);
+});
+
 test("fill, mask/control conversion, and clip-to-boundary-box all work on a tiled raster layer", async ({
   page,
 }) => {
@@ -647,12 +834,18 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
     const id = await app.addImageFromFile(new File([blob], "quadrants.png", { type: blob.type }));
     const storageBeforeAnyEdit = hook!.layerStore.document.layers.find((l) => l.id === id)?.image
       .storage;
+    const sourceTransform = {
+      ...hook!.layerStore.document.layers.find((l) => l.id === id)!.transform,
+    };
 
-    // Read-only conversions must work directly off the tiled surface.
+    // Read-only conversions must work tile-by-tile, straight off the tiled
+    // surface, with no full-boundary-box flatten in between.
     const maskId = app.convertLayerToMask(id);
     const controlId = app.convertLayerToControl(id);
     const maskLayer = hook!.layerStore.document.layers.find((l) => l.id === maskId);
     const controlLayer = hook!.layerStore.document.layers.find((l) => l.id === controlId);
+    const maskUrl = app.flattenMaskToDataURL()!;
+    const controlUrl = app.layerSourceDataURL(controlId)!;
 
     // Fill a rect crossing all four tiles, then undo and redo it.
     hook!.layerStore.setSelectedLayerId(id);
@@ -689,12 +882,17 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
 
     return {
       storageBeforeAnyEdit,
+      sourceTransform,
       maskKind: maskLayer?.kind,
       maskDims: { width: maskLayer?.image.width, height: maskLayer?.image.height },
       maskStorage: maskLayer?.image.storage,
+      maskTransform: maskLayer?.transform,
+      maskUrl,
       controlKind: controlLayer?.kind,
       controlDims: { width: controlLayer?.image.width, height: controlLayer?.image.height },
       controlStorage: controlLayer?.image.storage,
+      controlTransform: controlLayer?.transform,
+      controlUrl,
       afterFillUrl,
       afterFillUndoUrl,
       afterFillRedoUrl,
@@ -716,9 +914,36 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   expect(setup.maskKind).toBe("mask");
   expect(setup.maskDims).toEqual({ width: 1500, height: 1100 });
   expect(setup.maskStorage).toBe("tiled");
+  expect(setup.maskTransform).toEqual(setup.sourceTransform);
   expect(setup.controlKind).toBe("control");
   expect(setup.controlDims).toEqual({ width: 1500, height: 1100 });
   expect(setup.controlStorage).toBe("tiled");
+  expect(setup.controlTransform).toEqual(setup.sourceTransform);
+
+  // A per-tile luminance conversion of solid red/green/blue/yellow quadrants
+  // must land as the correct per-channel-weighted gray in each quadrant, at
+  // the right position -- catching a broken or misaligned per-tile loop.
+  const quadrantPoints: Array<[number, number]> = [
+    [300, 200],
+    [1200, 200],
+    [300, 900],
+    [1200, 900],
+  ];
+  const maskGray = (r: number, g: number, b: number) =>
+    Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+  expect(await samplePixels(page, setup.maskUrl, quadrantPoints)).toEqual([
+    [maskGray(255, 0, 0), maskGray(255, 0, 0), maskGray(255, 0, 0), 255],
+    [maskGray(0, 255, 0), maskGray(0, 255, 0), maskGray(0, 255, 0), 255],
+    [maskGray(0, 0, 255), maskGray(0, 0, 255), maskGray(0, 0, 255), 255],
+    [maskGray(255, 255, 0), maskGray(255, 255, 0), maskGray(255, 255, 0), 255],
+  ]);
+  // Control conversion is a bit-for-bit copy: the quadrant colors carry over exactly.
+  expect(await samplePixels(page, setup.controlUrl, quadrantPoints)).toEqual([
+    [255, 0, 0, 255],
+    [0, 255, 0, 255],
+    [0, 0, 255, 255],
+    [255, 255, 0, 255],
+  ]);
 
   // Points span all four tiles, inside vs. outside the {600,400,300,300} fill rect.
   const points: Array<[number, number]> = [
@@ -764,6 +989,62 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   expect(setup.noOverlapClipped).toBe(false);
   expect(setup.tileCountAfterNoOverlap).toBe(2);
   expect(setup.storageAfterNoOverlap).toBe("tiled");
+});
+
+test("Clip to BBox deallocates transparent corner tiles from a rotated tiled layer", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const hook = (window as TestWindow).__ultraPaintTest!;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 3072;
+    canvas.height = 3072;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("2D canvas context is unavailable");
+    context.fillStyle = "#ff0000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const blob: Blob = await new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (value) => (value ? resolve(value) : reject(new Error("toBlob failed"))),
+        "image/png",
+      ),
+    );
+    const id = await app.addImageFromFile(new File([blob], "solid.png", { type: blob.type }));
+
+    // In layer-local space this document-space square becomes a diamond centered
+    // at (1536, 1536). Its AABB reaches all nine source tiles, but the four
+    // corner tiles have no covered pixels after the rotated clip.
+    hook.layerStore.setTransform(id, {
+      x: 1500,
+      y: 500,
+      scaleX: 1,
+      scaleY: 1,
+      rotation: Math.PI / 4,
+    });
+    hook.layerStore.setBoundaryBox({ x: 800, y: 1972, width: 1400, height: 1400 });
+    const tileCountBeforeClip = hook.layerStore.getTiledSurface(id)?.tileCount;
+    const clipped = app.clipLayerToBoundaryBox(id);
+
+    return {
+      clipped,
+      tileCountBeforeClip,
+      tileCoordsAfterClip: hook.layerStore.getTiledSurface(id)?.diagnosticTileCoords(),
+    };
+  });
+
+  expect(result.clipped).toBe(true);
+  expect(result.tileCountBeforeClip).toBe(9);
+  expect(result.tileCoordsAfterClip).toEqual([
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 1, y: 1 },
+    { x: 2, y: 1 },
+    { x: 1, y: 2 },
+  ]);
 });
 
 test("brush and eraser strokes paint and undo/redo correctly on a tiled raster layer", async ({
@@ -1154,4 +1435,81 @@ test("merging layers keeps every layer's content even when the boundary box sits
   expect(green).toEqual([0, 255, 0, 255]);
   expect(blue).toEqual([0, 0, 255, 255]);
   expect(gap?.[3]).toBe(0);
+});
+
+test("merging visible masks composites chunk-by-chunk into a tiled mask surface", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+      getActiveUltraPaintApp(): ReturnType<
+        NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]
+      > & {
+        mergeVisibleMasksToNewMask(): string;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // 1200x1200 spans a 2x2 grid at the default 1024 tile size, same as the
+    // raster-merge test above.
+    hook!.layerStore.setBoundaryBox({ x: 0, y: 0, width: 1200, height: 1200 });
+
+    // Full-coverage (white -> alpha 255) mask, occluded underneath.
+    const redId = await app.addBlankLayer();
+    hook!.layerStore.setSelectedLayerId(redId);
+    hook!.paintToolStore.setBrushSettings({ color: "#ff0000", opacity: 1 });
+    app.fillSelectedLayer();
+    const bottomMaskId = app.convertLayerToMask(redId);
+
+    // Fully opaque (white -> alpha 255) mask on top fully occludes the one
+    // below, so a correct chunk-by-chunk merge reads as solid opaque white
+    // everywhere -- including exactly at the tile seams.
+    const whiteId = await app.addBlankLayer();
+    hook!.layerStore.setSelectedLayerId(whiteId);
+    hook!.paintToolStore.setBrushSettings({ color: "#ffffff", opacity: 1 });
+    app.fillSelectedLayer();
+    const topMaskId = app.convertLayerToMask(whiteId);
+    hook!.layerStore.setSelectedLayerId(null);
+
+    const mergedId = app.mergeVisibleMasksToNewMask();
+    const mergedLayer = hook!.layerStore.document.layers.find((l) => l.id === mergedId);
+    const mergedTileCount = hook!.layerStore.getTiledSurface(mergedId)?.tileCount;
+    // Read the merged layer's own pixels directly -- the pre-merge source
+    // masks are still visible/present, so a full flattenMask() export would
+    // double-count them.
+    const mergedUrl = app.layerSourceDataURL(mergedId)!;
+
+    return {
+      topMaskId,
+      bottomMaskId,
+      storage: mergedLayer?.image.storage,
+      transform: mergedLayer?.transform,
+      mergedTileCount,
+      mergedUrl,
+    };
+  });
+
+  expect(result.topMaskId).not.toBe(result.bottomMaskId);
+  expect(result.storage).toBe("tiled");
+  expect(result.transform).toEqual({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 });
+  expect(result.mergedTileCount).toBe(4);
+
+  const seamAdjacentPoints: Array<[number, number]> = [
+    [10, 10],
+    [1190, 10],
+    [10, 1190],
+    [1190, 1190],
+    [1020, 600],
+    [1028, 600],
+    [600, 1020],
+    [600, 1028],
+  ];
+  const white = [255, 255, 255, 255];
+  expect(await samplePixels(page, result.mergedUrl, seamAdjacentPoints)).toEqual(
+    seamAdjacentPoints.map(() => white),
+  );
 });

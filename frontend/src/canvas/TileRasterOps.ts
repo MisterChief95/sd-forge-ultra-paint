@@ -1,7 +1,7 @@
 import { Container, RenderTexture, Sprite, Texture } from "pixi.js";
 import type { Renderer } from "pixi.js";
 
-import type { TileEditTransaction } from "./TiledRasterCanvas";
+import type { TileEditTransaction, TileVisit } from "./TiledRasterCanvas";
 import { TiledRasterCanvas } from "./TiledRasterCanvas";
 import type { PixelBounds } from "./TileGrid";
 
@@ -39,8 +39,8 @@ export function blitTexture(
 
 /**
  * Render every tile into one fresh `RenderTexture` sized to the surface's
- * logical bounds, for read-only paths (mask/control conversion, source
- * export) that only need a monolithic snapshot. Caller owns the result.
+ * logical bounds, for read-only paths (single-image source export) that
+ * genuinely need a monolithic snapshot. Caller owns the result.
  */
 export function flattenToTexture(renderer: Renderer, surface: TiledRasterCanvas): RenderTexture {
   const bounds = surface.bounds ?? { x: 0, y: 0, width: 1, height: 1 };
@@ -64,5 +64,54 @@ export function flattenToTexture(renderer: Renderer, surface: TiledRasterCanvas)
     throw error;
   } finally {
     root.destroy({ children: true, texture: false, textureSource: false });
+  }
+}
+
+/**
+ * Copy every allocated tile of `source` into a fresh, grid-aligned
+ * `TiledRasterCanvas` with identical bounds/origin -- no full-boundary-box
+ * intermediate texture is ever allocated. `perTile`, when given, replaces
+ * each tile's pixels (e.g. mask luminance conversion) instead of a straight
+ * GPU copy; its returned texture is caller-owned and destroyed here after
+ * the blit.
+ */
+export function copyTiledSurfaceTileByTile(
+  renderer: Renderer,
+  source: TiledRasterCanvas,
+  perTile?: (tile: TileVisit) => Texture,
+): TiledRasterCanvas {
+  const dest = new TiledRasterCanvas(renderer, source.tileSize);
+  const transaction = dest.beginEdit(perTile ? "convert-mask" : "convert-control");
+  try {
+    source.visitAll((tile) => {
+      const region = {
+        x: tile.originX,
+        y: tile.originY,
+        width: source.tileSize,
+        height: source.tileSize,
+      };
+      dest.edit(region, { allocation: "allocate-missing", transaction }, (destTile) => {
+        const texture = perTile ? perTile(tile) : tile.target;
+        const sprite = new Sprite({ texture });
+        try {
+          renderer.render({
+            container: sprite,
+            target: destTile.target,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+        } finally {
+          sprite.destroy({ children: false, texture: false, textureSource: false });
+          if (perTile) texture.destroy(true);
+        }
+      });
+    });
+    if (source.bounds) transaction.includeBounds(source.bounds);
+    transaction.commit().destroy();
+    return dest;
+  } catch (error) {
+    transaction.rollback();
+    dest.destroy();
+    throw error;
   }
 }

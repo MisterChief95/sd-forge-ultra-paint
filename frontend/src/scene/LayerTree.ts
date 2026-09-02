@@ -63,6 +63,11 @@ export class LayerTree {
     for (const node of this.nodes.values()) node.setTileDebugBorders(visible);
   }
 
+  /** Visit every live scene node, e.g. to recompute per-node viewport culling. */
+  public forEachNode(fn: (node: LayerNode) => void): void {
+    for (const node of this.nodes.values()) fn(node);
+  }
+
   /**
    * Bring the scene graph in line with `doc`.
    *

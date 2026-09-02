@@ -10,37 +10,99 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
-## Current Status — tiled canvas holdovers — 2026-08-31
+## Current Status — tiled canvas holdovers — 2026-09-01
 
-Upload, blank-layer creation, generated-Apply, paste-as-raster, brush/eraser
-painting, Fill, Clip to Boundary Box, mask/control read-only extraction,
-layer merge, and `Compositor.flatten()` (Save/Generate) are all tiled/chunked
-in production. What's left, in rough priority order:
+Upload, blank-layer creation, generated-Apply, paste-as-raster,
+paste-as-mask/control, brush/eraser painting, Fill, Clip to Boundary Box,
+mask/control read-only extraction, layer merge, mask merge, mask/control
+conversion, `Compositor.flatten()` (Save/Generate), and
+`Compositor.flattenMask()` (inpaint mask export) are all tiled/chunked in
+production. The three holdovers from the previous status entry are now
+closed:
 
-1. **`convertLayerToMask`/`convertLayerToControl` still produce a monolithic
-   result.** They flatten a tiled source first instead of creating a tiled
-   mask/control layer directly.
-2. **`Compositor.flattenMask()`** (inpaint mask export) is the last unchunked
-   export route — still allocates one full-boundary-box `RenderTexture`
-   directly, unlike the now-chunked `flatten()`/merge paths.
-3. **`mergeVisibleMasksToNewMask()`** / `flattenSelectedToTexture()` stay
-   monolithic on purpose — masks aren't fully tiled-aware yet.
-4. **Paste-as-mask / paste-as-control** ingestion is still monolithic.
-5. **Schema gap:** `ImageRef` has no bounds-origin field, so a tiled layer
-   whose bounds grow to a negative origin can't correctly report
-   `image.width/height` (stale dimensions leak into `fitBoundaryBoxToContent()`
-   and anything else reading those fields directly). `TiledImageRef.bounds:
-   PixelBounds` is designed (see below) but not implemented.
-6. **No automatic viewport culling.** `TiledRasterView.setVisibleRegion()` /
-   `LayerNode.setTiledVisibleRegion()` exist and are tested, but nothing wires
-   them to the live camera pan/zoom — off-screen tiles still render every
-   frame. Deferred to I5 pending profiling.
-7. **No dedicated multi-tile stroke-crossing test** for a fractional-zoom or
-   rotated-layer seam case (the 2/4-tile-crossing scenario from the
-   acceptance list).
-8. **Clip's tile removal uses axis-aligned bounds only** — a rotated clip can
-   leave a few fully-transparent corner tiles resident; no GPU readback
-   compaction was added.
+1. **Automatic viewport culling** — `UltraPaintApp.updateTiledVisibleRegions()`
+   maps the screen rect into each tiled layer's local space (rotation-safe via
+   the axis-aligned bbox of the mapped corners) and calls
+   `LayerNode.setTiledVisibleRegion()` after every camera mutation: wheel-zoom,
+   middle-mouse pan, `resetZoom()`, `fitToBoundaryBox()`, `centerDocument()`,
+   and viewport resize. Off-screen tiles no longer render.
+2. **Multi-tile stroke-crossing test** — added at
+   `tiled-raster-canvas.spec.ts:385`: a rotated, fractional-zoom brush stroke
+   crossing all four tile seams, verified pixel-by-pixel at each seam.
+3. **Rotated Clip tile compaction** — Clip now reads back each surviving
+   masked candidate tile and deallocates it when alpha is entirely zero;
+   the rotated 3×3-to-diamond regression (`tiled-raster-canvas.spec.ts:994`)
+   confirms its four empty corners are released.
+
+No further tiled-canvas work is currently tracked as outstanding.
+
+`TiledImageRef.bounds: PixelBounds` (the origin of a tiled layer's logical
+bounds) is implemented and populated by every `addXLayerTiled()` call in
+`layerStore.svelte.ts`.
+
+### Tile-by-tile mask/control conversion and mask merge — 2026-09-01
+
+`convertLayerToMask`/`convertLayerToControl` and `mergeVisibleMasksToNewMask`
+no longer flatten a tiled source to one full-boundary-box `RenderTexture`
+before reblitting. A new `copyTiledSurfaceTileByTile()`
+(`frontend/src/canvas/TileRasterOps.ts`) copies each source tile straight to
+the same absolute grid position in a fresh destination surface — same tile
+size, same `TileGrid`, so destination bounds/origin end up identical to the
+source's and the layer's `transform` can be reused unchanged (no
+`transformForPixelSnapshot()` compensation needed, unlike the monolithic
+path those functions still use for non-tiled sources).
+
+Control conversion (`convertLayerToControl`) needed no per-pixel change at
+all — ControlNet's luminance-to-alpha treatment is a *display*-only filter
+(`ControlLayerDisplayFilter.ts`), never baked into stored pixels — so it's a
+pure per-tile GPU copy with no CPU readback. Mask conversion
+(`convertLayerToMask`) still needs the existing luminance-coverage math, just
+scoped to one tile's `extract.pixels()` at a time instead of the whole
+flattened image.
+
+`mergeVisibleMasksToNewMask()` could *not* reuse `flattenSelectedToTiledSurface()`
+as-is (unlike raster merge): that helper renders the live `tree.root`, and
+mask layer nodes there carry a display-only `MaskHatchFilter` tint
+(`LayerNode.ts`) that would get baked into the merged layer's actual stored
+pixels -- caught by a live Playwright run, not by inspection. A new
+`mergeMasksToTiledSurface()` instead builds its own temporary raw-texture
+`Container` per mask layer (mirroring `Compositor.flattenMask()`'s existing
+"use the store textures directly, never the hatch-filtered display sprites"
+approach) and renders that chunk-by-chunk into a fresh tiled surface, the
+same chunked-render-into-tiles loop `flattenSelectedToTiledSurface()` uses.
+This removed the last `flattenSelectedToTexture()`/`addMaskLayerFromTexture()`
+callers (both deleted as dead code).
+
+Files changed: `frontend/src/canvas/TileRasterOps.ts`,
+`frontend/src/app/UltraPaintApp.ts`, `frontend/src/state/layerStore.svelte.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts` (extended existing
+conversion/merge coverage with pixel + position assertions, plus a new
+mask-merge test, rather than adding a separate spec file),
+`frontend/tests/e2e/transform-correctness.spec.ts` (updated one assertion
+that encoded the old monolithic-flatten rebasing behavior this change
+intentionally replaces), and this `PLAN.md`.
+
+### Tile-by-tile paste-as-mask ingestion — 2026-09-01
+
+`addMaskLayerFromFile()` (paste-as-mask, `PasteMenu.svelte` → `App.svelte` →
+this method) no longer runs one whole-image CPU `extract.pixels()` +
+luminance canvas over the full decoded upload before ingesting it — at the
+8192x8192 upload cap (`fitDimensions()`) that was a quarter-gigabyte CPU
+readback. It now ingests the decoded texture as a plain tiled surface first
+(the same tile-by-tile GPU blit `addImageFromFile()`/`addControlLayerFromFile()`
+already use), then runs the existing luminance-coverage conversion through
+`copyTiledSurfaceTileByTile()`'s `perTile` callback — the exact same helper
+and per-tile conversion `convertLayerToMask()` uses, just applied to a
+freshly-ingested surface instead of an existing layer's.
+
+`addControlLayerFromFile()` (paste-as-control) needed no change: it was
+already a direct tile-by-tile GPU blit with no CPU readback, same as any
+other control-file/image upload — the same conclusion `convertLayerToControl`
+reached for tiled control conversion (ControlNet's luminance-to-alpha
+treatment is display-only, never baked into stored pixels).
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`, and this `PLAN.md`.
 
 ---
 

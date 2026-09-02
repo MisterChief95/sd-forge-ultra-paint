@@ -69,15 +69,17 @@ import type {
   ImageRef,
   Layer,
   LayerId,
+  MaskLayer,
   RasterLayer,
   Transform,
 } from "../state/schema";
 import { toHexColor } from "../util/color";
+import { toPixiBlendMode } from "../util/blendModes";
 import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rendererCapabilities";
 import type { TileAllocation, TileEditDelta } from "../canvas/TiledRasterCanvas";
 import type { PixelBounds } from "../canvas/TileGrid";
 import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
-import { blitTexture, flattenToTexture } from "../canvas/TileRasterOps";
+import { blitTexture, copyTiledSurfaceTileByTile, flattenToTexture } from "../canvas/TileRasterOps";
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
@@ -372,7 +374,46 @@ export class UltraPaintApp {
       (app.screen.width - box.width * world.scale.x) / 2 - box.x * world.scale.x,
       (app.screen.height - box.height * world.scale.y) / 2 - box.y * world.scale.y,
     );
+    this.updateTiledVisibleRegions();
     return true;
+  }
+
+  /**
+   * Recompute each tiled layer's attached-tile set from the current camera.
+   *
+   * Layer containers can be rotated relative to the viewport, so the screen
+   * rect's four corners are mapped into each layer's local space individually
+   * and the axis-aligned bounding box of those points is used -- a superset of
+   * the true visible area, never a subset, so culling can only ever drop tiles
+   * that are genuinely fully off-screen.
+   */
+  private updateTiledVisibleRegions(): void {
+    const app = this.app;
+    const tree = this.tree;
+    if (!app || !tree || app.screen.width <= 0 || app.screen.height <= 0) return;
+
+    const corners = [
+      { x: 0, y: 0 },
+      { x: app.screen.width, y: 0 },
+      { x: 0, y: app.screen.height },
+      { x: app.screen.width, y: app.screen.height },
+    ];
+    tree.forEachNode((node) => {
+      if (!node.hasTiledView) return;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const corner of corners) {
+        const local = node.container.toLocal(corner);
+        if (local.x < minX) minX = local.x;
+        if (local.x > maxX) maxX = local.x;
+        if (local.y < minY) minY = local.y;
+        if (local.y > maxY) maxY = local.y;
+      }
+      if (maxX <= minX || maxY <= minY) return;
+      node.setTiledVisibleRegion({ x: minX, y: minY, width: maxX - minX, height: maxY - minY });
+    });
   }
 
   private mountViewportControls(canvas: HTMLCanvasElement, root: HTMLElement): void {
@@ -433,6 +474,8 @@ export class UltraPaintApp {
         // viewport first becomes measurable, then preserve the camera.
         if (!this.viewportPositioned) {
           this.viewportPositioned = this.centerDocument();
+        } else {
+          this.updateTiledVisibleRegions();
         }
       });
       this.viewportResizeObserver.observe(root);
@@ -489,6 +532,7 @@ export class UltraPaintApp {
 
     world.scale.set(nextScale);
     world.position.set(cursorX - documentX * nextScale, cursorY - documentY * nextScale);
+    this.updateTiledVisibleRegions();
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -612,6 +656,7 @@ export class UltraPaintApp {
     );
     this.panClientX = event.clientX;
     this.panClientY = event.clientY;
+    this.updateTiledVisibleRegions();
   };
 
   private readonly handlePointerLeave = (): void => {
@@ -1301,6 +1346,7 @@ export class UltraPaintApp {
     const documentY = (app.screen.height / 2 - world.y) / previousScale;
     world.scale.set(1);
     world.position.set(app.screen.width / 2 - documentX, app.screen.height / 2 - documentY);
+    this.updateTiledVisibleRegions();
   }
 
   /** Center and scale the current boundary box within the viewport. */
@@ -1321,6 +1367,7 @@ export class UltraPaintApp {
       (app.screen.width - box.width * scale) / 2 - box.x * scale,
       (app.screen.height - box.height * scale) / 2 - box.y * scale,
     );
+    this.updateTiledVisibleRegions();
   }
 
   /** Toggle the document-space pixel grid. */
@@ -1388,16 +1435,22 @@ export class UltraPaintApp {
       throw new Error("[ultra-paint] cannot create a mask layer before the renderer is ready");
     }
 
+    // Ingest first (tile-by-tile GPU blit from the one decoded texture, same
+    // as a plain image upload), then run the luminance conversion per tile --
+    // avoids a single whole-image CPU `extract.pixels()`/canvas, which for an
+    // upload at the 8192x8192 cap would be a quarter-gigabyte readback.
     const texture = await decodeToTexture(file);
-    const { pixels, width, height } = app.renderer.extract.pixels({ target: texture });
-    texture.destroy(true);
-
-    const canvas = luminanceCoverageCanvas(pixels, width, height);
-    const name = file instanceof File ? file.name : undefined;
-    return this.store.addMaskLayerTiled(
-      this.createPaintableTiledSurface(Texture.from(canvas, true)),
-      name,
-    );
+    const ingested = this.createPaintableTiledSurface(texture);
+    try {
+      const converted = copyTiledSurfaceTileByTile(app.renderer, ingested, (tile) => {
+        const { pixels, width, height } = app.renderer.extract.pixels({ target: tile.target });
+        return Texture.from(luminanceCoverageCanvas(pixels, width, height), true);
+      });
+      const name = file instanceof File ? file.name : undefined;
+      return this.store.addMaskLayerTiled(converted, name);
+    } finally {
+      ingested.destroy();
+    }
   }
 
   /**
@@ -1441,12 +1494,35 @@ export class UltraPaintApp {
     if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
     const app = this.app;
     const layer = this.store.getLayer(id);
-    const source =
-      layer?.kind === "raster" || layer?.kind === "control" ? this.readLayerPixels(id) : undefined;
-    if (!app || !layer || (layer.kind !== "raster" && layer.kind !== "control") || !source) {
+    if (!app || !layer || (layer.kind !== "raster" && layer.kind !== "control")) {
       throw new Error("[ultra-paint] only a raster or control layer can be copied to a mask");
     }
 
+    const tiledSource = this.store.getTiledSurface(id);
+    if (tiledSource) {
+      // Convert tile-by-tile, straight from the source's own tiles -- no
+      // full-boundary-box flatten, and the destination keeps the same tile
+      // origins as the source, so the layer's transform needs no compensation.
+      const converted = copyTiledSurfaceTileByTile(app.renderer, tiledSource, (tile) => {
+        const { pixels, width, height } = app.renderer.extract.pixels({ target: tile.target });
+        return Texture.from(luminanceCoverageCanvas(pixels, width, height), true);
+      });
+      let adopted = false;
+      try {
+        const newId = this.store.addMaskLayerTiled(converted, `${layer.name} (Mask)`);
+        adopted = true;
+        this.store.setTransform(newId, layer.transform);
+        this.store.setSelectedLayerId(newId);
+        return newId;
+      } catch (error) {
+        if (!adopted) converted.destroy();
+        throw error;
+      }
+    }
+
+    const source = this.readLayerPixels(id);
+    if (!source)
+      throw new Error("[ultra-paint] only a raster or control layer can be copied to a mask");
     try {
       const { pixels, width, height } = app.renderer.extract.pixels({ target: source.texture });
       const canvas = luminanceCoverageCanvas(pixels, width, height);
@@ -1474,12 +1550,35 @@ export class UltraPaintApp {
    */
   public convertLayerToControl(id: LayerId): LayerId {
     if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    const app = this.app;
     const layer = this.store.getLayer(id);
-    const source = layer?.kind === "raster" ? this.readLayerPixels(id) : undefined;
-    if (!layer || layer.kind !== "raster" || !source) {
+    if (!app || !layer || layer.kind !== "raster") {
       throw new Error("[ultra-paint] only a raster layer can be converted to a control layer");
     }
 
+    const tiledSource = this.store.getTiledSurface(id);
+    if (tiledSource) {
+      // Control conversion is a bit-for-bit copy -- ControlNet's
+      // luminance-to-alpha treatment is display-only (ControlLayerDisplayFilter),
+      // never baked into stored pixels -- so this is a pure per-tile GPU copy
+      // with no CPU readback and no full-boundary-box flatten.
+      const copy = copyTiledSurfaceTileByTile(app.renderer, tiledSource);
+      let adopted = false;
+      try {
+        const newId = this.store.addControlLayerTiled(copy, `${layer.name} (Control)`);
+        adopted = true;
+        this.store.setTransform(newId, layer.transform);
+        this.store.setSelectedLayerId(newId);
+        return newId;
+      } catch (error) {
+        if (!adopted) copy.destroy();
+        throw error;
+      }
+    }
+
+    const source = this.readLayerPixels(id);
+    if (!source)
+      throw new Error("[ultra-paint] only a raster layer can be converted to a control layer");
     try {
       const copy = this.createPaintableTiledSurface(this.cloneTexture(source.texture));
       let adopted = false;
@@ -1589,9 +1688,6 @@ export class UltraPaintApp {
       try {
         tiledSurface.visitAll((tile) => {
           const tileBounds = tiledSurface.grid.boundsFor(tile.coord);
-          // ponytail: tile removal uses the polygon's axis-aligned bounding rect, not the
-          // exact rotated polygon, so a rotated clip may leave a few empty corner tiles;
-          // upgrade to a per-tile polygon-intersection test if that becomes visibly wasteful.
           if (!intersectBounds(tileBounds, newBounds)) {
             tiledSurface.removeTile(tile.coord, transaction);
             return;
@@ -1643,6 +1739,14 @@ export class UltraPaintApp {
               }
             },
           );
+          // The axis-aligned candidate range can include corner tiles wholly
+          // outside a rotated clip polygon. Read their masked pixels back
+          // before committing so fully transparent tiles do not stay resident.
+          const { pixels } = app.renderer.extract.pixels({ target: tile.target });
+          for (let offset = 3; offset < pixels.length; offset += 4) {
+            if (pixels[offset] !== 0) return;
+          }
+          tiledSurface.removeTile(tile.coord, transaction);
         });
         transaction.replaceBounds(newBounds);
         delta = transaction.commit();
@@ -2046,32 +2150,19 @@ export class UltraPaintApp {
     const preOrder = [...doc.layerOrder];
     const bounds = this.getSelectionBounds(selected);
 
-    const texture = this.flattenSelectedToTexture(selected);
+    const surface = this.mergeMasksToTiledSurface(selected);
     let adopted = false;
     try {
-      const id = this.store.addMaskLayerFromTexture(texture, `Merged ${selected.length} masks`);
+      const id = this.store.addMaskLayerTiled(surface, `Merged ${selected.length} masks`);
       adopted = true;
       this.store.setTransform(id, { x: bounds.x, y: bounds.y });
       this.store.reorderLayer(id, Math.min(...selected.map((sid) => preOrder.indexOf(sid))));
       this.store.setSelectedLayerId(id);
       return id;
     } catch (error) {
-      if (!adopted) texture.destroy(true);
+      if (!adopted) surface.destroy();
       throw error;
     }
-  }
-
-  /** Flatten just `ids` (temporarily hiding every other layer) into a fresh `RenderTexture`. */
-  private flattenSelectedToTexture(ids: readonly LayerId[]): RenderTexture {
-    const app = this.app;
-    const tree = this.tree;
-    if (!app || !tree) {
-      throw new Error("[ultra-paint] cannot merge layers before the app is ready");
-    }
-    const box = this.getSelectionBounds(ids);
-    return this.withOnlySelectedRenderable(ids, () =>
-      Compositor.flattenToTexture(app, tree.root, box),
-    );
   }
 
   /**
@@ -2117,10 +2208,9 @@ export class UltraPaintApp {
   /**
    * Render just `ids` (temporarily hiding every other layer), chunk by
    * chunk, straight into a fresh tiled surface -- no full-boundary-box
-   * intermediate `RenderTexture` is ever allocated, unlike
-   * {@link flattenSelectedToTexture}. Each chunk is exactly one tile, so the
-   * render lands directly on that tile's persistent target; there is no
-   * separate stitching step.
+   * intermediate `RenderTexture` is ever allocated. Each chunk is exactly
+   * one tile, so the render lands directly on that tile's persistent
+   * target; there is no separate stitching step.
    */
   private flattenSelectedToTiledSurface(ids: readonly LayerId[]): TiledRasterCanvas {
     const app = this.app;
@@ -2176,6 +2266,98 @@ export class UltraPaintApp {
         }
       }),
     );
+  }
+
+  /**
+   * Render just the mask layers in `ids`, chunk by chunk, straight into a
+   * fresh tiled surface -- no full-boundary-box intermediate `RenderTexture`.
+   *
+   * Unlike {@link flattenSelectedToTiledSurface}, this builds its own
+   * temporary raw-texture `Container` (mirroring `Compositor.flattenMask()`)
+   * instead of rendering `tree.root` directly: mask layer nodes in the live
+   * scene carry a display-only `MaskHatchFilter` tint, which would otherwise
+   * get baked into the merged layer's actual stored pixels.
+   */
+  private mergeMasksToTiledSurface(ids: readonly LayerId[]): TiledRasterCanvas {
+    const app = this.app;
+    if (!app) {
+      throw new Error("[ultra-paint] cannot merge masks before the app is ready");
+    }
+    const box = this.getSelectionBounds(ids);
+    if (box.width <= 0 || box.height <= 0) {
+      throw new Error(`[ultra-paint] cannot merge ${box.width}x${box.height} of content`);
+    }
+
+    const idSet = new Set(ids);
+    const byId = new Map(this.store.getDocument().layers.map((layer) => [layer.id, layer]));
+    // Pixi draws last-child-on-top; document index 0 is the top (see the
+    // matching comment in Compositor.flattenMask()).
+    const ordered = [...this.store.getDocument().layerOrder]
+      .reverse()
+      .map((id) => byId.get(id))
+      .filter(
+        (layer): layer is MaskLayer =>
+          layer !== undefined && layer.kind === "mask" && idSet.has(layer.id),
+      );
+
+    const root = new Container({ label: "ultra-paint:mask-merge" });
+    try {
+      for (const layer of ordered) {
+        const texture = this.store.getTexture(layer.id);
+        const surface = this.store.getTiledSurface(layer.id);
+        if (!texture && !surface) continue;
+
+        const layerContainer = new Container({ label: `mask-merge:${layer.id}` });
+        layerContainer.position.set(layer.transform.x, layer.transform.y);
+        layerContainer.scale.set(layer.transform.scaleX, layer.transform.scaleY);
+        layerContainer.rotation = layer.transform.rotation;
+        layerContainer.alpha = layer.opacity;
+        layerContainer.blendMode = toPixiBlendMode(layer.blendMode);
+
+        if (texture) {
+          layerContainer.addChild(new Sprite({ texture }));
+        } else {
+          surface!.visitAll((tile) => {
+            const sprite = new Sprite({ texture: tile.target });
+            sprite.position.set(tile.originX, tile.originY);
+            layerContainer.addChild(sprite);
+          });
+        }
+        root.addChild(layerContainer);
+      }
+
+      const tileSize =
+        getTileRendererCapabilities(app.renderer).selectedTileSize ?? PREFERRED_TILE_SIZE;
+      const destination = new TiledRasterCanvas(app.renderer, tileSize);
+      const transaction = destination.beginEdit("merge-masks");
+      const transform = new Matrix();
+      try {
+        for (let offsetY = 0; offsetY < box.height; offsetY += tileSize) {
+          for (let offsetX = 0; offsetX < box.width; offsetX += tileSize) {
+            const region = { x: offsetX, y: offsetY, width: tileSize, height: tileSize };
+            transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
+            destination.edit(region, { allocation: "allocate-missing", transaction }, (tile) => {
+              app.renderer.render({
+                container: root,
+                target: tile.target,
+                transform,
+                clear: true,
+                clearColor: [0, 0, 0, 0],
+              });
+            });
+          }
+        }
+        transaction.includeBounds({ x: 0, y: 0, width: box.width, height: box.height });
+        transaction.commit().destroy();
+        return destination;
+      } catch (error) {
+        transaction.rollback();
+        destination.destroy();
+        throw error;
+      }
+    } finally {
+      root.destroy({ children: true });
+    }
   }
 
   /**

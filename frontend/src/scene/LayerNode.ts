@@ -199,6 +199,11 @@ export class LayerNode {
     this.tiledView?.setVisibleRegion(region);
   }
 
+  /** Whether this node is a tile-sprite projection (vs. a plain sprite or group). */
+  public get hasTiledView(): boolean {
+    return this.tiledView !== null;
+  }
+
   /** Hide one persistent tile sprite while a stroke overlay stands in for it. */
   public setTileSpriteHidden(coord: TileCoord, hidden: boolean): void {
     this.tiledView?.setTileHidden(coord, hidden);

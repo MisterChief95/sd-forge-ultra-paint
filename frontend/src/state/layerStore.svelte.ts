@@ -677,47 +677,6 @@ export class LayerStore {
     return id;
   }
 
-  /** Create a paintable mask layer pre-filled from an existing (coverage) texture. */
-  public addMaskLayerFromTexture(
-    texture: RenderTexture,
-    name?: string,
-    color = DEFAULT_MASK_COLOR,
-  ): LayerId {
-    const box = this._document.boundaryBox;
-    const id = newId("mask");
-    const layer: MaskLayer = {
-      id,
-      name:
-        name ??
-        `Mask ${this._document.layers.filter((candidate) => candidate.kind === "mask").length + 1}`,
-      kind: "mask",
-      visible: true,
-      locked: false,
-      preserveAlpha: false,
-      opacity: 1,
-      blendMode: "normal",
-      transform: {
-        ...identityTransform(),
-        x: box.x,
-        y: box.y,
-      },
-      parentId: null,
-      image: {
-        source: "paint",
-        width: texture.width,
-        height: texture.height,
-      },
-      color: normaliseHexColor(color, DEFAULT_MASK_COLOR),
-    };
-
-    this._textures.set(id, texture);
-    this._document.layers.push(layer);
-    this._document.layerOrder.unshift(id);
-    this.emit();
-    this.emitMutation({ kind: "add-layer", layerId: id });
-    return id;
-  }
-
   /** Create a paintable mask layer backed by sparse tiles. */
   public addMaskLayerTiled(
     surface: TiledRasterCanvas,

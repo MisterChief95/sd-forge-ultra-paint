@@ -157,7 +157,12 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
     if (!maskId || !controlId) throw new Error("Tiled conversions failed");
     const maskNode = privateApp.tree.getNode(maskId);
     const controlNode = privateApp.tree.getNode(controlId);
-    const flattenedLocalPoint = { x: -10 - tiledBounds.x, y: -10 - tiledBounds.y };
+    // Tile-by-tile conversion copies each source tile to the same absolute
+    // grid origin in the destination surface and reuses the source layer's
+    // transform unchanged (no monolithic-flatten rebasing to local (0,0)), so
+    // a converted layer's local space is identical to the source's -- the
+    // same local point maps to the same global point in both.
+    const negativeLocalPoint = { x: -10, y: -10 };
     return {
       transform: { ...layer.transform },
       tileCoords: hook.layerStore.getTiledSurface(id)?.diagnosticTileCoords(),
@@ -172,8 +177,8 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
         app?.getStore().getLayer(controlId)?.image.storage,
       ],
       originalNegativePoint,
-      maskNegativePoint: maskNode.container.toGlobal(flattenedLocalPoint),
-      controlNegativePoint: controlNode.container.toGlobal(flattenedLocalPoint),
+      maskNegativePoint: maskNode.container.toGlobal(negativeLocalPoint),
+      controlNegativePoint: controlNode.container.toGlobal(negativeLocalPoint),
     };
   }, setup.id);
 
