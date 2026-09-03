@@ -38,7 +38,7 @@ void main()
 {
     vec4 source = texture(uTexture, vTextureCoord);
     float luminance = dot(source.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float alpha = source.a * mix(0.15, 1.0, luminance);
+    float alpha = source.a * luminance;
     finalColor = vec4(source.rgb * alpha, alpha);
 }
 `;
@@ -86,7 +86,7 @@ fn mainFragment(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32>
 {
     let source = textureSample(uTexture, uSampler, uv);
     let luminance = dot(source.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let alpha = source.a * mix(0.15, 1.0, luminance);
+    let alpha = source.a * luminance;
     return vec4<f32>(source.rgb * alpha, alpha);
 }
 `;

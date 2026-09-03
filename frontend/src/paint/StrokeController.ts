@@ -13,6 +13,10 @@ import type {
 import type { LayerId } from "../state/schema";
 import { previewStore } from "../state/previewStore.svelte";
 
+// ponytail: fixed low-pass strength; expose as a per-brush setting if users
+// need to tune it (stylus users may want less lag than mouse users).
+const SMOOTHING_FACTOR = 0.5;
+
 /** One interpolated sample in document-local coordinates. */
 export interface StrokePoint {
   x: number;
@@ -190,11 +194,20 @@ export class StrokeController {
     }
   }
 
-  private appendRawPoint(point: StrokePoint): void {
+  private appendRawPoint(rawPoint: StrokePoint): void {
     const active = this.active;
     if (!active) return;
 
+    // Low-pass filter raw pointer samples before resampling: mouse input is
+    // jittery enough (especially once magnified by zoom) that stamping the
+    // unfiltered path produces a visibly wobbly stroke edge.
     let start = active.lastRaw;
+    const point: StrokePoint = {
+      x: start.x + (rawPoint.x - start.x) * SMOOTHING_FACTOR,
+      y: start.y + (rawPoint.y - start.y) * SMOOTHING_FACTOR,
+      pressure: rawPoint.pressure,
+    };
+
     let dx = point.x - start.x;
     let dy = point.y - start.y;
     let remaining = Math.hypot(dx, dy);
@@ -285,6 +298,10 @@ export class StrokeController {
     const isPaintable =
       (selected?.kind === "raster" || selected?.kind === "mask" || selected?.kind === "control") &&
       !selected.locked;
+    if (this.tools.getState().activeTool === "transform") {
+      this.canvas.style.cursor = selected && !selected.locked ? "move" : "not-allowed";
+      return;
+    }
     // The BrushCursorOverlay draws a size-accurate ring for this case;
     // the system cursor would just be a redundant second indicator.
     this.canvas.style.cursor = isPaintTool ? (isPaintable ? "none" : "not-allowed") : "";

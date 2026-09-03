@@ -123,6 +123,20 @@ The boundary-box scale mode and `inpaint_full_res` are independent: the first
 sets the model's working resolution, while the second chooses whether its
 context is the whole BB or a tighter mask-and-padding crop.
 
+When the composite mixes fully opaque and fully transparent pixels (boundary
+box expanded past existing content), the empty region is auto-derived into a
+mask (a hard threshold, same as `Compositor.flattenMask()` would produce for
+a hand-painted mask -- softened once by Forge's own `mask_blur`, not
+pre-blurred here) and its pixels are seeded with
+`outpaint_fill.fill_transparent_region` before the usual inpainting path
+runs -- see `ultra_paint/outpaint_fill.py`. This is unioned with an explicit
+painted `mask_image` (`ImageChops.lighter`), not suppressed by it: LaMA still
+seeds the transparent gap while whatever the user painted elsewhere
+regenerates in the same pass. Because this reuses the normal
+masked-generation path, the Composition panel's other mask-driven controls
+(coherence pass, soft inpainting, inpaint ControlNet) already apply to an
+auto-outpaint the same as any hand-painted mask -- no separate wiring needed.
+
 `control_layers`
 ----------------
 Optional structured ControlNet inputs, kept separate from `gen_params` because
@@ -137,7 +151,7 @@ out) and are deliberately *not* read from `gen_params`.
 from contextlib import closing
 
 import gradio as gr
-from PIL import Image
+from PIL import Image, ImageChops
 
 import modules.scripts
 from modules import shared
@@ -150,8 +164,14 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
-from ultra_paint.mask_ring import feathered_alpha, scale_edge_size
+from ultra_paint.mask_ring import (
+    debug_reset,
+    debug_save,
+    dilate_then_blur,
+    scale_edge_size,
+)
 from ultra_paint.model_profile import is_unsupported_video_model
+from ultra_paint.outpaint_fill import derive_outpaint_mask, fill_transparent_region
 
 __all__ = [
     "build_img2img_processing",
@@ -588,6 +608,8 @@ def run_generation(
     if generation_mode not in {"img2img", "txt2img", "upscale"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
 
+    debug_reset()
+
     _apply_model_selection(gen_params)
 
     # The frontend predicts this from visible layer bounds, but only the
@@ -597,6 +619,38 @@ def run_generation(
         generation_mode = "txt2img"
 
     is_txt2img = generation_mode == "txt2img"
+
+    if not is_txt2img:
+        alpha_low, alpha_high = composite_image.getchannel("A").getextrema()
+        if alpha_low == 0 and alpha_high == 255:
+            # Boundary box extends past existing content -- auto-outpaint:
+            # mask the empty region like any other inpaint, seed it with a
+            # content-aware fill instead of letting Forge flatten it to a
+            # flat background color. A painted mask layer no longer
+            # suppresses this: the two masks are unioned (`ImageChops.lighter`)
+            # so LaMA still seeds the transparent gap while whatever the user
+            # painted elsewhere regenerates in the very same pass. Both the
+            # seed composite and the outpaint portion of `mask_image` stay
+            # hard (0/255) here -- exactly what a hand-painted mask would be
+            # -- so Forge's own single `mask_blur` pass (processing.py:1731-
+            # 1734) is the only blur applied; pre-blurring here too would
+            # stack a second Gaussian pass on top of that one.
+            hard_mask = derive_outpaint_mask(composite_image)
+
+            filled_rgb = fill_transparent_region(composite_image, hard_mask)
+            # `hard_mask` contains only 0/255, so paste is direct pixel
+            # substitution: every seed pixel is either untouched source RGB
+            # or raw fill RGB, never a weighted blend of the two.
+            seed_rgb = composite_image.convert("RGB")
+            seed_rgb.paste(filled_rgb, (0, 0), hard_mask)
+            composite_image = seed_rgb.convert("RGBA")
+            composite_image.putalpha(255)
+            mask_image = (
+                ImageChops.lighter(mask_image.convert("L"), hard_mask)
+                if mask_image is not None
+                else hard_mask
+            )
+
     p = (
         build_txt2img_processing(composite_image, gen_params, control_layers)
         if is_txt2img
@@ -636,14 +690,17 @@ def run_generation(
             ]
         elif mask_image is not None:
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
+
             if coherence_enabled:
+                debug_save(mask_image.convert("L"), "07_mask_image_combined")
+
                 # Latent already patched pre-decode -- paste back like the
                 # no-coherence path, but alpha against the *dilated* mask, not
                 # the plain one: the ring's blend extends `coherence_edge_size`
                 # px outside the original mask, and compositing against the
                 # un-dilated mask would clip that outward half away with
                 # alpha=0.
-                dilated = feathered_alpha(
+                dilated = dilate_then_blur(
                     mask_image.convert("L"),
                     scale_edge_size(
                         int(_get(gen_params, "coherence_edge_size")),
@@ -656,6 +713,8 @@ def run_generation(
                         mask_image.size,
                     ),
                 )
+                debug_save(dilated, "08_dilated_blurred_alpha")
+
                 processed.images = [
                     _transparent_inpaint_patch(
                         image,
@@ -665,6 +724,7 @@ def run_generation(
                     )
                     for image in processed.images
                 ]
+                debug_save(processed.images[0], "09_paste_back_result")
             else:
                 processed.images = [
                     _transparent_inpaint_patch(

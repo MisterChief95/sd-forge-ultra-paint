@@ -1,13 +1,11 @@
 <script lang="ts">
   import Button from "../lib/Button.svelte";
-  import type { GenerationProgress } from "../../state/generationRuntimeStore.svelte";
 
   interface Props {
     generating: boolean;
     interrupting: boolean;
     current: number;
     total: number;
-    progress: GenerationProgress | null;
     progressPercent: number;
     onGenerate: () => void;
     onCancelCurrent: () => void;
@@ -20,7 +18,6 @@
     interrupting,
     current,
     total,
-    progress,
     progressPercent,
     onGenerate,
     onCancelCurrent,
@@ -83,7 +80,7 @@
 
       <div
         class={[
-          "absolute right-0 top-full z-40 mt-1 min-w-40 flex-col overflow-hidden border bg-(--upaint-surface) p-1 shadow-lg",
+          "absolute right-0 top-full z-40 min-w-40 flex-col overflow-hidden border bg-(--upaint-surface) p-1 shadow-lg",
           menuOpen ? "flex" : "hidden group-hover:flex group-focus-within:flex",
         ]}
         style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
@@ -114,12 +111,3 @@
     </div>
   {/if}
 </div>
-
-{#if generating && progress?.current_image}
-  <img
-    class="max-h-52 w-full object-contain"
-    style="border-radius: var(--upaint-radius-sm);"
-    src={progress.current_image}
-    alt="Live generation preview"
-  />
-{/if}

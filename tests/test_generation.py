@@ -389,17 +389,17 @@ def test_whole_image_result_uses_mask_as_alpha(fake_forge_modules):
 
 def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
-    composite = _composite(32, 32)
+    composite = _composite(64, 64)
     mask = Image.new("L", composite.size, 0)
-    mask.paste(255, (12, 12, 20, 20))
+    mask.paste(255, (24, 24, 40, 40))
 
     result = generation.run_generation(
         composite,
         {
             "coherence_pass_enabled": True,
-            "coherence_edge_size": 3,
+            "coherence_edge_size": 4,
             "denoising_strength": 0.9,
-            "mask_blur": 7,
+            "mask_blur": 3,
         },
         mask,
     )
@@ -410,13 +410,17 @@ def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_m
     assert len(fake_shared.process_calls) == 1
     p = fake_shared.process_calls[0]
     assert p.ultra_paint_fast_coherence_enabled is True
-    assert p.ultra_paint_coherence_edge_size == 3
-    # Blurred *then* dilated ("feathered"): a smooth, continuous ramp with
-    # no hard clip-induced jump at the mask's original edge.
-    alpha_row = [result.images[0].getpixel((x, 16))[3] for x in range(4, 16)]
+    assert p.ultra_paint_coherence_edge_size == 4
+    # Dilated (by edge_size/2 *plus* the blur's own inward reach) then
+    # blurred once: a smooth, continuous ramp with no hard clip-induced jump,
+    # and the original mask edge (x=24) stays fully opaque -- the dilation
+    # margin must be wide enough that the blur's inward saturation distance
+    # doesn't eat back past it and bleed through what the ring pass actually
+    # regenerated.
+    alpha_row = [result.images[0].getpixel((x, 32))[3] for x in range(0, 25)]
     assert alpha_row == sorted(alpha_row)
     assert alpha_row[0] < alpha_row[-1]
-    assert max(b - a for a, b in zip(alpha_row, alpha_row[1:])) <= 8
+    assert alpha_row[-1] >= 250  # original seam: must not bleed
 
 
 def test_disabled_coherence_keeps_single_pass_mask_alpha(fake_forge_modules):
@@ -502,12 +506,12 @@ def test_coherence_pass_edge_size_independent_of_generation_resolution(
     composite = _composite(32, 32)
     mask = Image.new("L", composite.size, 0)
     mask.paste(255, (12, 12, 20, 20))
-    original_feathered_alpha = generation.feathered_alpha
+    original_dilate_then_blur = generation.dilate_then_blur
     edge_sizes = []
 
-    def _capture_feathered_alpha(alpha, edge_size, blur):
+    def _capture_dilate_then_blur(alpha, edge_size, blur):
         edge_sizes.append(edge_size)
-        return original_feathered_alpha(alpha, edge_size, blur)
+        return original_dilate_then_blur(alpha, edge_size, blur)
 
     def _fake_process_images(p):
         fake_shared.process_calls.append(p)
@@ -518,7 +522,7 @@ def test_coherence_pass_edge_size_independent_of_generation_resolution(
             images=[Image.new("RGB", (64, 64))], extra_images=[]
         )
 
-    monkeypatch.setattr(generation, "feathered_alpha", _capture_feathered_alpha)
+    monkeypatch.setattr(generation, "dilate_then_blur", _capture_dilate_then_blur)
     monkeypatch.setattr(generation, "process_images", _fake_process_images)
 
     generation.run_generation(
@@ -837,6 +841,126 @@ def test_empty_composite_forces_txt2img_and_resizes_result(
 
     assert isinstance(built[0], _FakeStableDiffusionProcessingTxt2Img)
     assert result.images[0].size == composite.size
+
+
+def test_mixed_alpha_with_no_mask_auto_outpaints(fake_forge_modules, monkeypatch):
+    generation, fake_shared = fake_forge_modules
+    composite = Image.new("RGBA", (16, 10), (255, 0, 0, 255))
+    composite.paste((0, 0, 0, 0), (0, 0, 8, 10))  # left half empty -> outpaint region
+
+    fill_calls = []
+
+    def _fake_fill(_composite, mask):
+        fill_calls.append(mask)
+        return Image.new("RGB", _composite.size, (9, 9, 9))
+
+    monkeypatch.setattr(generation, "fill_transparent_region", _fake_fill)
+
+    # mask_blur=0 keeps the derived mask an exact hard threshold here so this
+    # test can focus on the wiring; feathering itself is covered separately
+    # below.
+    generation.run_generation(composite, {"mask_blur": 0}, generation_mode="img2img")
+
+    assert len(fill_calls) == 1
+    p = fake_shared.process_calls[0]
+    assert p.mask is not None  # stayed on the img2img path, mask auto-derived
+    assert p.mask.getpixel((0, 0)) == 255  # previously-empty half -> regenerate
+    assert p.mask.getpixel((15, 0)) == 0  # previously-opaque half -> keep
+
+    seeded = p.init_images[0]
+    assert seeded.getpixel((0, 0)) == (9, 9, 9, 255)  # filled + forced opaque
+    assert seeded.getpixel((15, 0)) == (255, 0, 0, 255)  # original content untouched
+
+
+def test_mixed_alpha_auto_outpaint_mask_stays_hard_for_forge_to_blur(
+    fake_forge_modules, monkeypatch
+):
+    """`p.mask` (the auto-derived `mask_image`) must stay a hard 0/255
+    threshold, exactly what a hand-painted mask would be -- Forge applies
+    its own single `mask_blur` pass internally (processing.py:1731-1734).
+    Pre-softening it here too would stack a second blur on top of that one,
+    widening the seam's semi-transparent band past what `mask_blur` asks
+    for."""
+    generation, fake_shared = fake_forge_modules
+    composite = Image.new("RGBA", (80, 20), (255, 0, 0, 255))
+    composite.paste((0, 0, 0, 0), (0, 0, 40, 20))  # wide enough for the blur kernel
+
+    def _reject_masked_composite(*_args, **_kwargs):
+        pytest.fail("auto-outpaint seed must use direct pixel substitution")
+
+    monkeypatch.setattr(generation.Image, "composite", _reject_masked_composite)
+
+    monkeypatch.setattr(
+        generation,
+        "fill_transparent_region",
+        lambda _composite, _mask: Image.new("RGB", _composite.size, (9, 9, 9)),
+    )
+
+    generation.run_generation(composite, {"mask_blur": 4}, generation_mode="img2img")
+
+    p = fake_shared.process_calls[0]
+    mask = p.mask
+    assert mask.getpixel((39, 10)) == 255  # outpaint region: exact hard mask
+    assert mask.getpixel((40, 10)) == 0  # original content: exact hard mask
+    assert mask.getpixel((0, 10)) == 255  # deep in the outpaint region: opaque
+    assert mask.getpixel((79, 10)) == 0  # deep in the original content: untouched
+
+    seeded = p.init_images[0]
+    assert seeded.getchannel("A").getextrema() == (255, 255)
+    assert seeded.getpixel((39, 10)) == (9, 9, 9, 255)  # exact raw fill pixel
+    assert seeded.getpixel((40, 10)) == (255, 0, 0, 255)  # exact original pixel
+
+
+def test_mixed_alpha_with_explicit_mask_is_combined_with_outpaint_mask(
+    fake_forge_modules, monkeypatch
+):
+    """A hand-painted mask no longer suppresses auto-outpaint -- the two are
+    unioned so LaMA still seeds the transparent gap while the user's own
+    painted region regenerates too, in the same pass."""
+    generation, fake_shared = fake_forge_modules
+    composite = Image.new("RGBA", (16, 10), (255, 0, 0, 255))
+    composite.paste((0, 0, 0, 0), (0, 0, 8, 10))  # left half empty -> outpaint region
+    painted_mask = Image.new("L", composite.size, 0)
+    painted_mask.paste(128, (12, 0, 16, 10))  # user painted the right edge
+
+    monkeypatch.setattr(
+        generation,
+        "fill_transparent_region",
+        lambda _composite, _mask: Image.new("RGB", _composite.size, (9, 9, 9)),
+    )
+
+    generation.run_generation(composite, {}, painted_mask, generation_mode="img2img")
+
+    mask = fake_shared.process_calls[0].mask
+    assert mask.getpixel((0, 0)) == 255  # outpaint region: filled in regardless
+    assert mask.getpixel((13, 0)) == 128  # user's own paint survives untouched
+    assert mask.getpixel((10, 0)) == 0  # neither painted nor transparent: stays kept
+
+    seeded = fake_shared.process_calls[0].init_images[0]
+    assert seeded.getpixel((0, 0)) == (9, 9, 9, 255)  # outpaint region got the fill
+    assert seeded.getpixel((13, 0)) == (
+        255,
+        0,
+        0,
+        255,
+    )  # painted-only region: pixels untouched
+
+
+def test_fully_opaque_composite_with_no_mask_skips_auto_outpaint(
+    fake_forge_modules, monkeypatch
+):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite()  # fully opaque, no transparent region to outpaint
+
+    fill_calls = []
+    monkeypatch.setattr(
+        generation, "fill_transparent_region", lambda *a: fill_calls.append(a)
+    )
+
+    generation.run_generation(composite, {}, generation_mode="img2img")
+
+    assert fill_calls == []
+    assert fake_shared.process_calls[0].mask is None
 
 
 def test_txt2img_ignores_mask_and_denoise(fake_forge_modules, monkeypatch):

@@ -13,6 +13,8 @@
  *     `GroupLayer.children` for groups). There is no nested serialisation.
  */
 
+import type { PixelBounds } from "../canvas/TileGrid";
+
 /** Opaque per-layer identifier. Unique within a document. */
 export type LayerId = string;
 
@@ -132,12 +134,20 @@ export type PaintLayer = RasterLayer | MaskLayer | ControlLayer;
 
 /**
  * Metadata about a raster layer's pixels. Deliberately does NOT carry a
- * `RenderTexture` handle -- look the texture up via `LayerStore.getTexture(id)`.
+ * `RenderTexture` handle -- look the surface up via `LayerStore.getTiledSurface(id)`.
  */
 export interface ImageRef {
   source: "upload" | "generated" | "paint";
   width: number;
   height: number;
+  /** Tiled backing's immutable tile edge length. */
+  tileSize: number;
+  /**
+   * Layer-local logical bounds for tiled pixels. Unlike width/height, this
+   * retains negative origins after a layer grows up or left of local (0, 0).
+   * `null` represents a truly empty tiled layer.
+   */
+  bounds: PixelBounds | null;
 }
 
 /** Editable document-space operating region used by fill and generation. */

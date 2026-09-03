@@ -411,7 +411,6 @@
     interrupting={generationRuntimeStore.interrupting}
     current={generationRuntimeStore.current}
     total={generationRuntimeStore.total}
-    progress={generationRuntimeStore.progress}
     progressPercent={generationRuntimeStore.progressPercent}
     onGenerate={generate}
     onCancelCurrent={() => void controller.cancelCurrent()}
@@ -476,7 +475,7 @@
       </div>
     </Accordion>
 
-    <Accordion title="Inpainting">
+    <Accordion title="Composition">
       <div class="p-2">
         <InpaintControls
           maskBlur={generationSettingsStore.maskBlur}

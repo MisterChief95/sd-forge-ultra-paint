@@ -159,10 +159,35 @@
     }
   }
 
-  function handleAddMaskLayer(): void {
-    const id = layerStore.addMaskLayer();
-    layerStore.setSelectedLayerId(id);
-    masksOpen = true;
+  async function handleAddControlLayer(): Promise<void> {
+    const app = getActiveUltraPaintApp();
+    if (!app) {
+      console.error("[ultra-paint] cannot add a control layer before the app is ready");
+      return;
+    }
+    try {
+      const id = await app.addBlankControlLayer();
+      layerStore.setSelectedLayerId(id);
+      controlsOpen = true;
+      expandedControlId = id;
+    } catch (error) {
+      console.error("[ultra-paint] could not add a control layer:", error);
+    }
+  }
+
+  async function handleAddMaskLayer(): Promise<void> {
+    const app = getActiveUltraPaintApp();
+    if (!app) {
+      console.error("[ultra-paint] cannot add a mask layer before the app is ready");
+      return;
+    }
+    try {
+      const id = await app.addBlankMaskLayer();
+      layerStore.setSelectedLayerId(id);
+      masksOpen = true;
+    } catch (error) {
+      console.error("[ultra-paint] could not add a mask layer:", error);
+    }
   }
 
   async function handleControlFiles(event: Event): Promise<void> {
@@ -215,11 +240,12 @@
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     contextMenuX = rect.left;
     contextMenuY = rect.bottom + 4;
-    contextMenuItems = [
+    const items: ContextMenuItem[] = [
       { label: "Raster Layer", action: () => void handleAddBlankLayer() },
       { label: "Mask Layer", action: handleAddMaskLayer },
+      { label: "Control Layer", action: () => void handleAddControlLayer() },
       {
-        label: "Control Layer",
+        label: "Control Layer from Image",
         action: () => document.getElementById("upaint-control-file-input")?.click(),
       },
       { divider: true },
@@ -228,6 +254,7 @@
         action: () => document.getElementById("upaint-layer-file-input")?.click(),
       },
     ];
+    contextMenuItems = items;
     contextMenuOpen = true;
   }
 
@@ -246,7 +273,12 @@
     const single = selected.length === 1 ? selected[0] : undefined;
     const mergeable = accordionBucket(layer) === "layers" && selected.length > 1;
     const copyable = single !== undefined && single.kind !== "group";
-    const convertible =
+    const maskCopyable =
+      single !== undefined &&
+      (single.kind === "raster" || single.kind === "control") &&
+      !isPreviewing &&
+      !isFiltering;
+    const controlCopyable =
       single !== undefined && single.kind === "raster" && !isPreviewing && !isFiltering;
     const filterable =
       single !== undefined &&
@@ -257,7 +289,8 @@
     const clippable = selected.some((candidate) => candidate.kind !== "group" && !candidate.locked);
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
-    contextMenuItems = [
+    const divider: ContextMenuItem = { divider: true };
+    const items: ContextMenuItem[] = [
       ...(single ? [{ label: "Rename", action: () => void beginRename(single) }] : []),
       {
         label: allVisible ? "Hide selected" : "Show selected",
@@ -274,6 +307,7 @@
             },
           ]
         : []),
+      ...(single ? [divider] : []),
       ...(copyable
         ? [
             {
@@ -285,12 +319,43 @@
             },
           ]
         : []),
-      ...(convertible
+      ...(single
         ? [
-            { label: "Convert to Mask Layer", action: () => convertLayerToMask(single) },
-            { label: "Convert to Control Layer", action: () => convertLayerToControl(single) },
+            {
+              label: "Duplicate layer",
+              action: () => duplicateLayer(single),
+              disabled: isPreviewing || isFiltering,
+            },
           ]
         : []),
+      ...(maskCopyable || controlCopyable
+        ? [
+            divider,
+            ...(maskCopyable
+              ? [{ label: "Copy to Mask Layer", action: () => convertLayerToMask(single!) }]
+              : []),
+            ...(controlCopyable
+              ? [{ label: "Copy to Control Layer", action: () => convertLayerToControl(single!) }]
+              : []),
+            ...(maskCopyable
+              ? [
+                  {
+                    label: "Convert to Mask Layer",
+                    action: () => convertLayerToMask(single!, true),
+                  },
+                ]
+              : []),
+            ...(controlCopyable
+              ? [
+                  {
+                    label: "Convert to Control Layer",
+                    action: () => convertLayerToControl(single!, true),
+                  },
+                ]
+              : []),
+          ]
+        : []),
+      ...(filterable || clippable ? [divider] : []),
       ...(filterable ? [{ label: "Filter...", action: () => filterStore.begin(single.id) }] : []),
       ...(clippable
         ? [
@@ -301,12 +366,14 @@
             },
           ]
         : []),
+      divider,
       {
         label: selected.length === 1 ? "Delete layer" : `Delete ${selected.length} selected`,
-        action: () => selected.forEach((candidate) => layerStore.removeLayer(candidate.id)),
+        action: () => layerStore.removeLayers(selected.map((candidate) => candidate.id)),
         destructive: true,
       },
     ];
+    contextMenuItems = items;
     contextMenuOpen = true;
   }
 
@@ -371,27 +438,39 @@
     }
   }
 
-  function convertLayerToMask(layer: Layer): void {
+  function duplicateLayer(layer: Layer): void {
+    try {
+      const app = getActiveUltraPaintApp();
+      if (!app) throw new Error("The painting canvas is not ready");
+      app.duplicateLayer(layer.id);
+    } catch (error) {
+      actionMessage = `Could not duplicate layer: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  function convertLayerToMask(layer: Layer, removeSource = false): void {
     try {
       const app = getActiveUltraPaintApp();
       if (!app) throw new Error("The painting canvas is not ready");
       const id = app.convertLayerToMask(layer.id);
+      if (removeSource) layerStore.removeLayer(layer.id);
       layerStore.setSelectedLayerId(id);
       masksOpen = true;
     } catch (error) {
-      actionMessage = `Could not convert to a mask: ${error instanceof Error ? error.message : String(error)}`;
+      actionMessage = `Could not ${removeSource ? "convert" : "copy"} to a mask: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
-  function convertLayerToControl(layer: Layer): void {
+  function convertLayerToControl(layer: Layer, removeSource = false): void {
     try {
       const app = getActiveUltraPaintApp();
       if (!app) throw new Error("The painting canvas is not ready");
       const id = app.convertLayerToControl(layer.id);
+      if (removeSource) layerStore.removeLayer(layer.id);
       layerStore.setSelectedLayerId(id);
       controlsOpen = true;
     } catch (error) {
-      actionMessage = `Could not convert to a control layer: ${error instanceof Error ? error.message : String(error)}`;
+      actionMessage = `Could not ${removeSource ? "convert" : "copy"} to a control layer: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 

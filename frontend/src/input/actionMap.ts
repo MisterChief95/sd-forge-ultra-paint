@@ -10,6 +10,7 @@ export type InputActionId =
   | "history.redo"
   | "tool.brush"
   | "tool.eraser"
+  | "tool.transform"
   | "tool.boundary-box"
   | "tool.swap-colors"
   | "viewport.fit"
@@ -134,8 +135,10 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "Ctrl/Cmd+Shift+M",
     matches: (event) => primaryKey("m", true)(event),
     run: (app) => {
-      const store = app.getStore();
-      store.setSelectedLayerId(store.addMaskLayer());
+      void app
+        .addBlankMaskLayer()
+        .then((id) => app.getStore().setSelectedLayerId(id))
+        .catch((error) => console.error("[ultra-paint] could not add a mask layer:", error));
       return true;
     },
     mutatesDocument: true,
@@ -243,6 +246,13 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "E",
     matches: key("e"),
     run: (app) => (app.getToolStore().setActiveTool("eraser"), true),
+  },
+  {
+    id: "tool.transform",
+    map: "global",
+    shortcut: "V",
+    matches: key("v"),
+    run: (app) => (app.getToolStore().setActiveTool("transform"), true),
   },
   {
     id: "tool.boundary-box",

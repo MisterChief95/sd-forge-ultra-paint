@@ -28,6 +28,11 @@
     return id ? layerStore.getLayer(id) : undefined;
   });
   const fillDisabled = $derived(fillLayer?.kind !== "raster" || fillLayer.locked);
+  const transformLayer = $derived.by(() => {
+    if (layerStore.selectedLayerIds.length !== 1) return undefined;
+    return layerStore.getLayer(layerStore.selectedLayerIds[0]!);
+  });
+  const transformDisabled = $derived(!transformLayer || transformLayer.locked);
 
   function positionPressurePopover(event: MouseEvent): void {
     const button = event.currentTarget;
@@ -117,6 +122,65 @@
       </svg>
     </Button>
     <span class="mx-0.5 h-5 w-px bg-(--upaint-border)" aria-hidden="true"></span>
+    <Button
+      class="gap-1.5"
+      pressed={paintToolStore.activeTool === "transform"}
+      title="Move, rotate, or scale the selected layer (V)"
+      aria-label="Transform Layer"
+      disabled={isDocumentMutationLocked() || transformDisabled}
+      onclick={() => paintToolStore.setActiveTool("transform")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M2.5 5V2.5H5M11 2.5h2.5V5M13.5 11v2.5H11M5 13.5H2.5V11" />
+        <path d="M4.5 4.5h7v7h-7z" stroke-dasharray="1.5 1" />
+      </svg>
+      Transform
+    </Button>
+    <Button
+      size="icon"
+      title="Mirror selected layer horizontally"
+      aria-label="Mirror selected layer horizontally"
+      disabled={isDocumentMutationLocked() || transformDisabled}
+      onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("horizontal")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M8 1.5v13" stroke-dasharray="1.5 1.5" />
+        <path d="m6.5 4-4 2.5v3l4 2.5zM9.5 4l4 2.5v3l-4 2.5z" />
+      </svg>
+    </Button>
+    <Button
+      size="icon"
+      title="Mirror selected layer vertically"
+      aria-label="Mirror selected layer vertically"
+      disabled={isDocumentMutationLocked() || transformDisabled}
+      onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("vertical")}
+    >
+      <svg
+        class="h-3.5 w-3.5"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.3"
+        aria-hidden="true"
+      >
+        <path d="M1.5 8h13" stroke-dasharray="1.5 1.5" />
+        <path d="m4 6.5 2.5-4h3l2.5 4zM4 9.5l2.5 4h3l2.5-4z" />
+      </svg>
+    </Button>
     <Button
       class="gap-1.5"
       pressed={paintToolStore.activeTool === "boundary-box"}

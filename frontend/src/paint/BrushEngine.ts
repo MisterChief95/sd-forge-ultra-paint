@@ -4,8 +4,9 @@ import type { LayerTree } from "../scene/LayerTree";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BrushSettings } from "../state/paintToolStore.svelte";
 import type { LayerId } from "../state/schema";
-import { ConsistentOpacityStroke } from "./ConsistentOpacityStroke";
 import type { StrokeSession } from "./StrokeController";
+import type { TileEditRecorder } from "./TiledConsistentOpacityStroke";
+import { TiledConsistentOpacityStroke } from "./TiledConsistentOpacityStroke";
 
 /** Creates brush-specific consumers for the shared stroke-capture pipeline. */
 export class BrushEngine {
@@ -14,15 +15,14 @@ export class BrushEngine {
     private readonly documentRoot: Container,
     private readonly tree: LayerTree,
     private readonly store: LayerStore,
+    private readonly history: TileEditRecorder,
   ) {}
 
   /** Begin painting into `layerId`, snapshotting settings for this stroke. */
   public beginStroke(layerId: LayerId, settings: Readonly<BrushSettings>): StrokeSession | null {
-    const texture = this.store.getTexture(layerId);
     const node = this.tree.getNode(layerId);
     const layer = this.store.getLayer(layerId);
     if (
-      !texture ||
       !node ||
       !layer ||
       (node.kind !== "raster" && node.kind !== "mask" && node.kind !== "control")
@@ -30,22 +30,18 @@ export class BrushEngine {
       return null;
     }
 
-    return new ConsistentOpacityStroke(
+    const surface = this.store.getTiledSurface(layerId);
+    if (!surface) return null;
+    return new TiledConsistentOpacityStroke(
       this.app,
       this.documentRoot,
-      node.container,
+      node,
       this.store,
+      this.history,
       layerId,
-      texture,
+      surface,
       settings,
-      {
-        color: settings.color,
-        commitBlendMode: "normal",
-        livePreview: "overlay",
-        allowGrowth: true,
-        preserveAlpha: layer.preserveAlpha,
-        setPreviewTexture: (previewTexture) => node.setTexture(previewTexture),
-      },
+      { mode: "brush", color: settings.color, preserveAlpha: layer.preserveAlpha },
     );
   }
 }

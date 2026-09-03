@@ -32,12 +32,25 @@ export class LayerTree {
 
   private readonly unsubscribe: Unsubscribe;
 
+  /** Applied to every current node and every node created afterward. */
+  private tileDebugBordersVisible = false;
+
   private destroyed = false;
 
-  constructor(store: LayerStore) {
+  /**
+   * Invoked after every {@link reconcile} pass. Layer/ancestor transforms are
+   * applied to node containers inside `reconcile`, so the camera-driven tile
+   * culling in `UltraPaintApp` has to be recomputed here too -- otherwise a
+   * layer move/rotate/scale (including a group ancestor's) leaves the
+   * previously-attached tile set stale until the next pan/zoom.
+   */
+  private readonly onReconciled?: () => void;
+
+  constructor(store: LayerStore, onReconciled?: () => void) {
     this.store = store;
     this.root = new Container({ label: "ultra-paint:document-root" });
     this.root.eventMode = "none";
+    this.onReconciled = onReconciled;
 
     this.unsubscribe = store.subscribe((doc) => this.reconcile(doc));
     // Adopt whatever is already in the store (non-empty on re-mount).
@@ -52,6 +65,17 @@ export class LayerTree {
   /** Number of live scene nodes. Useful for tests and diagnostics. */
   public get nodeCount(): number {
     return this.nodes.size;
+  }
+
+  /** Debug-only: outline every tiled layer's tiles in green, now and going forward. */
+  public setTileDebugBorders(visible: boolean): void {
+    this.tileDebugBordersVisible = visible;
+    for (const node of this.nodes.values()) node.setTileDebugBorders(visible);
+  }
+
+  /** Visit every live scene node, e.g. to recompute per-node viewport culling. */
+  public forEachNode(fn: (node: LayerNode) => void): void {
+    for (const node of this.nodes.values()) fn(node);
   }
 
   /**
@@ -87,7 +111,7 @@ export class LayerTree {
         case "raster":
         case "mask":
         case "control":
-          texture = this.store.getTexture(layer.id);
+          texture = this.store.getTiledSurface(layer.id);
           break;
         case "group":
           texture = undefined;
@@ -104,17 +128,24 @@ export class LayerTree {
         console.warn(`[ultra-paint] ${layer.kind} layer "${layer.id}" has no texture; skipping`);
         continue;
       }
-      this.nodes.set(layer.id, new LayerNode(layer, texture));
+      const node = new LayerNode(layer, texture);
+      if (this.tileDebugBordersVisible) node.setTileDebugBorders(true);
+      this.nodes.set(layer.id, node);
     }
 
     // 4. Re-attach in document order, root first then each group.
-    // Mask and regular rows are independent stacks in the UI. Keep every
-    // root mask above regular content regardless of which stack changed
-    // most recently; order within each filtered stack still follows the
-    // document's index-0-is-top convention.
+    // The panel's Mask -> Control -> Raster sections are independent stacks.
+    // Keep that hierarchy in the scene too, so a newly generated tiled raster
+    // cannot be promoted above the ControlNet layer it was generated from.
+    // Order within each section still follows the document's
+    // index-0-is-top convention.
     const rootOrder = [
       ...doc.layerOrder.filter((id) => byId.get(id)?.kind === "mask"),
-      ...doc.layerOrder.filter((id) => byId.get(id)?.kind !== "mask"),
+      ...doc.layerOrder.filter((id) => byId.get(id)?.kind === "control"),
+      ...doc.layerOrder.filter((id) => {
+        const kind = byId.get(id)?.kind;
+        return kind !== "mask" && kind !== "control";
+      }),
     ];
     this.attachOrdered(this.root, rootOrder);
     for (const layer of doc.layers) {
@@ -123,6 +154,11 @@ export class LayerTree {
       if (!groupNode) continue;
       this.attachOrdered(groupNode.container, layer.children);
     }
+
+    // Container transforms (this layer's own, or an ancestor group's) just
+    // changed above. Recompute per-tile-layer culling from the current
+    // camera against the new world transforms.
+    this.onReconciled?.();
   }
 
   /** Detach every node and drop the subscription. Leaves `root` empty. */

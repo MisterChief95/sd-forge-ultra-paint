@@ -31,8 +31,9 @@
  *    corrupting the exported composite the rest of the time.
  */
 
-import { ColorMatrixFilter, Container, Rectangle, RenderTexture, Sprite } from "pixi.js";
+import { ColorMatrixFilter, Container, Matrix, Rectangle, RenderTexture, Sprite } from "pixi.js";
 import type { Application } from "pixi.js";
+import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rendererCapabilities";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BoundaryBox } from "../state/schema";
 import { toPixiBlendMode } from "../util/blendModes";
@@ -42,14 +43,14 @@ export class Compositor {
    * Render `documentRootContainer` into an offscreen `RenderTexture` and
    * return it as a `data:image/png;base64,...` string.
    *
-   * The container's own transform is neutralised for the duration of the
-   * render so that a future viewport pan/zoom applied to the document root
-   * cannot leak into the exported image.
+   * An explicit render transform selects each document-space chunk, so neither
+   * viewport pan/zoom nor the document root's cached render state can leak in.
    */
   public static flatten(
     app: Application,
     documentRootContainer: Container,
     box: BoundaryBox,
+    requestedChunkSize?: number,
   ): string {
     if (!app.renderer) {
       throw new Error("[ultra-paint] flatten() called before app.init()");
@@ -62,55 +63,21 @@ export class Compositor {
 
     const root = documentRootContainer;
 
-    // Snapshot and neutralise the view transform, and any UI-only clip
-    // mask (see the file header note on why the mask must not survive
-    // this render).
-    const prev = {
-      x: root.x,
-      y: root.y,
-      scaleX: root.scale.x,
-      scaleY: root.scale.y,
-      rotation: root.rotation,
-      mask: root.mask,
-    };
-    root.position.set(-box.x, -box.y);
-    root.scale.set(1, 1);
-    root.rotation = 0;
+    // The document-bounds mask is a viewport sibling in another coordinate
+    // space, so it must not participate in this standalone render.
+    const previousMask = root.mask;
     root.mask = null;
-
-    // resolution 1 => the render texture is exactly box.width x box.height pixels,
-    // regardless of devicePixelRatio on the on-screen canvas.
-    const renderTexture = RenderTexture.create({
-      width: box.width,
-      height: box.height,
-      resolution: 1,
-      antialias: false,
-    });
-
     try {
-      app.renderer.render({
-        container: root,
-        target: renderTexture,
-        clear: true,
-        clearColor: [0, 0, 0, 0], // fully transparent
-      });
-
-      const canvas = app.renderer.extract.canvas({
-        target: renderTexture,
-        frame: new Rectangle(0, 0, box.width, box.height),
-        resolution: 1,
-      });
-
-      if (typeof canvas.toDataURL !== "function") {
-        throw new Error("[ultra-paint] canvas.toDataURL is unavailable in this environment");
-      }
-      return canvas.toDataURL("image/png");
+      return this.renderChunksToDataURL(
+        app,
+        root,
+        box,
+        requestedChunkSize,
+        [0, 0, 0, 0],
+        "flatten",
+      );
     } finally {
-      renderTexture.destroy(true);
-      root.position.set(prev.x, prev.y);
-      root.scale.set(prev.scaleX, prev.scaleY);
-      root.rotation = prev.rotation;
-      root.mask = prev.mask;
+      root.mask = previousMask;
     }
   }
 
@@ -167,7 +134,12 @@ export class Compositor {
    * The temporary sprites deliberately use the store textures directly,
    * never the hatch-filtered display sprites owned by `LayerTree`.
    */
-  public static flattenMask(app: Application, store: LayerStore, box: BoundaryBox): string | null {
+  public static flattenMask(
+    app: Application,
+    store: LayerStore,
+    box: BoundaryBox,
+    requestedChunkSize?: number,
+  ): string | null {
     const doc = store.getDocument();
     const byId = new Map(doc.layers.map((layer) => [layer.id, layer]));
     const masks = doc.layerOrder
@@ -181,15 +153,14 @@ export class Compositor {
     }
 
     const root = new Container({ label: "ultra-paint:mask-export" });
-    root.position.set(-box.x, -box.y);
     const filters: ColorMatrixFilter[] = [];
 
     // Pixi draws last-child-on-top; document index 0 is the top.
     for (let index = masks.length - 1; index >= 0; index -= 1) {
       const layer = masks[index];
       if (!layer) continue;
-      const texture = store.getTexture(layer.id);
-      if (!texture) continue;
+      const surface = store.getTiledSurface(layer.id);
+      if (!surface) continue;
 
       const layerContainer = new Container({ label: `mask-export:${layer.id}` });
       const transform = layer.transform;
@@ -199,43 +170,97 @@ export class Compositor {
       layerContainer.alpha = layer.opacity;
       layerContainer.blendMode = toPixiBlendMode(layer.blendMode);
 
-      const sprite = new Sprite({ texture, label: `mask-export-sprite:${layer.id}` });
-
       const filter = new ColorMatrixFilter();
       filter.matrix = [0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0];
-      layerContainer.filters = [filter];
       filters.push(filter);
-      layerContainer.addChild(sprite);
+
+      surface.visitAll((tile) => {
+        const sprite = new Sprite({
+          texture: tile.target,
+          label: `mask-export-tile:${layer.id}:${tile.coord.x},${tile.coord.y}`,
+        });
+        sprite.position.set(tile.originX, tile.originY);
+        sprite.filters = [filter];
+        layerContainer.addChild(sprite);
+      });
       root.addChild(layerContainer);
     }
 
-    const renderTexture = RenderTexture.create({
-      width: box.width,
-      height: box.height,
-      resolution: 1,
-      antialias: false,
-    });
-
     try {
-      app.renderer.render({
-        container: root,
-        target: renderTexture,
-        clear: true,
-        clearColor: [0, 0, 0, 1],
-      });
-      const canvas = app.renderer.extract.canvas({
-        target: renderTexture,
-        frame: new Rectangle(0, 0, box.width, box.height),
-        resolution: 1,
-      });
-      if (typeof canvas.toDataURL !== "function") {
-        throw new Error("[ultra-paint] canvas.toDataURL is unavailable in this environment");
-      }
-      return canvas.toDataURL("image/png");
+      return this.renderChunksToDataURL(
+        app,
+        root,
+        box,
+        requestedChunkSize,
+        [0, 0, 0, 1],
+        "flattenMask",
+      );
     } finally {
       for (const filter of filters) filter.destroy();
       root.destroy({ children: true });
-      renderTexture.destroy(true);
     }
+  }
+
+  /** Render device-safe chunks and stitch them into one CPU-owned PNG canvas. */
+  private static renderChunksToDataURL(
+    app: Application,
+    root: Container,
+    box: BoundaryBox,
+    requestedChunkSize: number | undefined,
+    clearColor: [number, number, number, number],
+    operation: "flatten" | "flattenMask",
+  ): string {
+    const capabilities = getTileRendererCapabilities(app.renderer);
+    const chunkSize = requestedChunkSize ?? capabilities.selectedTileSize ?? PREFERRED_TILE_SIZE;
+    if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+      throw new RangeError(`${operation}() needs a positive integer chunk size, got ${chunkSize}`);
+    }
+    if (
+      capabilities.maxTextureDimension2D !== null &&
+      chunkSize > capabilities.maxTextureDimension2D
+    ) {
+      throw new RangeError(
+        `${operation}() chunk ${chunkSize} exceeds renderer limit ${capabilities.maxTextureDimension2D}`,
+      );
+    }
+
+    const output = document.createElement("canvas");
+    output.width = box.width;
+    output.height = box.height;
+    if (output.width !== box.width || output.height !== box.height) {
+      throw new RangeError(
+        `${operation}() output ${box.width}x${box.height} exceeds this browser's canvas limit`,
+      );
+    }
+    const context = output.getContext("2d");
+    if (!context) throw new Error(`[ultra-paint] could not create the ${operation} output canvas`);
+
+    const transform = new Matrix();
+    for (let offsetY = 0; offsetY < box.height; offsetY += chunkSize) {
+      for (let offsetX = 0; offsetX < box.width; offsetX += chunkSize) {
+        const width = Math.min(chunkSize, box.width - offsetX);
+        const height = Math.min(chunkSize, box.height - offsetY);
+        transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
+        const chunk = RenderTexture.create({ width, height, resolution: 1, antialias: false });
+        try {
+          app.renderer.render({
+            container: root,
+            target: chunk,
+            transform,
+            clear: true,
+            clearColor,
+          });
+          const canvas = app.renderer.extract.canvas({
+            target: chunk,
+            frame: new Rectangle(0, 0, width, height),
+            resolution: 1,
+          });
+          context.drawImage(canvas as CanvasImageSource, offsetX, offsetY);
+        } finally {
+          chunk.destroy(true);
+        }
+      }
+    }
+    return output.toDataURL("image/png");
   }
 }

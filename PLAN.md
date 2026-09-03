@@ -10,6 +10,182 @@ and design-decisions sections can lag a little; status should never lie.
 
 ---
 
+## Current Status — tiled canvas holdovers — 2026-09-01
+
+Upload, blank-layer creation, generated-Apply, paste-as-raster,
+paste-as-mask/control, brush/eraser painting, Fill, Clip to Boundary Box,
+mask/control read-only extraction, layer merge, mask merge, mask/control
+conversion, `Compositor.flatten()` (Save/Generate), and
+`Compositor.flattenMask()` (inpaint mask export) are all tiled/chunked in
+production. The three holdovers from the previous status entry are now
+closed:
+
+1. **Automatic viewport culling** — `UltraPaintApp.updateTiledVisibleRegions()`
+   maps the screen rect into each tiled layer's local space (rotation-safe via
+   the axis-aligned bbox of the mapped corners) and calls
+   `LayerNode.setTiledVisibleRegion()` after every camera mutation: wheel-zoom,
+   middle-mouse pan, `resetZoom()`, `fitToBoundaryBox()`, `centerDocument()`,
+   and viewport resize. Off-screen tiles no longer render.
+2. **Multi-tile stroke-crossing test** — added at
+   `tiled-raster-canvas.spec.ts:385`: a rotated, fractional-zoom brush stroke
+   crossing all four tile seams, verified pixel-by-pixel at each seam.
+3. **Rotated Clip tile compaction** — Clip now reads back each surviving
+   masked candidate tile and deallocates it when alpha is entirely zero;
+   the rotated 3×3-to-diamond regression (`tiled-raster-canvas.spec.ts:994`)
+   confirms its four empty corners are released.
+
+No further tiled-canvas work is currently tracked as outstanding.
+
+`TiledImageRef.bounds: PixelBounds` (the origin of a tiled layer's logical
+bounds) is implemented and populated by every `addXLayerTiled()` call in
+`layerStore.svelte.ts`.
+
+### Tile-by-tile mask/control conversion and mask merge — 2026-09-01
+
+`convertLayerToMask`/`convertLayerToControl` and `mergeVisibleMasksToNewMask`
+no longer flatten a tiled source to one full-boundary-box `RenderTexture`
+before reblitting. A new `copyTiledSurfaceTileByTile()`
+(`frontend/src/canvas/TileRasterOps.ts`) copies each source tile straight to
+the same absolute grid position in a fresh destination surface — same tile
+size, same `TileGrid`, so destination bounds/origin end up identical to the
+source's and the layer's `transform` can be reused unchanged (no
+`transformForPixelSnapshot()` compensation needed, unlike the monolithic
+path those functions still use for non-tiled sources).
+
+Control conversion (`convertLayerToControl`) needed no per-pixel change at
+all — ControlNet's luminance-to-alpha treatment is a *display*-only filter
+(`ControlLayerDisplayFilter.ts`), never baked into stored pixels — so it's a
+pure per-tile GPU copy with no CPU readback. Mask conversion
+(`convertLayerToMask`) still needs the existing luminance-coverage math, just
+scoped to one tile's `extract.pixels()` at a time instead of the whole
+flattened image.
+
+`mergeVisibleMasksToNewMask()` could *not* reuse `flattenSelectedToTiledSurface()`
+as-is (unlike raster merge): that helper renders the live `tree.root`, and
+mask layer nodes there carry a display-only `MaskHatchFilter` tint
+(`LayerNode.ts`) that would get baked into the merged layer's actual stored
+pixels -- caught by a live Playwright run, not by inspection. A new
+`mergeMasksToTiledSurface()` instead builds its own temporary raw-texture
+`Container` per mask layer (mirroring `Compositor.flattenMask()`'s existing
+"use the store textures directly, never the hatch-filtered display sprites"
+approach) and renders that chunk-by-chunk into a fresh tiled surface, the
+same chunked-render-into-tiles loop `flattenSelectedToTiledSurface()` uses.
+This removed the last `flattenSelectedToTexture()`/`addMaskLayerFromTexture()`
+callers (both deleted as dead code).
+
+Files changed: `frontend/src/canvas/TileRasterOps.ts`,
+`frontend/src/app/UltraPaintApp.ts`, `frontend/src/state/layerStore.svelte.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts` (extended existing
+conversion/merge coverage with pixel + position assertions, plus a new
+mask-merge test, rather than adding a separate spec file),
+`frontend/tests/e2e/transform-correctness.spec.ts` (updated one assertion
+that encoded the old monolithic-flatten rebasing behavior this change
+intentionally replaces), and this `PLAN.md`.
+
+### Tile-by-tile paste-as-mask ingestion — 2026-09-01
+
+`addMaskLayerFromFile()` (paste-as-mask, `PasteMenu.svelte` → `App.svelte` →
+this method) no longer runs one whole-image CPU `extract.pixels()` +
+luminance canvas over the full decoded upload before ingesting it — at the
+8192x8192 upload cap (`fitDimensions()`) that was a quarter-gigabyte CPU
+readback. It now ingests the decoded texture as a plain tiled surface first
+(the same tile-by-tile GPU blit `addImageFromFile()`/`addControlLayerFromFile()`
+already use), then runs the existing luminance-coverage conversion through
+`copyTiledSurfaceTileByTile()`'s `perTile` callback — the exact same helper
+and per-tile conversion `convertLayerToMask()` uses, just applied to a
+freshly-ingested surface instead of an existing layer's.
+
+`addControlLayerFromFile()` (paste-as-control) needed no change: it was
+already a direct tile-by-tile GPU blit with no CPU readback, same as any
+other control-file/image upload — the same conclusion `convertLayerToControl`
+reached for tiled control conversion (ControlNet's luminance-to-alpha
+treatment is display-only, never baked into stored pixels).
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`, and this `PLAN.md`.
+
+---
+
+## Undoable layer deletion — 2026-08-31
+
+Layer deletion now participates in the existing bounded undo/redo history.
+`LayerStore.removeLayers()` treats a multi-selection delete as one atomic action,
+detaches each selected root plus any group descendants, and transfers the exact
+layer objects and their monolithic or tiled Pixi pixel backing into a history
+snapshot keyed by the deleted root IDs. Undo restores document-array positions,
+sibling stack order, selection, pixels, and live backing ownership; redo detaches
+the same roots again. Snapshots are destroyed when discarded, trimmed from the
+40-entry history, cleared, or when the app is torn down.
+
+Disk persistence was deliberately not added: history already has a synchronous
+GPU-resource ownership-transfer pattern for add-layer undo, so serializing every
+tile to PNG/IndexedDB would add asynchronous failure modes and redundant GPU
+readback. Deleted resources remain GPU-resident only while their bounded history
+entry exists; move them to IndexedDB if profiling shows real VRAM pressure.
+
+Files changed: `frontend/src/state/layerStore.svelte.ts`,
+`frontend/src/app/UltraPaintApp.ts`, `frontend/src/ui/LayerPanel.svelte`, and
+`frontend/tests/e2e/deleted-layer-history.spec.ts` (new). Verification: Svelte
+autofixer reported no issues (pre-existing suggestions only); frontend typecheck,
+focused ESLint/Prettier checks, production build, and the focused Chromium
+deletion-history regression passed. The related tiled suite passed 13/14; its
+merge-seam assertion currently fails in isolation and does not exercise
+deletion/history code. No live Forge/GPU validation was run.
+
+---
+
+## Interactive layer transforms — 2026-08-31
+
+The first transform-tool slice is now implemented for one selected, unlocked
+layer at a time. **Transform** (`V`) draws a zoom-stable Pixi gizmo over the
+layer's actual local pixel bounds: drag inside to move, drag a corner to scale
+each side axis independently while the opposite corner stays fixed, or drag the
+round offset handle to rotate around the center. Shift-dragging a corner preserves
+the layer's current aspect ratio. Move and scale drags snap to the same 32px grid
+as the boundary box, with Ctrl selecting its 8px fine grid. Shift constrains
+movement to one axis and snaps rotation to 15-degree increments. Toolbar actions
+mirror horizontally or vertically around the same center. Locked layers and
+preview/filter document locks remain non-editable, and each pointer gesture or
+mirror action is a separate undo step.
+
+Transforms remain presentation-only metadata on `LayerNode.container`. The gizmo
+uses `LayerStore.getLayerPixelBounds()`, including signed tiled bounds, and does
+all drag math in the layer parent's coordinates so nested group transforms do
+not require rewriting pixels. Moving, rotating, scaling, and mirroring therefore
+leave the `TiledRasterCanvas`, its tile keys, and GPU texture ownership unchanged;
+the compositor continues to export through the same live scene transforms.
+Multi-selection currently suppresses the gizmo rather than inventing a temporary
+group/pivot model.
+
+Files changed: `README.md`, `frontend/src/scene/TransformOverlay.ts` (new),
+`frontend/src/app/UltraPaintApp.ts`, `frontend/src/state/paintToolStore.svelte.ts`,
+`frontend/src/input/actionMap.ts`, `frontend/src/paint/StrokeController.ts`,
+`frontend/src/ui/PaintToolbar.svelte`, and
+`frontend/tests/e2e/transform-tool.spec.ts` (new). Verification: Svelte autofixer
+reported no issues; frontend typecheck, focused ESLint, focused Prettier check,
+and production build pass. The new real-pointer tiled transform regression and
+the existing rotated/flipped tiled transform and group-clip regressions pass 3/3.
+The full browser suite passes 69/71; the two remaining failures are current
+generation-panel expectations for the removed `Auto target size` element and
+live generation-preview polling, outside this transform change. No live Forge/GPU
+validation was run.
+
+---
+
+## Control-layer display luminance-to-alpha — 2026-08-31
+
+Control-layer display treatment now uses true luminance-to-alpha: the rendered
+alpha is `source alpha × Rec. 709 luminance`, so black preprocessor output is
+fully transparent instead of retaining the previous 15% minimum opacity. This
+remains display-only; the source texture, Forge preprocessing request, and
+accepted ControlNet pixels are unchanged.
+
+Files changed: `frontend/src/scene/ControlLayerDisplayFilter.ts`. Verification:
+frontend typecheck, production build, focused Prettier check, and the focused
+Chromium ControlNet filter test all pass. No live Forge/GPU validation was run.
+
+---
+
 ## Preview/filter document lock and canvas cursor ownership — 2026-08-30
 
 Unapplied generation previews now lock the document whether their image is
@@ -114,6 +290,1110 @@ Prettier checks passed, production build passed, and focused Playwright coverage
 passed 2/2. No live Forge/GPU validation was run.
 
 ---
+
+## Infinite tile-backed canvas — IN PROGRESS, 2026-08-31
+
+### Top-level Mask -> ControlNet -> Raster stack enforcement -- 2026-08-31
+
+`LayerTree` now reconciles root layers as three independent visual sections:
+Mask (top), ControlNet, then regular Raster/Group (bottom). Previously it
+separated only masks, so a generated tiled raster inserted at the top of the
+document stack could render above the ControlNet source it had just used.
+The rule applies to every raster backing, including `TiledRasterCanvas`.
+Focused Playwright coverage creates a tiled generated layer after copying a
+raster to both ControlNet and mask layers, then verifies the live Pixi child
+order remains Mask -> ControlNet -> Raster.
+
+The migration design below remains the target architecture. I0, the opt-in I1
+vertical slice, and I3 (tile-native brush/eraser painting) are substantially
+implemented; I4 (remaining edit operations and production cutover) has
+started. Image upload, blank raster layers, generated-Apply, and merging
+raster/group layers are now tiled by default in production (see below);
+mask/control layer creation and paste-as-mask/paste-as-control still use the
+monolithic `RenderTexture` path (clear/invert-mask and ControlNet filter
+acceptance need to be ported first -- see the "Deferred / notes" list under
+the 2026-08-31 ingestion entry below). A tiled raster layer now supports
+every pixel operation -- brush, eraser, Fill, Clip to Boundary Box, and
+mask/control conversion. I2 ingestion and chunked compositing have started
+and now cover every export route except mask export: `Compositor.flatten()`
+(Save/Generate) and the new chunked merge path both render in device-safe
+chunks; `Compositor.flattenMask()` (inpaint mask export) is the one route
+still allocating one full-boundary-box GPU texture directly.
+
+### Implementation status — opt-in vertical slice working, 2026-08-30
+
+- Added `frontend/src/canvas/TileGrid.ts`: signed floor coordinate math,
+  half-open bounds-to-range conversion, collision-free string keys,
+  deterministic row-major iteration, and safe-coordinate/iteration-count guards.
+- Added `frontend/src/canvas/rendererCapabilities.ts`: the preferred per-tile
+  ceiling is concretely **1024x1024**; WebGL reads `gl.MAX_TEXTURE_SIZE`, WebGPU
+  reads `device.limits.maxTextureDimension2D`, and selection rounds down to the
+  largest supported power of two no greater than 1024. Canvas/unknown backends
+  report no guessed limit rather than pretending an unsafe value is device-safe.
+- Added `TiledRasterCanvas`: a native-private tile map, region visits,
+  allocate-or-existing-only edits, one active atomic transaction, deferred
+  structural add events, rollback on failure, explicit logical-bounds expansion,
+  texture ownership/destruction, resident-byte estimates, and sorted diagnostics.
+  A committed edit returns an owning reversible delta. Applying it atomically
+  swaps tile pixels and exact tile existence, and returns the inverse for redo.
+  This replay is tested but is not yet connected to the application's production
+  history stack.
+- Added `TiledRasterView` and opt-in `LayerNode` support. The surface owns tile
+  textures while the view owns their sprites, reacts to tile add/replace/remove
+  events, applies layer transforms exactly once, supports per-tile mask/control
+  display filters, and attaches only tiles intersecting a requested visible
+  region. Production-created layers remain monolithic during migration.
+- Started I2 chunked output in `Compositor.flatten()`: regular composites can be
+  rendered through bounded device-safe chunks and stitched into one CPU canvas.
+  A forced-small-chunk Playwright comparison passes. Mask, merge, source, and
+  ControlNet output routes still need the shared chunk path.
+- Added the first shared tiled texture-blit operation and a four-tile signed-edge
+  test fixture; it now passes. Root cause of the earlier failure: `TiledRasterCanvas.
+createTile()` cleared a brand-new tile via `renderer.clear({ target })`, but Pixi 8's
+  `RenderTargetSystem.clear()` never binds `target` first -- it clears whatever
+  framebuffer a prior operation left bound, so allocating a new tile was corrupting
+  the last-used tile from an unrelated surface. Fixed by binding explicitly via
+  `renderer.renderTarget.bind({ target, clear: true, clearColor })` before use. A
+  second, test-only issue was found in the same investigation: `renderer.extract.
+pixels()`'s `frame` option is ignored by the installed Pixi build (it always
+  returns the full target), so the dev-only `readTilePixel()` hook in
+  `frontend/src/main.ts` now requests the full buffer and indexes it manually by
+  `(x, y, width)` instead of relying on `frame` to crop.
+- Added dev-only creation, drawing, inspection, and tiled-layer hooks plus focused
+  Playwright coverage for signed geometry, capability negotiation, atomic edits,
+  rollback, bounds/events/ownership, exact delta undo/redo, negative tile display,
+  transforms, visible-region culling, destruction, and chunked regular export.
+- `UltraPaintApp` now logs backend, real maximum 2D texture size, and negotiated
+  tile size after renderer initialization. This is diagnostic only and does not
+  alter production layer creation.
+
+### First production ingestion path: image upload — 2026-08-30
+
+`addImageFromFile()` (the drag/drop and layer-panel upload path) now ingests
+through `TiledRasterCanvas` + `blitTexture` instead of one monolithic
+`RenderTexture`. This is the first _production_ (non-test-only, non-opt-in)
+tiled layer. Paste and generated-Apply ingestion are unchanged (still
+monolithic); only upload moved.
+
+`LayerStore` gained a real dual-backing model rather than swapping its one
+texture map wholesale:
+
+- A second raw map, `_tiledSurfaces: Map<LayerId, TiledRasterCanvas>`, sits
+  alongside the existing `_textures` map. A given layer id lives in exactly one
+  of the two maps, never both.
+- `addRasterLayerTiled()` mirrors `addRasterLayer()` but sizes the layer and
+  (if the document was empty) the boundary box from the surface's `bounds`,
+  and stamps `ImageRef.storage = "tiled"` (the `TiledImageRef` shape from the
+  design section above, added to the real schema).
+- `getPixelSurface(id)` returns whichever backing a layer actually has
+  (`RenderTexture | TiledRasterCanvas | undefined`); `LayerTree` now calls this
+  instead of `getTexture()` when constructing a `LayerNode`, so `LayerNode`'s
+  existing opt-in tiled-view support (I1) is what actually renders these layers
+  in production now, unchanged.
+- `removeLayer()`, `clear()`, `extractLayerForUndo()`/`restoreLayerForUndo()`,
+  and the app's add-layer undo/redo history entry all carry and destroy
+  whichever backing is present, so add/undo/redo/remove are symmetric for both
+  monolithic and tiled layers.
+- `getLayerThumbnail()` gained a tiled path: it assembles a throwaway
+  `Container` of the surface's tile sprites and extracts through an explicit
+  `frame` sized to the layer's logical bounds (tiles can extend past those
+  bounds at a partial edge tile, so the frame -- not the container's auto
+  bounds -- decides the crop).
+
+Deliberately NOT touched for this slice, and still monolithic/`getTexture()`-only,
+consistent with the staged plan: brush/eraser painting, Fill, Clip to
+Boundary Box, mask/control conversion, and `flattenMask()`. Each already
+guards on `!texture` and no-ops/returns-false/throws-a-caught-error rather than
+crashing, so an uploaded (tiled) layer is currently read-only-ish for those
+specific operations until their own I3/I4 migration lands -- this was verified
+by inspection of every `getTexture()` call site, not assumed. `Compositor.flatten()`
+and `flattenToTexture()` (Save/Generate's actual output path) needed **no
+changes**: they render `documentRootContainer` -- the live scene graph -- so a
+tiled layer's `TiledRasterView` sprites already composite correctly through the
+existing chunked/monolithic flatten code.
+
+Files changed: `frontend/src/state/schema.ts`, `frontend/src/state/layerStore.svelte.ts`,
+`frontend/src/scene/LayerTree.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/dimension-safety.spec.ts`, `frontend/tests/e2e/tiled-raster-canvas.spec.ts`.
+Verification: frontend typecheck (0 errors/0 warnings), lint, Prettier, and
+production build all pass; the full Playwright suite is unchanged at 59 passing
+(the same 5 pre-existing generation/persistence/LoRA-dialog failures as
+baseline, confirmed unrelated); a new focused Playwright test uploads a
+1500x1100 four-quadrant image, confirms it lands as 4 tiles in a 2x2 grid with
+no monolithic texture, confirms undo/redo/remove correctly transfer and destroy
+the tiled surface, and confirms `flattenToDataURL()` reproduces the exact
+quadrant colors at the exact document size. No live Forge/GPU validation was run.
+
+Next slice: strengthen chunked export coverage with non-uniform pixels, then
+migrate one more ingestion path (paste or generated Apply) or one more pixel
+operation (thumbnail is now done; Fill or Clip to Boundary Box are the next
+most user-visible gaps for an uploaded layer) onto tiled surfaces. Full
+paint/history migration (I3) follows once ingestion is stable across paths.
+
+### Debug tile-border overlay — 2026-08-30
+
+Added a debug outline (1px green rects, document/local-space width like
+`PixelGrid`'s lines) over every attached tile sprite of a tiled layer, toggled
+by a new "Tiles" button in `ViewportControls` next to the existing "Grid"
+toggle. `TiledRasterView.setDebugBorders()` owns one `Graphics` child kept
+last in its container (re-appended on every new tile) and redraws on tile
+add/remove and on `setVisibleRegion()` changes. `LayerNode.setTileDebugBorders()`
+remembers the flag so it survives a `setTiledSurface()` swap; `LayerTree.
+setTileDebugBorders()` applies it to every current node and every node
+created afterward; `UltraPaintApp` exposes `setTileDebugBorders()`/
+`isTileDebugBordersVisible()` and re-applies the flag if a fresh `LayerTree`
+is created. No-op for monolithic (non-tiled) layers.
+
+On viewport culling: `TiledRasterView.setVisibleRegion()` /
+`LayerNode.setTiledVisibleRegion()` already exist (I1) and are covered by
+focused tests, but nothing in production wires them to the live camera
+pan/zoom yet -- there is no automatic per-frame culling today. Tiles outside
+the viewport still render every frame. Automatic culling is designed (see
+"Viewport culling and compositor mode" above) but deferred to I5 pending
+profiling; it would key off `documentRoot`'s world transform the same way
+`PixelGrid.spacingForZoom()` already reads it.
+
+Files changed: `frontend/src/canvas/TiledRasterView.ts`, `frontend/src/scene/LayerNode.ts`,
+`frontend/src/scene/LayerTree.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/src/ui/ViewportControls.svelte`. Verification: frontend typecheck
+(0 errors/0 warnings), lint, Prettier, and production build all pass; the full
+Playwright suite is unchanged (only the same pre-existing, unrelated
+generation/persistence/LoRA-dialog failures); manually verified in the Browser
+pane that uploading a four-quadrant multi-tile image and toggling "Tiles" draws
+an exact green cross at the tile boundaries and cleanly disappears when
+toggled off. No live Forge/GPU validation was run.
+
+### Fill, mask/control conversion, and Clip to Boundary Box on tiled layers — 2026-08-31
+
+Three of the four operations flagged as "still monolithic-only" in the upload
+slice above now work on a tiled (uploaded) raster layer; brush/eraser painting
+is the one deliberately left for its own slice (see below).
+
+- **Read-only extraction** (`convertLayerToMask`, `convertLayerToControl`,
+  `layerSourceDataURL`, `layerSourcePngBlob`): a new `UltraPaintApp.
+readLayerPixels(id)` returns the live monolithic texture unchanged, or --
+  for a tiled layer -- a throwaway snapshot from a new `flattenToTexture()`
+  (`TileRasterOps.ts`, mirrors the existing `buildTiledThumbnailRoot` pattern:
+  render every tile sprite, offset by `tile.origin - bounds.origin`, into one
+  fresh `RenderTexture` sized to the surface's logical bounds). Callers get a
+  `{ texture, dispose }` pair and always call `dispose()`, which is a no-op for
+  the monolithic case and destroys the snapshot for the tiled case.
+- **Fill** (`fillSelectedLayer`): split into `fillMonolithicRaster` (unchanged
+  logic) and `fillTiledRaster`, which reuses `TiledRasterCanvas.edit()` with
+  `allocation: "existing-only"` (fill never grows a tiled layer's extent,
+  matching the monolithic path's fixed-size target) over the boundary box's
+  bounding rect, replaying the same erase+fill (or preserve-alpha mask) logic
+  per tile with the polygon re-expressed in that tile's local coordinates.
+  The whole multi-tile edit commits as one `TileEditDelta`, recorded as a new
+  `"tile-pixels"` undo-history entry kind; undo/redo just calls `delta.apply()`
+  and swaps the resulting inverse delta onto the other stack -- `TiledRasterView`
+  already resyncs its sprites off the surface's add/remove/replace events, so
+  there's no separate scene-graph bookkeeping for undo.
+- **Clip to Boundary Box** (`clipLayerToBoundaryBox`): a tiled layer has no
+  single texture to crop, so it's flattened first via the same `flattenToTexture()`,
+  then run through the _identical_ crop/polygon-mask math already used for
+  monolithic layers. The result is always a monolithic `RenderTexture` --
+  clipping downgrades a tiled layer's storage rather than trying to shrink its
+  tile set natively, since the tile primitives have no "delete a tile going
+  forward" operation today (only undo/redo of a prior add via `TileEditDelta`).
+  `LayerStore.replaceTiledSurfaceWithTexture()` / `restoreTiledSurface()` swap
+  `_tiledSurfaces`/`_textures` and the `image.storage` marker in lockstep, and
+  a new `"tiled-clip"` history entry holds _both_ the detached `TiledRasterCanvas`
+  and the new texture with a `direction` flag that flips on every undo/redo --
+  whichever side isn't currently store-owned is what that entry would restore,
+  and what `destroyEntry()` is responsible for freeing if the entry is dropped
+  unapplied. `LayerNode.setTexture()`/`setTiledSurface()` already tear down the
+  other representation, so switching a live node between the two needed no
+  scene-graph changes either.
+
+Not attempted: brush/eraser real-time painting on a tiled layer. Unlike Fill
+(one bounded polygon, one atomic multi-tile transaction), a brush stroke is
+many small incremental writes across a `StrokeSession` with live preview and
+allow-growth semantics, all currently built around one monolithic texture
+(`ConsistentOpacityStroke`, `BrushEngine.beginStroke`) -- that's a real
+architecture change (the I3 "full paint/history migration" milestone), not a
+same-shape port like the three operations above.
+
+Files changed: `frontend/src/canvas/TileRasterOps.ts`,
+`frontend/src/state/layerStore.svelte.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, Prettier, and production build all
+pass; the full Playwright suite is unchanged at 65 tests (only the same
+pre-existing, unrelated "resolution modes" generation-panel failure); a new
+focused Playwright test uploads a 1500x1100 four-quadrant tiled image and
+exercises, in one pass: `convertLayerToMask`/`convertLayerToControl` producing
+correctly-sized new layers, a Fill across all four tiles with undo restoring
+the original per-tile quadrant colors and redo reapplying the fill, and a
+Clip to Boundary Box that shrinks the layer and flips `image.storage`, with
+undo restoring the original tiled surface (`tileCount` back to 4) and redo
+re-clipping. No live Forge/GPU validation was run.
+
+Next slice: I3, the full paint/history migration -- porting brush/eraser
+strokes (and their live-preview/allow-growth machinery) onto tiled surfaces,
+which is what would make an uploaded layer fully paintable rather than only
+fillable/clippable/convertible.
+
+### I3: tile-native brush and eraser painting -- 2026-08-31
+
+An uploaded (tiled) layer is now fully paintable. New `TiledConsistentOpacityStroke`
+(`frontend/src/paint/TiledConsistentOpacityStroke.ts`) is the per-tile counterpart to
+the existing monolithic `ConsistentOpacityStroke`, sharing its coverage-stamp
+construction (`createCoverageStamp`, now exported) but never touching a persistent
+tile until the stroke ends:
+
+- Each stamp's affine bounding box (via `Matrix.apply` on the stamp's four local
+  corners) selects the touched tile range; a per-tile scratch coverage texture
+  accumulates stamps with the same "max"-blend technique as the monolithic path,
+  scoped to one tile instead of the whole layer.
+- **Live preview never allocates a real tile.** Brush shows a masked overlay
+  sprite (the scratch coverage texture) parented directly into the tiled layer's
+  existing `LayerNode.container`, positioned at the tile's origin -- since
+  `TiledRasterView`'s tile sprites already live in that same untransformed
+  layer-local container, this needed zero changes to the view/node layer. Eraser
+  rebuilds a tile-sized "already erased" preview (a one-time snapshot of the
+  live tile + an off-screen erase-blend render, exactly mirroring the
+  monolithic eraser's reasoning for never using erase blend mode directly in
+  the live scene). **Originally this preview was shown as an opaque overlay on
+  top of the real tile sprite -- see the 2026-08-31 fix note below for why
+  that doesn't work and what replaced it.**
+- Eraser and preserve-alpha brush strokes only ever touch already-allocated
+  tiles (read via `TiledRasterCanvas.visit()`, which is naturally existing-tiles-only);
+  a stamp over an unallocated tile is silently skipped, matching the monolithic
+  "preserve-alpha disables growth" behavior and the plan's "never allocate an
+  absent tile" contract for erasing.
+- **Commit is one atomic transaction.** `end()` opens one `TileEditTransaction`
+  and calls `TiledRasterCanvas.edit()` once per touched tile (allocating missing
+  tiles only for a non-preserve-alpha brush stroke), rendering each tile's final
+  pixels from its scratch coverage/preview texture -- reusing the exact
+  per-tile preserve-alpha alpha-mask-snapshot technique `fillTiledRaster`
+  already established. The committed `TileEditDelta` is recorded through the
+  same `"tile-pixels"` history-entry kind Fill introduced, so undo/redo needed
+  no new history plumbing.
+- `BrushEngine`/`EraserEngine` now branch on `store.getTexture()` vs.
+  `store.getTiledSurface()` and construct whichever stroke class applies; a new
+  minimal structural `TileEditRecorder` interface (just `recordTileEdit`) lets
+  them record history without importing the private `UndoHistory` class --
+  `UltraPaintApp` passes its already-constructed `history` in when building both
+  engines. `UltraPaintApp.beginStroke()` needed no changes: it already only
+  wraps a session in `HistoryStrokeSession` when `beginPixelChange()` returns a
+  pending monolithic snapshot, which is naturally `null` for a tiled layer, so a
+  tiled stroke session (which records its own history) already passed through
+  unwrapped.
+
+This completes the plan's staged I3 exit criterion for the four operations
+originally flagged as monolithic-only in the upload slice (Fill, Clip to
+Boundary Box, mask/control conversion, and now brush/eraser); an uploaded
+layer no longer has any read-only-ish pixel operation. Multi-tile stroke
+crossing was not given its own dedicated test in this slice (the per-tile
+edit/transaction loop is identical to the multi-tile Fill path already
+covered above) -- a fractional-zoom/rotated-layer seam check and an explicit
+2/4-tile-crossing stroke test remain open items from the plan's acceptance
+list if this needs stronger direct coverage later.
+
+Files changed: `frontend/src/paint/TiledConsistentOpacityStroke.ts` (new),
+`frontend/src/paint/ConsistentOpacityStroke.ts`, `frontend/src/paint/BrushEngine.ts`,
+`frontend/src/paint/EraserEngine.ts`, `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test uploads a solid-color tiled layer, paints a real
+pointer-driven brush stroke and a real pointer-driven eraser stroke (through
+the actual `StrokeController` pointer pipeline, not a direct method call),
+and confirms exact pixel colors/alpha after each stroke and through a full
+undo/undo/redo/redo sequence spanning both strokes. Full Playwright suite:
+64/66 passing, with the same two pre-existing unrelated failures confirmed by
+re-running against the unmodified baseline (the known "resolution modes"
+flake, plus a live-preview SSE-polling timing flake also reproducing without
+any of this slice's changes). No live Forge/GPU validation was run.
+
+**Fix -- 2026-08-31: eraser live preview never appeared on a tiled layer.**
+The Playwright test above only asserts the _committed_ result, so it never
+caught this: dragging the eraser tool over a tiled layer showed no visible
+change at all until pointer-up, at which point the erased region appeared
+all at once. Brush's live preview worked correctly the whole time.
+
+Root cause: `TiledRasterView` keeps a tiled layer's persistent tile sprites
+mounted and visible throughout a stroke. The eraser's preview overlay was a
+_later sibling_ added on top of that still-visible tile, per the original I3
+design above. Its computed pixels were correct (confirmed via a throttled
+`renderer.extract.pixels()` readback mid-drag), but erased pixels are
+_transparent_, and a transparent pixel drawn over a still-opaque, unmodified
+tile shows the tile -- net zero visible change. Brush's overlay never had
+this problem because it's additive: painted pixels over an unmodified base
+composite correctly regardless of what's underneath.
+
+Three GPU/PixiJS-state theories were tried and ruled out first (all
+harmless, some kept): sampling a private one-time snapshot of the tile
+instead of the live persistent texture directly (`baseSnapshotTexture`,
+still in place -- avoids a real but separate Chromium same-texture hazard
+documented in `ConsistentOpacityStroke.end()`), disabling antialiasing on
+the composite textures, and ping-ponging between two preview `RenderTexture`
+objects to force a genuine reference reassignment on `Sprite.texture`. None
+of these changed the symptom, because the preview's _pixel content_ was
+never the problem -- only what it was being composited against was.
+
+The actual fix: hide the underlying persistent tile sprite for the
+stroke's duration instead of overlaying on top of it, then restore it right
+before `commit()` (no frame renders in between, so no flash). New
+`TiledRasterView.setTileHidden()` / `LayerNode.setTileSpriteHidden()` toggle
+one tile sprite's `visible`; `TiledConsistentOpacityStroke` calls this from
+`tileFor()`/`end()` for eraser tiles only (brush is unaffected and still
+overlays normally). `BrushEngine`/`EraserEngine` now pass the `LayerNode`
+itself into the stroke class instead of just its `container`, so it can
+reach this method.
+
+Files changed: `frontend/src/canvas/TiledRasterView.ts`,
+`frontend/src/scene/LayerNode.ts`,
+`frontend/src/paint/TiledConsistentOpacityStroke.ts`,
+`frontend/src/paint/BrushEngine.ts`, `frontend/src/paint/EraserEngine.ts`.
+Verification: frontend typecheck clean; a real (non-synthetic) pointer drag
+recorded per-frame scene state for both tools -- every eraser frame with the
+overlay mounted also had the tile hidden and vice versa, and brush frames
+kept the tile visible throughout, as expected. Not yet covered by an
+automated Playwright assertion of _mid-stroke_ visual state (only the
+committed result was already covered) -- worth adding if this regresses
+again silently.
+
+### I4 (partial): tiled blank-layer and generated-Apply ingestion -- 2026-08-31
+
+Two more layer-creation paths now ingest through `TiledRasterCanvas` instead
+of a monolithic `RenderTexture`: **blank raster layer creation**
+(`addBlankLayer`) and **generated-Apply** (`addImageFromDataURL`, the entry
+point `GenerationPreviewBar`'s Apply button and the Python bridge use).
+Paste-as-raster already went through the tiled path for free -- it calls the
+already-tiled `addImageFromFile` -- so it needed no change. Mask/control
+layer creation and paste-as-mask/paste-as-control were deliberately left
+monolithic (see "Deferred" below): they depend on operations that are not
+tiled-aware yet.
+
+- `addBlankLayer()` now calls a new `UltraPaintApp.createBlankTiledSurface(width, height)`,
+  which opens a transaction, calls `transaction.includeBounds()` once to set
+  the surface's logical bounds to the current boundary box, and commits
+  immediately without ever calling `edit()` -- zero tiles are allocated,
+  matching the "a new blank layer owns zero GPU tiles" invariant. Brush/Fill
+  allocate real tiles the first time the layer is actually painted.
+- `addImageFromDataURL()` is now a thin wrapper around the same
+  `createPaintableTiledSurface()` + `addRasterLayerTiled()` pair
+  `addImageFromFile()` already used, keeping its existing explicit
+  `setTransform()` call afterward (positioning the new layer at the current
+  boundary box origin) -- unlike upload, generated-Apply must land exactly
+  where the boundary box is, not at local (0, 0).
+
+**Found and fixed a real bug in existing (I3) Fill code, exposed by blank
+tiled layers**: `fillTiledRaster()` used `allocation: "existing-only"`,
+which was silently correct only because the _only_ thing that had ever been
+tiled before this slice was an _upload_ -- uploads blit into every tile
+across their full bounds, so "existing-only" and "the layer's whole
+footprint" always coincided. A blank tiled layer starts with real logical
+bounds but zero tiles, so Fill was a silent no-op on one. Fixed by clipping
+the fill region to the surface's current bounds (`intersectBounds()`, new
+free function) and then using `allocation: "allocate-missing"` for a plain
+fill / `"existing-only"` for preserve-alpha (mirroring the brush/eraser
+rule) -- Fill still never _grows_ a tiled layer's footprint, matching
+monolithic Fill's fixed-size-target behavior exactly, it just now actually
+populates any of that footprint's tiles that don't exist yet.
+
+**Found and fixed a second latent gap, exposed by the same blank-layer
+change**: `transform-correctness.spec.ts` had a test asserting that painting
+outside a layer's bounds grows its _monolithic_ texture (with 512px padding)
+and compensates `transform.x/y` to keep old pixels fixed on screen under
+rotation/flip. Once `addBlankLayer()` produced a tiled surface, that
+premise no longer applied -- a tiled layer's local origin never moves by
+construction (tile `(-1,-1)` just gets allocated at its permanent local
+coordinate), so there is nothing to compensate. Rewrote the test to assert
+the tiled invariant instead: `layer.transform` is _exactly_ unchanged after
+painting outside the original bounds, the expected tile coordinates get
+allocated (this one incidentally exercises a stroke spanning all four tiles
+meeting at a corner, a PLAN.md acceptance-list scenario that had no direct
+coverage yet), and the previously-painted pixel's global screen position
+doesn't move. Also updated `dimension-safety.spec.ts`'s dimensions
+assertion, which explicitly (and now correctly) expects `storage: "tiled"`
+on a generated-source layer.
+
+**Deferred / notes for whoever picks up the next slice** (raised and
+consciously deferred while scoping this one, not discovered by accident):
+
+- `layer.image.width/height` does not track a tiled surface's logical bounds
+  after creation. Brush/eraser growth (already shipped in I3) _does_ expand
+  `surface.bounds` via `TileEditTransaction.includeBounds()`, but nothing
+  copies that back into `image.width/height` -- so `fitBoundaryBoxToContent()`
+  (`UltraPaintApp.ts`, uses `layer.image.width/height` directly for every
+  raster layer) and anything else reading those fields will see stale
+  dimensions for a tiled layer painted past its original footprint. This was
+  never exercised before this slice because nothing had ever painted outside
+  an _upload's_ bounds in a test. Fixing it properly is more than a
+  width/height sync: the schema's `ImageRef` has no bounds-origin field, so a
+  surface whose bounds grow to a _negative_ origin (e.g. painting up-and-left
+  of local (0,0)) cannot be represented by `width/height` alone --
+  `TiledImageRef.bounds: PixelBounds` in this document's design section
+  already anticipated this and should be revisited before relying on
+  `image.width/height` for a tiled layer that can grow arbitrarily.
+- **Chunked mask & merge export** is still open: `Compositor.flattenMask()`
+  (inpaint mask export) and `Compositor.flattenToTexture()` (merge
+  selected/visible layers, also used by `mergeVisibleMasksToNewMask()`) each
+  allocate one full-boundary-box `RenderTexture` directly, unlike the
+  already-chunked `Compositor.flatten()` that Save/Generate use. Both are
+  independent of storage format -- pure compositor work, following the same
+  chunk-and-stitch shape `flatten()` already established.
+- **Tiled masks/controls** is the bigger remaining lift: mask/control layer
+  creation is still monolithic everywhere (including when converting _from_
+  a tiled raster layer -- `convertLayerToMask`/`convertLayerToControl`
+  flatten first, so the result is always monolithic today). Switching either
+  creation path to tiled requires first porting `clearSelectedMask()`,
+  `invertSelectedMask()` (both currently `getTexture()`-only), and
+  `acceptFilterResult()` (ControlNet filter-result acceptance, also
+  `getTexture()`-only) to handle a tiled target -- none of those are
+  exercised today because no mask/control layer can be tiled yet, so there's
+  no live bug, just unfinished prerequisite work.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`,
+`frontend/tests/e2e/transform-correctness.spec.ts`,
+`frontend/tests/e2e/dimension-safety.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test creates a blank tiled layer (verifies zero initial
+tiles, correct logical bounds, that Fill still allocates tiles on it) and a
+tiled generated-Apply layer (verifies correct positioning at a non-zero
+boundary box origin); the rewritten `transform-correctness.spec.ts` test and
+the updated `dimension-safety.spec.ts` assertion both pass. Full Playwright
+suite: 65/67 passing, with the same two pre-existing, unrelated,
+baseline-confirmed failures ("resolution modes" and the live-preview
+SSE-polling timing flake). No live Forge/GPU validation was run.
+
+### I4 (partial): chunked, tiled-output layer merge -- 2026-08-31
+
+`mergeLayersToNewLayer()` / `mergeVisibleLayersToNewLayer()` (raster merge)
+now match the plan's own operation-contract table for this row exactly:
+"Render each output chunk straight into a new tile surface. Do not create a
+boundary-box-sized intermediate RT." Previously they went through
+`flattenSelectedToTexture()` -> `Compositor.flattenToTexture()`, which
+allocates one full-boundary-box `RenderTexture` regardless of size -- the
+same unchunked-export gap flagged as deferred in the ingestion entry above.
+
+- New `UltraPaintApp.flattenSelectedToTiledSurface()` iterates chunks the
+  same way `Compositor.flatten()` does (offset loop in tile-size steps,
+  `Matrix` translation per chunk), but each chunk _is_ a tile: it opens one
+  `TileEditTransaction`, calls `surface.edit()` once per chunk with
+  `allocation: "allocate-missing"`, and renders `tree.root` (through the
+  same temporarily-forced-renderable/visible selection logic as before)
+  directly onto that tile's persistent target. There is no CPU-canvas
+  stitching step at all -- the tiles produced _are_ the final storage, so
+  this is simpler than the chunked `Compositor.flatten()` it's modeled on,
+  not just safer.
+- The renderable/visible-forcing logic that `flattenSelectedToTexture` and
+  the new tiled version both need was extracted into a shared
+  `withOnlySelectedRenderable()` helper; `flattenSelectedToTexture()` itself
+  is unchanged in behavior and still backs `mergeVisibleMasksToNewMask()`
+  (mask merge stays monolithic on purpose -- masks aren't tiled-aware yet,
+  per the previous entry's "Tiled masks/controls" note).
+- `mergeLayersToNewLayer()` now calls `store.addRasterLayerTiled()` instead
+  of `store.addRasterLayer()`, so a merged layer is tiled like everything
+  else a raster operation touches today.
+
+**Found and fixed a real, user-reported bug while wiring this up**: the
+debug tile-border overlay (the green "Tiles" outline toggle in
+`ViewportControls`) was never hidden before any render that captures the
+live scene graph, so toggling it on and then using Save, the Generate
+composite, or (now) Merge baked the green outline permanently into the
+output. Nothing had ever needed to hide it before, since the two other
+render-the-scene-graph call sites either don't exist yet (chunked mask/merge
+export was still unchunked prose until this entry) or predate the debug
+overlay feature. Fixed with a new `UltraPaintApp.withTileDebugBordersHidden()`
+helper (toggles `tree.setTileDebugBorders(false)` for the duration of one
+render, restores after, and is a cheap no-op check when the overlay is
+already off) wrapped around both `Compositor.flatten()` in
+`flattenToDataURL()` and the new chunked merge render loop.
+`layerSourceDataURL()`/thumbnails/`Compositor.flattenMask()` were already
+safe -- they build their own throwaway sprites directly from surface/texture
+data rather than rendering `TiledRasterView`'s live sprites, so they never
+had this exposure.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`. Verification: frontend
+typecheck (0 errors/0 warnings), lint, and production build all pass; a new
+focused Playwright test fills two 1200x1200 blank layers (opaque red under
+opaque blue, spanning a 2x2 tile grid) and merges them, confirming the
+result is tiled with exactly 4 tiles and reads as solid blue at eight points
+including ones straddling both tile seams; the same test then enables debug
+tile borders, re-runs both `flattenToDataURL()` and another merge, and
+confirms neither output contains a single green (0, 255, 0) pixel anywhere
+in a full-image scan. Full Playwright suite: 66/68 passing (rerun to confirm
+one additional one-off failure was a flake, not a regression), with the
+same two pre-existing, unrelated, baseline-confirmed failures. No live
+Forge/GPU validation was run.
+
+Still open from the "Deferred / notes" list above: mask export
+(`Compositor.flattenMask()`) remains the one unchunked full-boundary-box
+export route now that merge is chunked.
+
+### I4 (partial): tile-native Clip to Boundary Box — 2026-08-31
+
+This supersedes the Clip to Boundary Box portion of the earlier 2026-08-31
+Fill/mask/control entry: clipping a tiled layer no longer flattens it into a
+throwaway monolithic texture or changes its transform. `TiledRasterCanvas` now
+has transactional tile removal plus a logical-bounds replacement operation.
+Clip removes tiles outside the new local bounds, masks surviving tiles in place,
+and records the resulting `TileEditDelta` through the existing `"tile-pixels"`
+history entry. Undo/redo therefore restores/removes the original live tile
+textures through the existing generic delta replay and `TiledRasterView`
+structural events.
+
+The tile-removal test deliberately uses the clip polygon's axis-aligned bounds:
+a rotated clip may retain a few fully transparent corner tiles. No GPU readback
+compaction was added; upgrade to per-tile polygon intersection only if those
+tiles become visibly wasteful. Tiled `image.width/height` remains untouched;
+logical bounds stay on the surface pending the separate schema-origin work
+documented above.
+
+Files changed: `frontend/src/canvas/TiledRasterCanvas.ts`,
+`frontend/src/app/UltraPaintApp.ts`, `frontend/src/state/layerStore.svelte.ts`,
+`frontend/tests/e2e/tiled-raster-canvas.spec.ts`, and this `PLAN.md`.
+Verification (re-run outside the sandboxed environment that produced the
+`EPERM` failures noted in the original draft of this entry, after fixing two
+test-authoring bugs the sandbox run never actually exercised: an off-by-one
+expected tile count that didn't account for the boundary box's bottom edge
+staying above the tile grid boundary, and `transform-correctness.spec.ts`'s
+rotated-clip coverage check assuming a flattened tiled snapshot's pixel
+`(0, 0)` is always layer-local `(0, 0)`, which stopped holding once clip
+could produce a non-zero-origin `bounds` for the first time -- fixed the same
+way `readLayerPixels()`/`transformForPixelSnapshot()` already handle that
+offset elsewhere): `npm run typecheck` (0 errors/0 warnings), `npm run lint`,
+`npm run format:check`, and `npm run build` all pass; the full Playwright
+suite is 68/70 (two pre-existing unrelated flakes noted below), with every
+tiled-clip and rotated-clip assertion passing. No live Forge/GPU validation
+is available.
+
+### Tiled-mask gaps found and fixed while validating the clip work — 2026-08-31
+
+Two pre-existing bugs surfaced by the above validation pass, unrelated to
+clip itself: separate in-flight work on this branch had already switched
+mask-layer creation (`addBlankMaskLayer()`) to tiled storage, but two
+consumers were never ported to match.
+
+- **`fitBoundaryBoxToCompositeMask()`** (`Ctrl+Shift+B`) only ever read
+  `store.getTexture()` -- the monolithic-only path -- so it silently skipped
+  every tiled mask layer and left the boundary box unchanged. `clearSelectedMask()`/
+  `invertSelectedMask()` had already been ported to handle both storage kinds
+  (per the "Deferred" list in the Fill/Clip entry above); this one was missed.
+  Fixed the same way: flatten a tiled mask via the existing `flattenToTexture()`
+  and apply the same bounds-origin offset `readLayerPixels()` already exposes,
+  so painted-alpha pixels map back to world space correctly regardless of
+  storage.
+- **Live brush/eraser preview on a tiled mask (or control) layer showed the
+  raw, untinted stroke color instead of the mask-hatch/control display
+  treatment.** `LayerNode.setPersistentFilters()` applies display filters
+  per-tile-sprite for a tiled layer (not container-level, to avoid one
+  sparse-span filter target) via `TiledRasterView.setFilters()` -- but
+  `TiledConsistentOpacityStroke`'s live overlay sprite is a separate scratch
+  sprite standing in for those persistent tile sprites during a stroke, so it
+  never received the filter. Confirmed via a live repro (screenshot mid-stroke
+  sampled raw `[0, 0, 255, 255]` where a red-tinted hatch was expected). Fixed
+  by exposing the tiled view's current filters through a narrow
+  `LayerNode.tileDisplayFilters` getter and applying them to the overlay
+  sprite where it's created, mirroring how `TiledRasterView.add()` applies
+  them to a persistent tile sprite.
+
+Files changed: `frontend/src/app/UltraPaintApp.ts`,
+`frontend/src/canvas/TiledRasterView.ts`, `frontend/src/scene/LayerNode.ts`,
+`frontend/src/paint/TiledConsistentOpacityStroke.ts`. Verification: `npm run
+typecheck`/`lint`/`format:check`/`build` all pass; full Playwright suite
+68/70, matching the entry above -- only the two flakes already documented
+elsewhere in this file ("resolution modes", SSE-polling timing) remain. No
+live Forge/GPU validation was run.
+
+### Outcome and scope
+
+Replace each paintable layer's single growing `RenderTexture` with a sparse grid
+of fixed-size render-texture tiles. The document coordinate plane and every
+paintable layer's local coordinate plane become effectively unbounded in both
+positive and negative directions. GPU memory, draw work, and history cost scale
+with touched tiles rather than with the rectangle spanning the furthest pixels.
+
+"Infinite" means an unbounded coordinate model with finite sparse storage. It
+does not mean infinite resident memory or an infinite generation request.
+Generation, save, clipboard, filter, and ControlNet operations still consume a
+finite region, normally `Document.boundaryBox`; those operations must render that
+region in device-safe chunks rather than allocating one region-sized GPU texture.
+
+This replaces the current monolithic growth path in
+`frontend/src/paint/ConsistentOpacityStroke.ts` (`MAX_LAYER_DIMENSION = 8192`,
+512px growth padding) and the `LayerStore` side-map of one
+`Map<LayerId, RenderTexture>`. It also removes the need to compensate a layer's
+transform whenever pixels are added above or left of its old texture origin.
+
+### Current single-texture assumptions that must be migrated
+
+The change is cross-cutting and must not be shipped as only a brush fix. Current
+single-texture callers include:
+
+- `LayerStore`: creation, ownership, removal, replacement, growth, metadata, and
+  add-layer undo extraction/restore;
+- `LayerNode` / `LayerTree`: one sprite per paintable layer;
+- `ConsistentOpacityStroke`: target-sized stroke coverage, eraser preview,
+  preserve-alpha mask, growth copies, and final commit;
+- `UndoHistory`: full-texture snapshots and atomic texture replacement;
+- `Compositor`: normal flatten, merge-to-texture, and mask export;
+- `UltraPaintApp`: fill, mask clear/invert, import, generated-preview apply,
+  paste, mask/control conversion, ControlNet filter acceptance, clip-to-box,
+  thumbnails, clipboard/source export, merge, and mask-content fitting.
+
+All of these routes must either become tile-native or intentionally render a
+finite tile region through one shared chunk compositor before the old
+`getTexture()` contract can be removed.
+
+### Required invariants
+
+1. **Stable layer coordinates.** Allocating a tile never changes
+   `Layer.transform`. Existing pixels must not move when painting crosses a tile
+   edge or crosses local coordinate zero.
+2. **Signed tile coordinates.** Tiles use signed integer `(tileX, tileY)` keys.
+   `tileX = floor(localX / tileSize)` and the same for Y; truncation is incorrect
+   for negative coordinates. Tile rectangles are half-open so a point exactly on
+   the right/bottom edge belongs only to the next tile.
+3. **Sparse allocation.** A new blank raster or mask layer owns zero GPU tiles.
+   Brush, fill, import, generation apply, and explicit blit operations allocate
+   only intersected tiles. Eraser and preserve-alpha brush operations never
+   allocate an absent tile.
+4. **Device-safe textures.** No persistent tile, per-tile stroke scratch, preview,
+   undo snapshot, or compositor chunk may exceed the renderer's supported 2D
+   texture dimension.
+5. **One gesture, one history entry.** A stroke crossing any number of tiles is
+   still one undo step. Undo/redo restores both pixel contents and whether each
+   touched tile existed.
+6. **Serializable document state stays GPU-free.** Pixi objects remain in a raw
+   side store. Serializable metadata may describe tile size and logical bounds,
+   but never stores `RenderTexture`, `Texture`, `Sprite`, or `Container` objects.
+7. **One owner per resource.** The tile surface owns persistent tile textures;
+   `LayerNode` owns tile sprites/views but not their sources; a paint operation
+   owns its scratch/preview textures; history owns snapshots or detached tile
+   textures until replay/eviction.
+8. **Display and export agree.** Layer/group transforms, opacity, visibility,
+   masks, and all existing blend modes must produce the same pixels across tile
+   seams and chunked exports as they do away from seams.
+9. **Culling cannot affect output.** Viewport culling is display-only. Generate,
+   save, merge, mask export, copy, filters, and ControlNet capture must explicitly
+   select tiles for their own finite output region and cannot inherit the current
+   screen's culling state.
+10. **Atomic failure.** A failed multi-tile import, stroke, filter, or history
+    replay leaves the prior surface intact and destroys every unadopted temporary.
+
+### Low-level tile-canvas access API and ownership model
+
+The tile store must be a real access boundary, not merely a public `Map` that
+every paint/edit feature manipulates differently. All signed coordinate math,
+allocation, persistent texture creation/destruction, structural events, bounds,
+and transactional rollback belong behind one low-level API. Higher-level brush,
+fill, import, filter, compositor, and history code may receive a tile handle while
+visiting/editing a region, but must never address the backing map or create/remove
+persistent tiles directly.
+
+Use three deliberately small layers:
+
+1. `TileGrid`: pure geometry only -- signed floor division, tile origins,
+   half-open bounds-to-tile ranges, and deterministic coordinate iteration.
+2. `TiledRasterCanvas`: persistent tile access, ownership, logical bounds,
+   structural subscriptions, and edit transactions. This is the only code that
+   installs, replaces, removes, or destroys persistent tile textures.
+3. Renderer-facing operations (`TileRasterOps` or focused functions): brush
+   render, blit, convert, and chunk composite. They use the canvas visitor/edit
+   API and Pixi renderer, but cannot bypass the canvas's ownership rules.
+
+The exact names may change during implementation, but the boundary should stay
+small and concrete:
+
+```ts
+interface PixelBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface TiledImageRef {
+  source: "upload" | "generated" | "paint";
+  storage: "tiled";
+  tileSize: number;
+  // Layer-local potential-content/edit bounds; null for a truly empty layer.
+  bounds: PixelBounds | null;
+}
+
+interface TileCoord {
+  x: number;
+  y: number;
+}
+
+interface TileVisit {
+  coord: TileCoord;
+  originX: number;
+  originY: number;
+  // Valid for this visit/edit; ownership remains with TiledRasterCanvas.
+  target: RenderTexture;
+}
+
+type TileAllocation = "existing-only" | "allocate-missing";
+
+class TiledRasterCanvas {
+  readonly tileSize: number;
+  readonly bounds: PixelBounds | null;
+  readonly tileCount: number;
+
+  visit(region: PixelBounds, fn: (tile: TileVisit) => void): void;
+  edit(
+    region: PixelBounds,
+    options: { allocation: TileAllocation; transaction: TileEditTransaction },
+    fn: (tile: TileVisit) => void,
+  ): void;
+  beginEdit(label: string): TileEditTransaction;
+  subscribe(fn: (event: TileStructureEvent) => void): () => void;
+  estimateResidentBytes(): number;
+  destroy(): void;
+}
+
+class TileEditTransaction {
+  // Brush/fill/import call this; eraser/preserve-alpha deliberately do not.
+  includeBounds(bounds: PixelBounds): void;
+  commit(): TileEditDelta;
+  rollback(): void;
+}
+```
+
+Internally, `TiledRasterCanvas` may use a collision-free signed key such as
+`"-3,12"`; do not
+pack coordinates into 32-bit bitwise integers. Tile origins are always
+`tileX * tileSize`, `tileY * tileSize` in layer-local coordinates. Tile iteration
+is deterministic (Y, then X) for reproducible renders and tests. The internal map
+is not part of the public contract. Test-only diagnostics may expose sorted tile
+coordinates/counts, never mutable storage.
+
+`TileEditTransaction` captures a tile's before-state lazily on first write,
+records an explicit absent state for a newly allocated tile, and owns rollback,
+commit, and extraction of one history delta. A caller cannot partially commit a
+multi-tile edit. Whole-tile detach/adopt operations support clear, undo, and redo
+without a needless copy. Structural events (`added`, `removed`, `replaced`) are
+emitted only after state is internally consistent, allowing `LayerNode` to update
+sprites without learning storage details.
+
+Logical bounds expansion is explicit on the transaction rather than implicit in
+`edit()`: brush, fill, and ingestion include their affected region; eraser and
+preserve-alpha do not. This prevents an erase over empty space from growing a
+layer's finite export span merely because it visited existing candidate tiles.
+
+`ImageRef.width/height` should migrate to local `bounds`. Bounds are independent
+of the coarse allocated-tile rectangle: an imported 1500x900 image keeps exact
+1500x900 logical bounds even though its edge tiles are full-sized. Painting and
+fill union their affected local bounds; erasing does not expand them. Automatic
+alpha-tight shrinking is not required on every eraser stroke because that would
+force synchronous GPU readback; clear, clip, and explicit future compaction may
+shrink bounds exactly.
+
+`LayerStore` becomes the owner of a raw
+`Map<LayerId, TiledRasterCanvas>`. Its public pixel boundary is
+`getPixelCanvas(layerId)`, not `getTexture()` and not a tile map. Tile
+allocation/removal emits a canvas-level
+structural notification consumed by its `LayerNode`; ordinary pixel writes do not
+emit document mutations. `touchTexture()` becomes a surface/pixel-version bump
+once per committed operation, preserving the thumbnail invalidation contract.
+
+`LayerNode` remains one container per document layer, but a paintable node owns a
+map of tile sprites beneath that container instead of one sprite. `LayerTree`
+continues to be the only owner of layer hierarchy; each `LayerNode` alone owns the
+children inside its own tile container. Layer transform, opacity, visibility, and
+blend mode remain on the layer container.
+
+Mask/control display filters must not require a filter target spanning the entire
+sparse layer. Apply the existing display treatment to each persistent or preview
+tile sprite (sharing filter programs/uniform state where safe), while export reads
+the undecorated tile textures. The current live mask/eraser preview behavior must
+remain intact.
+
+### Tile size and device limits
+
+- Start with a **1024x1024 logical tile**. At RGBA8 this is 4 MiB per persistent
+  tile before scratch/history copies: small enough for localized edits, large
+  enough to keep sprite/draw-call count modest.
+- At renderer startup, query the active backend's supported 2D texture dimension
+  (WebGL `MAX_TEXTURE_SIZE`; WebGPU `device.limits.maxTextureDimension2D`) behind
+  one capability helper. PixiJS 8.20 has no unified public max-dimension property,
+  so the helper narrows through its WebGL `gl` / WebGPU `gpu` backend handles;
+  Canvas reports an unknown limit rather than using a guess. Use the largest
+  power-of-two tile no greater than 1024 when a device cannot support 1024, and
+  fail clearly at production cutover if the renderer cannot support the
+  brush/transient minimum.
+- Store the selected tile size on the surface. Future document loading can retile
+  content when a saved document's tile size is too large for the current device.
+- The brush stamp itself is also a texture today. Its maximum dimension must be
+  checked against the same capability; this prevents a maximum-radius shortcut
+  from bypassing the tile limit even after layer storage is fixed.
+- Start without gutters. Pixi's clamp-to-edge sampling plus exact shared tile
+  coordinates may be sufficient. A fractional zoom + rotated-layer alpha-seam
+  browser test is a release gate. Add a one-pixel replicated gutter and neighbor
+  edge synchronization only if that test demonstrates seams; do not pay that
+  complexity speculatively.
+
+The current boundary-box UI may remain capped at 8192 for generation usability,
+but the renderer limit must no longer be its GPU limit. A boundary larger than a
+safe render target is split into tile-sized output chunks. Chunks are extracted
+and stitched into one 2D canvas/PNG for the current APIs. Validate the browser's
+2D encoding limit before starting and surface a useful error when a finite export
+itself is too large. This makes an 8192 output work on a renderer whose GPU limit
+is 4096 without pretending the backend can generate an infinite image.
+
+### Coordinate and transform rules
+
+Transform handling is intentionally separated from storage:
+
+- **Tile space is layer-local.** The sparse grid is permanently axis-aligned in
+  the layer's own local pixel plane. A tile at `(2, -1)` stays at local origin
+  `(2 * tileSize, -tileSize)` whether the layer is moved, rotated, scaled,
+  reflected, or placed inside transformed groups.
+- **The scene graph owns presentation transforms.** The existing
+  `LayerNode.container` applies the complete layer transform exactly once to all
+  tile sprites. Changing a transform updates no tile pixels, coordinates, keys,
+  or bounds, so transform editing is cheap and non-destructive.
+- **Document-to-layer queries use the inverse complete transform chain.** Pointer
+  samples remain document-local. Brush, fill, clip, culling, and paste-into-layer
+  convert their document-space points/regions through the layer container (and
+  therefore through every parent group) into layer-local space before calling the
+  low-level tile API.
+- **Candidate lookup is conservative; raster clipping is exact.** Transform all
+  four corners of a document/output rectangle into layer-local space and enumerate
+  the tile range of that local AABB. Rotation/non-uniform scale may include extra
+  candidate tiles, but the actual polygon, stamp, or output chunk clips the render,
+  so no pixels outside the requested region change.
+- **Brush radius remains a document-space visual size.** Reuse the current basis
+  calculation from document unit axes to layer-local axes. Under a 2x layer scale,
+  a document-radius-20 brush writes roughly radius 10 in local pixels; under
+  rotation or non-uniform scale the local stamp becomes the corresponding affine
+  ellipse while its document-space footprint stays circular. Its affine local AABB
+  selects tiles, and `-tileOrigin` translates the same stamp matrix for each tile.
+- **Imports/new generated layers start simple.** Source image pixels occupy local
+  `(0, 0)..(width, height)` and the layer transform places that local origin at the
+  intended document position (for generated Apply, the boundary-box origin). A
+  future paste-into-selected-layer command composes the paste's document transform
+  with the inverse layer/group transform, then uses the same tiled blit API.
+- **Exports keep transforms live.** The compositor defines each chunk in document
+  space, translates only the document root for that chunk, and renders tile sprites
+  through their normal layer/group transforms. It never pre-rotates or pre-scales
+  persistent tile pixels.
+- **Clip/fill must improve on today's assumptions.** The current
+  `clipLayerToBoundaryBox()` arithmetic assumes an axis-aligned positive scale.
+  The tiled version must use the full inverse matrix and a local clip polygon, so
+  rotation, non-uniform scale, negative scale, and transformed parent groups are
+  correct by construction.
+- **Transform changes invalidate culling, not storage.** A layer/group transform
+  mutation recomputes the screen-visible tile set; it does not retile. A separate
+  future explicit "bake/apply transform" command would be a raster operation and
+  is outside this migration.
+- Tile allocation never inserts pixels at the top/left, so the current
+  `growRasterLayer()` transform compensation disappears.
+- Very large coordinates must stay finite and within JavaScript safe integer tile
+  indices. Reject NaN/infinite/unsafe coordinates at the `TileGrid` boundary rather
+  than creating unreachable entries.
+
+### Painting and history
+
+Each stroke becomes a tile transaction:
+
+1. Determine the tiles intersected by each transformed stamp.
+2. For brush, allocate missing target tiles unless preserve-alpha is active. For
+   eraser/preserve-alpha, skip absent tiles.
+3. On first mutation of a tile, lazily record its before-state exactly once:
+   either a snapshot texture or an explicit `absent` marker.
+4. Maintain one consistent-opacity coverage texture per touched tile. Render the
+   same stamp into every intersected tile with tile-origin translation, preserving
+   the current `max`-blend opacity behavior across seams.
+5. Brush preview adds coverage sprites at their tile origins. Eraser preview
+   creates replacement previews only for existing touched tiles. Preserve-alpha
+   uses each tile's pre-stroke alpha snapshot. Keep the existing rule that the
+   final commit uses fresh, never-parented sprites.
+6. Commit all touched tiles atomically, bump the layer pixel version once, and
+   store one history entry containing only those tile deltas.
+
+Undo/redo captures the inverse state of only changed tiles, swaps tile existence
+as well as pixels, and transfers texture ownership explicitly. A clear operation
+can detach complete tiles into history without copying them. History must retain
+the existing 40-entry count limit and gain a measured byte budget; evict oldest
+entries until both limits hold. Choose the initial byte cap after recording real
+peak tile/scratch usage on target GPUs rather than guessing from system RAM.
+
+Cancelled strokes must remove tiles first created by that stroke. Erasing an
+existing tile completely transparent does not initially trigger a synchronous
+readback just to reclaim it; clear/clip can delete known-empty tiles, and an idle
+or explicit compaction pass can be added after profiling.
+
+### Operation contracts
+
+| Flow                                       | Tile-native behavior                                                                                                                                                                                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Blank raster / mask                        | Create metadata plus an empty surface; allocate no tile until pixels are written. Preserve the boundary-box-relative starting transform used today.                                                                                                                             |
+| Upload, paste, generated preview Apply     | Use one shared image-ingestion path. Decode dimensions without creating a permanent full-image GPU texture, slice/crop the source into tile-sized regions, and blit those regions into a new surface. The result may still be a new layer, but no full-image sprite/RT remains. |
+| Future paste into an existing layer        | Reuse the same `blitImage(pixelCanvas, source, matrix, transaction)` primitive; this should not require another ingestion architecture.                                                                                                                                         |
+| Brush                                      | Allocate every crossed tile on demand and maintain per-tile consistent-opacity coverage/preview.                                                                                                                                                                                |
+| Eraser                                     | Touch existing intersected tiles only; never allocate transparent space.                                                                                                                                                                                                        |
+| Preserve alpha                             | Touch existing tiles only and mask each commit with that tile's pre-stroke alpha.                                                                                                                                                                                               |
+| Fill boundary box                          | Transform the box polygon into layer local space, enumerate candidate tiles, allocate them, then render erase+fill clipped to the polygon per tile. Preflight the finite tile count.                                                                                            |
+| Clear mask                                 | Remove all mask tiles atomically; history owns the detached tiles for undo.                                                                                                                                                                                                     |
+| Invert mask                                | Delete tiles outside the boundary, allocate every tile intersecting the box (transparent becomes opaque), and invert/clip per tile.                                                                                                                                             |
+| Clip layer to boundary                     | Keep the stable layer transform. Delete outside tiles and clear edge-tile pixels outside the transformed box instead of replacing the surface with a cropped monolithic RT.                                                                                                     |
+| Filter result acceptance                   | Tile the finite returned image and atomically replace the target surface region/state; never resize one RT to the result.                                                                                                                                                       |
+| Raster-to-mask / raster-to-control         | Iterate/clone source tiles, run conversion per tile, preserve local tile coordinates and layer transform, then add the new surface atomically.                                                                                                                                  |
+| Thumbnail                                  | Render allocated/logical bounds directly into a fixed max-size thumbnail target. Never allocate an intermediate at the layer's full sparse span.                                                                                                                                |
+| Layer copy / raw source export             | Export the finite logical bounds in chunks. Empty layers return no pixels. Reject an unencodable enormous sparse span with a useful UI error.                                                                                                                                   |
+| ControlNet capture                         | Render each visible control layer in the current finite boundary-box coordinate frame, chunked, instead of assuming one untransformed source texture. This also resolves ambiguity once a control layer has negative tiles.                                                     |
+| Normal flatten / Save / Generate / Upscale | Render the boundary box chunk-by-chunk, temporarily selecting the tiles intersecting each chunk, then stitch to the existing PNG request shape. Masks and controls remain excluded from the regular composite as today.                                                         |
+| Mask flatten                               | Chunk-render visible undecorated mask tiles to black/white using the current forced-white-alpha treatment, then stitch.                                                                                                                                                         |
+| Merge selected/visible                     | Render each output chunk straight into a new tile surface. Do not create a boundary-box-sized intermediate RT. Preserve the current layer/group blend and stack behavior.                                                                                                       |
+| Fit box to raster content                  | Transform each visible surface's logical bounds through its complete parent chain.                                                                                                                                                                                              |
+| Fit box to composite mask                  | Extract/scan alpha per allocated mask tile and transform only nontransparent pixel bounds; do not read back an enormous empty bounding rectangle.                                                                                                                               |
+| Remove / clear / add-layer undo            | Transfer or destroy the surface and all owned tile textures exactly once.                                                                                                                                                                                                       |
+
+Image ingestion should prefer `createImageBitmap` source-rectangle decoding where
+supported so an oversized input is never uploaded as one GPU texture. A 2D scratch
+canvas fallback may decode the full image in CPU memory, but every upload and
+persistent GPU target remains tile-sized. Process large imports in small batches
+with event-loop yields and roll back the whole surface on failure.
+
+### Viewport culling and compositor mode
+
+Viewport culling reduces draw traversal; it does not by itself free GPU memory.
+For each paintable `LayerNode`, transform the four screen corners to layer-local
+space, derive the candidate tile range, and diff that range against the node's
+currently renderable tile-key set. The node asks `TiledRasterCanvas.visit()` for
+that range rather than scanning all allocated tiles or reaching into its internal
+map, avoiding O(total tiles) work on every pan.
+
+Camera pan/zoom, viewport resize, layer/group transform changes, and tile
+add/remove events invalidate this set. Offscreen operations enter an explicit
+compositor visibility scope for their output chunk and restore the screen scope
+afterward. Do not rely on ambient `visible`/`renderable` flags or Pixi's screen
+culler during direct `renderer.render()` calls.
+
+Chunked compositing is pixel-exact for the current per-pixel blend modes because
+each output pixel depends only on the same-position layer pixels. Any future blur,
+convolution, displacement, or adjustment filter with neighboring-pixel reach must
+declare a halo/padding radius and render overlapping chunk margins before cropping;
+such effects are not part of this migration.
+
+### Staged implementation plan
+
+#### I0 — Baseline and capability probes
+
+- Add focused browser baselines for current paint opacity, eraser, preserve-alpha,
+  masks, transformed fill, merge, import/paste/generated placement, and undo.
+- Add the renderer-capability helper and diagnostics for backend type, max 2D
+  texture dimension, selected tile size, resident tile count, estimated resident
+  bytes, visible tile count, and peak temporary/history bytes.
+- Add pure tests for signed floor division, half-open rectangle-to-tile ranges,
+  negative coordinates, and safe-coordinate rejection.
+
+Exit: no behavior change; existing suite passes and device limits are observable.
+
+#### I1 — Low-level tile canvas and scene vertical slice (opt-in/test-only)
+
+- Add `TileGrid`, `TiledRasterCanvas`, transactional access, explicit
+  ownership/events, logical bounds, and deterministic iteration.
+- Prohibit production callers from importing/internal-accessing the tile map;
+  exercise operations through visit/edit/transaction APIs in focused tests.
+- Teach `LayerNode` to display an opt-in tiled layer, including mask/control
+  display treatment and manual viewport tile selection.
+- Add a test-only/dev creation path; keep production-created layers monolithic
+  while this slice is incomplete.
+- Prove negative tiles, far-separated tiles, transforms, visibility, opacity,
+  normal/advanced blends, mask hatching, control display, destruction, and culling.
+
+Exit: tiled layers render correctly but are not yet the default.
+
+#### I2 — Tiled ingestion and chunk compositor
+
+- Implement shared tiled blit/ingestion for uploads, paste, generated results,
+  mask uploads, and control uploads.
+- Implement output-chunk iteration and CPU stitching for normal, selected-layer,
+  mask, thumbnail, source, and ControlNet exports.
+- Make merge write directly to a new tile surface.
+- Test with an artificially tiny compositor chunk size so ordinary fixtures are
+  forced through multiple chunks, then compare pixels with the current monolithic
+  reference.
+
+Exit: image-in to image-out works without a full-size persistent or output GPU RT.
+
+#### I3 — Tile-native paint and delta history
+
+- Replace monolithic growth with per-tile brush coverage, brush preview, eraser
+  preview, preserve-alpha, and atomic commit.
+- Replace full-layer pixel snapshots with lazy per-tile before states and inverse
+  replay; add a byte budget alongside the count limit.
+- Cover strokes through horizontal, vertical, four-tile, negative-coordinate, and
+  transformed-layer boundaries; verify cancel, undo, and redo restore tile
+  existence and identical pixels.
+
+Exit: painting no longer has an 8192 layer ceiling and produces no visible seams.
+
+#### I4 — Remaining edit operations and production cutover
+
+- Port fill, clear, invert, clip, filter acceptance, conversions, thumbnails,
+  copy/source export, ControlNet capture, content fitting, add/remove/clear, and
+  all add-layer undo paths to surfaces.
+- Switch blank/mask/upload/paste/generated/control creation to tiled by default.
+- Remove the temporary dual-backing path, `getTexture()`, `growRasterLayer()`,
+  `replaceLayerTexture()`, `MAX_LAYER_DIMENSION`, growth padding/copy code, and
+  stale width/height assumptions only after `rg` finds no callers.
+- Update README feature text and the current-status section only at this cutover.
+
+Exit: every paintable layer is tiled and no production code allocates a
+layer-sized RT.
+
+#### I5 — Performance and residency hardening
+
+- Profile draw calls, culling CPU cost, stroke latency, import throughput,
+  compositor throughput, history bytes, and destroy hitches on WebGL and WebGPU.
+- Add transparent-tile compaction only if retained erased tiles are measurable.
+- If real documents exhaust VRAM, add an LRU residency tier: read back offscreen
+  tiles to CPU `ImageData`/lossless blobs (and later IndexedDB with Phase 6
+  persistence), destroy their GPU RTs, and rehydrate before display/edit/export.
+  Do not build this before sparse resident tiles are profiled.
+- Stagger mass destruction/rehydration if profiling shows frame stalls.
+
+Exit: the coordinate plane remains unbounded while resident GPU memory is bounded
+for observed workloads; any remaining ceiling is explicit and user-visible.
+
+### Required acceptance coverage
+
+- One stroke crosses 2 and 4 tile boundaries with no alpha/color discontinuity.
+- Painting at negative local/document coordinates allocates the expected signed
+  tile keys without moving old pixels or the layer transform.
+- Eraser and preserve-alpha across a boundary allocate no absent tiles.
+- Stroke cancel, undo, and redo restore exact pixels and exact tile existence.
+- Paste, upload, and generated Apply spanning partial edge tiles reproduce source
+  pixels and placement; no permanent full-image RT remains.
+- Fractional zoom and rotated/scaled layers show no transparent or dark seams.
+- Transformed fill, mask invert, and clip match the boundary polygon across tiles.
+- Normal/mask/selected merge exports forced through multiple small chunks match a
+  monolithic reference pixel-for-pixel.
+- Viewport culling hides far tiles on screen but does not omit them from an export.
+- Mask hatch/live previews remain display-only; flattened masks stay black/white.
+- ControlNet input is boundary-aligned for tiled/negative/transformed control
+  layers.
+- Removing layers, clearing the document, history eviction, failed import, and app
+  teardown return tile/scratch ownership counters to zero.
+- No `RenderTexture.create` in the migrated surface/paint/compositor paths receives
+  a dimension greater than the negotiated safe size.
+
+### Explicit non-goals for the first cutover
+
+- Infinite generation or a boundary box with no finite export/encoder limit.
+- Document persistence/streaming; the tile schema should enable Phase 6 but does
+  not implement it here.
+- Immediate alpha-tight bounds after every eraser sample.
+- New brush behavior, selection tools, transform gizmos, or spatial filters.
+- A user-facing tile-size setting. Tile size is an internal capability/performance
+  choice until profiling demonstrates a real need for configuration.
+
+Recommended starting choices: 1024 logical pixels per tile, no gutter until a
+browser seam test fails, all touched tiles GPU-resident for the first cutover, and
+manual region-scoped culling. These choices keep the correctness migration small;
+I5 adds eviction/compaction only when measurements justify it.
+
+---
+
 ## Preview-gallery save with PNG metadata — 2026-08-29
 
 The generation preview gallery now has a Save button immediately before its
@@ -223,7 +1503,7 @@ few items not yet tracked anywhere in this document:
   feature's own logic — just means first-run behavior on a clean clone hasn't
   been exercised. Worth a one-line README/PLAN callout or a committed
   `data/.gitkeep`-plus-placeholder rather than a code fix.
-- **No document (canvas/layers) save/load.** Generation *settings* persist
+- **No document (canvas/layers) save/load.** Generation _settings_ persist
   (§ Python-backed Generation-panel persistence, above) but the actual
   document — layers, pixels, boundary box, masks — does not survive a reload;
   confirmed intentional for Phase 1 (§4, "nothing is actually persisted/
@@ -283,6 +1563,7 @@ comma-segment replaced and the rest of the prompt untouched, Escape and blur
 close it, and the two textareas' dropdown state don't bleed into each other.
 
 **Explicitly deferred (not built in Phase 1):**
+
 - **Phase 2 — category color-coding, weight-syntax awareness (`(tag:1.2)`),
   refined comma/space insertion edge cases.** Pure frontend, no new data source;
   natural next step once Phase 1 has seen real use.
@@ -449,7 +1730,7 @@ single pixel-history entry. Both methods use expected-texture identity checks an
 leave destruction of the displaced texture to the successful caller.
 
 Pixel history now snapshots the layer transform together with its pixels.
-Undo/redo first captures the current texture *and current transform* as the
+Undo/redo first captures the current texture _and current transform_ as the
 inverse entry, creates a fresh texture exactly matching the entry snapshot, copies
 the snapshot into that same-sized texture, then atomically restores both texture
 and transform. Thus undo of a growing stroke restores the pre-stroke dimensions,
@@ -478,6 +1759,7 @@ app similar to InvokeAI's canvas, rendered with **PixiJS v8**, while staying ful
 compatible with Forge's native T2I, I2I, and ControlNet pipelines.
 
 Baseline requirements (from the original spec):
+
 - Compatibility with Forge's native T2I, I2I, and ControlNet workflows
 - Layer-based painting/editing: blend modes, multiple layers each usable as their own
   ControlNet input (multi-layer ControlNet)
@@ -488,7 +1770,7 @@ Baseline requirements (from the original spec):
 
 **All actual canvas rendering is PixiJS**, built fresh in `frontend/src/`. Forge's
 built-in `ForgeCanvas` widget (`modules_forge/forge_canvas/canvas.py`) is not used for
-rendering — only its JS↔Python data-bridge *trick* (a hidden `gr.Textbox` + dispatched
+rendering — only its JS↔Python data-bridge _trick_ (a hidden `gr.Textbox` + dispatched
 `input` event) is reused, since it's proven in this exact codebase.
 
 ## 2. Delivery approach
@@ -499,6 +1781,7 @@ over-plan phases 2+ until Phase 1 has landed and been tested, since early phases
 teach things that should inform later ones.
 
 ### Delegation model
+
 - **Implementation**: Opus (medium effort) or Codex `gpt-5.6-sol` (high effort)
 - **Quick changes / reviews**: Sonnet (high effort) or Codex `gpt-5.6-terra` (medium effort)
 - **Research / light org+docs**: Haiku 4.5 (medium effort) or Codex `gpt-5.6-luna` (high effort)
@@ -550,6 +1833,15 @@ selection when layers are removed, and keeps regular/mask/control selections
 bucket-compatible. Merge preserves the originals and document-space placement;
 mask/control selections are intentionally not mergeable. Verified with
 `npm run typecheck`, `npm run build`, and `git diff --check`.
+
+**Layer context-menu copy/convert actions: IMPLEMENTED (2026-08-31).** The menu
+now separates general, copy, conversion, editing, and destructive actions with
+dividers. Raster and control layers can be copied to a new mask; raster layers can
+also be copied to a new ControlNet layer. The corresponding Convert actions now
+remove the source only after making that copy. Every layer kind has a basic
+duplicate action; textured copies retain their independent pixels and visible
+settings, while groups duplicate as empty groups because the current UI has no
+group nesting workflow.
 
 **Boundary box (Invoke-style operating region): IMPLEMENTED** (superseding the
 original Phase 2.5 item 1 fixed-size canvas controls) — `Document.boundaryBox` is
@@ -630,7 +1922,7 @@ since replaced by Vite), layer scene graph/store/compositor (T3), a hand-rolled 
 layer panel (T4, since replaced by `LayerPanel.svelte`), the original Gradio
 two-button Generate handshake (T5, since replaced by a real `POST` endpoint), and
 the progress-polling route (T6, still in use unchanged). Two unrelated bugs in
-*other* extensions (`sd-webui-prompt-format`, `sd-dynamic-prompts` — both uncaught
+_other_ extensions (`sd-webui-prompt-format`, `sd-dynamic-prompts` — both uncaught
 top-level JS errors breaking Gradio's own app mount for every tab, not just Ultra
 Paint) were found and fixed along the way; not Ultra Paint's own code, not repeated
 here. All of this shipped fine and was later fully superseded by Phase 2.R's
@@ -642,8 +1934,10 @@ describes current behavior.
 ## 4. Architecture reference
 
 ### File layout (current, Phase 2.R — rewritten to match reality, was badly
+
 stale here through the Gradio-component era; if you're reading an older
 version of this section from git history, don't trust it)
+
 ```
 extensions/sd-forge-ultra-paint/
   PLAN.md                       <- this file
@@ -683,6 +1977,7 @@ extensions/sd-forge-ultra-paint/
       util/blendModes.ts
       types/assets.d.ts
 ```
+
 Deleted during Phase 2.R, superseded by the above (don't go looking for these):
 `javascript/ultra-paint.mjs`(+`.map`) (old esbuild bundle), `frontend/build.mjs`
 (esbuild pipeline), `ultra_paint/bridge.py` (`LogicalImage` composite bridge),
@@ -690,6 +1985,7 @@ Deleted during Phase 2.R, superseded by the above (don't go looking for these):
 `PaintToolbar.ts` + `panel.css` + `toolbar.css` (hand-rolled DOM UI classes).
 
 ### Build commands (from `frontend/`, Phase 2.R / Vite — superseded esbuild)
+
 `npm install` (once) · `npm run dev` (Vite dev server, HMR) · `npm run build`
 (production build → `frontend/dist/`) · `npm run typecheck` (`svelte-check`).
 `dist/` is gitignored, NOT committed — unlike the old esbuild-era
@@ -700,43 +1996,79 @@ whoever runs the server needs to have run `npm run build` at least once. No
 Node toolchain is required at Forge-server runtime otherwise.
 
 ### elem_id contract (Gradio host and iframe document)
-| elem_id | what | notes |
-|---|---|---|
-| `upaint-iframe-wrapper` | iframe mount on the Gradio page | created by Python via `eid("iframe-wrapper")`; `javascript/ultra-paint-iframe.js` mounts the app here |
-| `upaint-root` | PixiJS canvas mount | lives inside the iframe document; a plain `<div>` in `App.svelte`, `UltraPaintApp` mounts its canvas into it |
-| `upaint-root-toolbar` | painting toolbar mount | lives inside the iframe document; `App.svelte` renders `<PaintToolbar>` directly inside this div — literal, hardcoded id (not derived from `rootId` at runtime; T22 removed that derivation logic along with `UltraPaintApp`'s old `toolbarElementId` option) |
-| `upaint-root-panel` | layer panel mount | lives inside the iframe document; `App.svelte` renders `<LayerPanel>` directly inside this div — same as above, literal id |
-| `upaint-settings-panel` | generation-settings panel mount (prompt/negative/sampler/steps/cfg/denoise/Generate) | new in Phase 2.R, no Gradio-era equivalent to preserve; T22's `App.svelte` provides the mount, T21 fills it |
+
+| elem_id                 | what                                                                                 | notes                                                                                                                                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upaint-iframe-wrapper` | iframe mount on the Gradio page                                                      | created by Python via `eid("iframe-wrapper")`; `javascript/ultra-paint-iframe.js` mounts the app here                                                                                                                                                         |
+| `upaint-root`           | PixiJS canvas mount                                                                  | lives inside the iframe document; a plain `<div>` in `App.svelte`, `UltraPaintApp` mounts its canvas into it                                                                                                                                                  |
+| `upaint-root-toolbar`   | painting toolbar mount                                                               | lives inside the iframe document; `App.svelte` renders `<PaintToolbar>` directly inside this div — literal, hardcoded id (not derived from `rootId` at runtime; T22 removed that derivation logic along with `UltraPaintApp`'s old `toolbarElementId` option) |
+| `upaint-root-panel`     | layer panel mount                                                                    | lives inside the iframe document; `App.svelte` renders `<LayerPanel>` directly inside this div — same as above, literal id                                                                                                                                    |
+| `upaint-settings-panel` | generation-settings panel mount (prompt/negative/sampler/steps/cfg/denoise/Generate) | new in Phase 2.R, no Gradio-era equivalent to preserve; T22's `App.svelte` provides the mount, T21 fills it                                                                                                                                                   |
 
 If you add a new elem_id, add it to this table.
 
 ### Layer data model (finalized — later phases are additive, not breaking)
+
 ```ts
 type LayerId = string;
-type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "add"
-  | "erase" | "min" | "max" | "color-burn" | "color-dodge" | "hard-light";
+type BlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "add"
+  | "erase"
+  | "min"
+  | "max"
+  | "color-burn"
+  | "color-dodge"
+  | "hard-light";
 
-interface Transform { x: number; y: number; scaleX: number; scaleY: number; rotation: number; }
+interface Transform {
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+}
 
 interface LayerBase {
-  id: LayerId; name: string; kind: LayerKind;
-  visible: boolean; locked: boolean;   // locked: unused so far, reserved
-  opacity: number; blendMode: BlendMode; transform: Transform;
+  id: LayerId;
+  name: string;
+  kind: LayerKind;
+  visible: boolean;
+  locked: boolean; // locked: unused so far, reserved
+  opacity: number;
+  blendMode: BlendMode;
+  transform: Transform;
   parentId: LayerId | null;
-  mask?: unknown;         // reserved for the masking phase
-  controlNet?: unknown;   // reserved for the multi-layer-CN phase
+  mask?: unknown; // reserved for the masking phase
+  controlNet?: unknown; // reserved for the multi-layer-CN phase
 }
-type LayerKind = "raster" | "group";  // "shape"/"adjustment" reserved, not implemented
-interface RasterLayer extends LayerBase { kind: "raster"; image: ImageRef; }
-interface GroupLayer extends LayerBase { kind: "group"; children: LayerId[]; }  // index 0 = top
+type LayerKind = "raster" | "group"; // "shape"/"adjustment" reserved, not implemented
+interface RasterLayer extends LayerBase {
+  kind: "raster";
+  image: ImageRef;
+}
+interface GroupLayer extends LayerBase {
+  kind: "group";
+  children: LayerId[];
+} // index 0 = top
 type Layer = RasterLayer | GroupLayer;
-interface ImageRef { source: "upload" | "generated" | "paint"; width: number; height: number; }
+interface ImageRef {
+  source: "upload" | "generated" | "paint";
+  width: number;
+  height: number;
+}
 interface Document {
-  id: string; width: number; height: number;
-  layers: Layer[];        // FLAT, parentId encodes the tree
-  layerOrder: LayerId[];  // top-level stacking order, index 0 = TOP of stack
+  id: string;
+  width: number;
+  height: number;
+  layers: Layer[]; // FLAT, parentId encodes the tree
+  layerOrder: LayerId[]; // top-level stacking order, index 0 = TOP of stack
 }
 ```
+
 **Stacking convention: index 0 = top.** PixiJS draws last-child-on-top, so `LayerTree`
 attaches the ordered list in reverse — don't re-invert this in new code.
 
@@ -756,6 +2088,7 @@ normal ES module imports, plus one module-level singleton getter
 current app instance" without prop/context drilling through the Svelte tree.
 
 **`UltraPaintApp`** (`frontend/src/app/UltraPaintApp.ts`):
+
 ```ts
 new UltraPaintApp(rootElementId: string, options?: { store?; toolStore?; background?; resolution? })
 .ready: Promise<void>
@@ -775,6 +2108,7 @@ new UltraPaintApp(rootElementId: string, options?: { store?; toolStore?; backgro
 // module-level export, not a method:
 getActiveUltraPaintApp(): UltraPaintApp | null
 ```
+
 `panelElementId`/`toolbarElementId` options and `getPanel()`/`getToolbar()`
 were REMOVED in T22 — mounting the layer panel / toolbar is no longer
 `UltraPaintApp`'s job, `App.svelte` renders `<LayerPanel>`/`<PaintToolbar>`
@@ -784,6 +2118,7 @@ directly as Svelte components instead (see file layout above).
 export `layerStore`; Svelte 5 runes, dual API — reactive getters for Svelte
 components, plus the original method-call/`subscribe()` shape for non-Svelte
 consumers like `UltraPaintApp`'s undo/redo history):
+
 ```ts
 // reactive getters (Svelte components read these directly, no subscribe needed):
 .document: Readonly<Document>
@@ -806,6 +2141,7 @@ subscribeMutations(fn: (mutation: LayerStoreMutation) => void): () => void  // u
 
 **`PaintToolStore`** (`frontend/src/state/paintToolStore.svelte.ts`, singleton
 export `paintToolStore`; same dual-API shape as `LayerStore`):
+
 ```ts
 // reactive getters:
 .state: Readonly<PaintToolState>
@@ -820,10 +2156,12 @@ subscribe(fn): () => void
 ```
 
 **Python `generation.py`**:
+
 ```python
 build_img2img_processing(composite_image: PIL.Image, gen_params: dict) -> StableDiffusionProcessingImg2Img
 run_generation(composite_image, gen_params) -> Processed
 ```
+
 `GEN_PARAM_DEFAULTS` in `generation.py` is the single source of truth for gen_params
 keys: `prompt, negative_prompt, styles, steps, cfg_scale, distilled_cfg_scale,
 denoising_strength, sampler_name, scheduler, seed, subseed, subseed_strength,
@@ -850,6 +2188,7 @@ the Phase 2.5 bug list. Originally discussed as a "standalone web app" — corre
 by the developer to "embedded app," specifically citing
 `extensions/sd-webui-infinite-image-browsing` as the reference pattern. **Verified
 by reading that extension's source (2026-08-23):**
+
 - `scripts/iib_setup.py`'s `on_ui_tabs()` returns a near-empty `gr.Blocks` — just a
   wrapper `gr.HTML("", elem_id="infinite_image_browsing_container_wrapper")`, no
   real Gradio components for the app's own UI.
@@ -859,7 +2198,7 @@ by reading that extension's source (2026-08-23):**
   CSS control from that point on.
 - The real app itself is a fully separate Vue SPA (`vue/dist/`), served via its own
   FastAPI routes (`StaticFiles` mount + a custom `index.html` route) registered in
-  `on_app_started` — the *same hook* `ultra_paint_api.py` already uses for the
+  `on_app_started` — the _same hook_ `ultra_paint_api.py` already uses for the
   progress-polling route, so this is a proven-safe mechanism in this exact codebase,
   not a hypothetical.
 
@@ -879,18 +2218,19 @@ tabs like txt2img) Ultra Paint likely needs **no** parent-page communication at
 all, simplifying this considerably relative to IIB's own implementation.
 
 **Arguments for, sharpened by what Phase 1/2 actually hit:**
+
 - The canvas-height-not-reaching-bottom-of-screen bug (Phase 2.5 item 5) is a
   Gradio column/CSS constraint fight, not something in our own control — gone
   entirely inside an iframe's own document.
 - The two-button Generate handshake and hidden-`gr.Textbox`-plus-dispatched-`input`-
-  event bridge trick (`bridge.py`, `pythonBridge.ts`) exist *specifically* to work
+  event bridge trick (`bridge.py`, `pythonBridge.ts`) exist _specifically_ to work
   around Gradio's component model having no first-class way to hand a canvas-composited
   image into a processing call — a real API endpoint makes this a plain HTTP POST,
   and removes the "is this Gradio-4.40-timing assumption actually safe" class of risk
   entirely — this class of risk doesn't come back once there's no handshake to
   reason about.
-- Phase 1's live-test session found the *entire* Forge UI (every tab, not just Ultra
-  Paint) failed to load because of uncaught top-level JS errors in two *unrelated*
+- Phase 1's live-test session found the _entire_ Forge UI (every tab, not just Ultra
+  Paint) failed to load because of uncaught top-level JS errors in two _unrelated_
   extensions (`sd-webui-prompt-format`, `sd-dynamic-prompts`) that Gradio's own
   auto-scanner injected into the same global scope as everything else. An iframed
   app, loaded from its own document, would not have been affected by either bug.
@@ -913,7 +2253,7 @@ free (routing/serving the page itself, any settings/session persistence Forge's
 core UI might expect extensions to participate in).
 
 **DECIDED (2026-08-23): this is happening, scoped as Phase 2.R, and it goes
-*before* Phase 2.5 and Phase 3** — not folded into later UI work. Rationale from
+_before_ Phase 2.5 and Phase 3** — not folded into later UI work. Rationale from
 the developer: redo the shell now, "just in case," before more feature work gets
 built on top of the soon-to-be-replaced Gradio-component shell. Several Phase 2.5
 items are superseded or need re-triage once this lands (item 4, generate-to-gallery
@@ -926,10 +2266,11 @@ implement them after Phase 2.R lands, in the new shell, rather than twice.
 
 **UI framework: Svelte 5, runes-only** (not Vue, not Svelte 4/legacy-mode), decided
 2026-08-23. Reasons specific to this codebase:
+
 - Runes (`$state`, `$derived`, `$effect`) work in plain `.svelte.ts` modules, not
   just `.svelte` components — `LayerStore`/`PaintToolStore`'s hand-rolled
-  `subscribe(fn): Unsubscribe` + manual `emit()` pattern can likely be *replaced
-  outright* by a `$state`-backed reactive singleton, not just ported to an
+  `subscribe(fn): Unsubscribe` + manual `emit()` pattern can likely be _replaced
+  outright_ by a `$state`-backed reactive singleton, not just ported to an
   equivalent store API (the original Svelte-4-store-API reasoning is superseded by
   this — runes make it a bigger simplification than initially scoped).
 - **Caveat, needs a deliberate design pass at implementation time, not decided
@@ -967,17 +2308,17 @@ Delegation: 1:2 Claude:Codex split (Claude on foundational/cross-cutting/backend
 correctness-sensitive tasks; Codex on larger-volume mechanical port work), per
 developer's `/goal` directive. Codex invoked via `codex:codex-rescue`.
 
-| Task | What | Owner | Depends on | Status |
-|---|---|---|---|---|
-| T14 | New `frontend/` Vite + Svelte 5 (runes) + Tailwind (dark theme) scaffold: `package.json`, `vite.config.ts`, `index.html` entry, Tailwind config, dark-theme CSS tokens. Old `build.mjs`/esbuild pipeline retired once cutover is verified. | Claude | — | **Done** — `npm run build` and `npm run typecheck` both pass clean (Vite 6 + `@sveltejs/vite-plugin-svelte` 5 + Tailwind 4; old `build.mjs`/esbuild deps removed). `base: "/ultra_paint/app/"` matches T16's mount prefix. |
-| T15 | Iframe host shim: `scripts/ultra_paint_tab.py` shrinks to a near-empty `gr.Blocks` wrapper (`gr.HTML` container div, elem_id kept stable), mirroring `sd-webui-infinite-image-browsing`'s `iib_setup.py`. New `javascript/ultra-paint-iframe.js` injects the `<iframe>` pointing at the new static route, mirroring IIB's `javascript/index.js`. Retires the two-button Generate handshake and the `Context.root_block.load(js=...)` bootstrap call. | Codex | — | **Done**, syntax-checked. Claude additionally deleted the now-orphaned old esbuild bundle (`javascript/ultra-paint.mjs` + `.mjs.map`, ~7MB dead weight) since nothing loads it post-T15. |
-| T16 | FastAPI static-serving route in `ultra_paint_api.py`: `StaticFiles` mount of `ultra_paint.config.FRONTEND_DIST_DIR` (already reserved in `config.py`) at e.g. `/ultra_paint/app`, `html=True`, registered in the existing `on_app_started` alongside the progress route. | Codex | T14 (needs a `dist/` to point at, but route code itself can be written in parallel) | **Done** — mounted at `/ultra_paint/app` with `check_dir=False` + a startup warning if `dist/` is missing; verified matches T14's `base: "/ultra_paint/app/"`. |
-| T17 | New `POST /ultra_paint/api/generate` FastAPI endpoint (`ultra_paint/generate_api.py` + `scripts/ultra_paint_generate_api.py`, registered as its own `on_app_started` hook to avoid a concurrent-edit collision with T16's file): JSON body (composite image data URL + `gen_params`), decodes to `PIL.Image`, runs the existing `queue_lock`/`shared.state.begin/end`/`main_thread.run_and_wait_result(run_generation, ...)` sequence from the old `_on_generate`, returns `{images: [data URLs]}`. Retired `ultra_paint/bridge.py` (deleted — dead once a real POST endpoint exists). `build_img2img_processing`/`run_generation` in `generation.py` unchanged. | Claude | — | **Done**, syntax-checked. Not live-tested (no running server in this environment, same constraint as Phase 1/2). |
-| T18 | Port `state/layerStore.ts` + `state/paintToolStore.ts` to Svelte 5 runes (`.svelte.ts` modules). Preserve the documented public API surface (PLAN.md §4) so PixiJS-facing code (T22) doesn't need a parallel rewrite — back it with `$state` for serializable metadata (opacity/blend/transform/order) and `$state.raw` for anything holding live PixiJS instances (texture side-map), per the design note already in this section. | Codex | T14 | **Done** — `layerStore.svelte.ts`/`paintToolStore.svelte.ts`, identical class names/methods/singleton exports to the originals (verified by Claude), `$state`/`$state.raw` split applied correctly, typecheck/build both passed. |
-| T19 | Port `ui/LayerPanel.ts` (hand-rolled DOM) to Svelte component(s) + Tailwind, dark theme. Re-verify the opacity-slider-starts-a-row-drag bug (Phase 2.5 item 6) against the new DOM — don't assume fixed or broken. | Codex | T14, T18 | **Done** — `ui/LayerPanel.svelte`, verified by Claude: full feature parity (thumbnails, inline rename, drag reorder, opacity/blend/visibility/delete), own native-DnD reorder implementation, slider-vs-row-drag bug fixed via a `pointerdowncapture` guard that synchronously toggles `draggable` before any native drag gesture can start (plus a `dragstart` fallback check) — a different, arguably more robust mechanism than the old file's. Confirmed the old manual deferred-render/focusout-polling guard is NOT needed: keyed `{#each layerOrder as id (id)}` blocks mean Svelte's reactivity doesn't tear down focused inputs the way full-DOM-rebuild did. typecheck/build both passed. |
-| T20 | Port `ui/PaintToolbar.ts` to a Svelte component + Tailwind, dark theme. | Codex | T14, T18 | **Done** — `ui/PaintToolbar.svelte`, verified by Claude: brush/eraser/fill buttons, size/hardness/opacity sliders with live readouts, color input, all correctly wired to the `paintToolStore` singleton and `getActiveUltraPaintApp()?.fillSelectedLayer()`. typecheck/build both passed. |
-| T21 | Generation-settings panel as Svelte components (prompt/negative/sampler/steps/cfg/denoise/Generate button), replacing the Gradio controls removed in T15. Wire Generate to `POST /ultra_paint/api/generate` (T17) via `fetch`. Fetch sampler/scheduler choices from the new `GET /ultra_paint/api/options` (Claude, added ahead of this task — see note below). Wire the existing `GET /ultra_paint/api/progress` route for live progress display (open item, PLAN.md §5 — folded into this task rather than deferred again). Retire `bridge/pythonBridge.ts`. | Codex | T14, T17 | **Done** — `ui/GenerationPanel.svelte`, verified by Claude: prompt/negative textareas, sampler/scheduler selects populated from `/options`, steps/cfg/denoise as paired range+number inputs, Generate flattens the canvas and POSTs to `/generate`, run-id-guarded progress polling (with a `MAX_PROGRESS_POLLS` safety cutoff) drives a progress bar + live preview image, results land as new layers via `addImageFromDataURL` (Phase 2.5 item 4, resolved here rather than deferred), errors surfaced inline from the response `detail`. typecheck/build both passed. **Scope note:** this Codex session unexpectedly also rewrote `ui/LayerPanel.svelte` (T19's file — a second, independent implementation, functionally equivalent) and deleted the retired `ui/LayerPanel.ts`/`panel.css`/`bridge/pythonBridge.ts` — a real concurrent-edit collision with the T19 agent, caught via file-mtime inspection and a full re-read/re-verify (typecheck 0 errors/0 warnings, build clean) rather than assumed safe. Claude additionally deleted the now-dead `ui/PaintToolbar.ts`/`toolbar.css` (superseded by T20) once T20 was confirmed integrated. |
-| T22 | Mount-shell migration: `UltraPaintApp.ts`'s PixiJS init now mounts inside the new Svelte app's own root elements (own `document`, not a Gradio DOM subtree) — thin `App.svelte` hosting `#upaint-root`/`#upaint-root-toolbar`/`#upaint-root-panel`, `onMount` wiring. Re-evaluate the `ResizeObserver`/pan-zoom-centering workaround for Gradio's hidden-tab-0x0 problem — likely simplifies or is no longer needed since there's no hidden Gradio tab anymore. | Claude | T14, T18 | **Done** — `npm run build` (837 modules, full PixiJS renderer bundle) and `npm run typecheck` both pass. Turned out to be broader than "mount shell": swapped `state/layerStore`→`layerStore.svelte`/`paintToolStore`→`paintToolStore.svelte` imports across `LayerTree.ts`/`BrushEngine.ts`/`EraserEngine.ts`/`StrokeController.ts` (type-only, no behavior change — T18 preserved identical class names/method signatures/singleton exports), deleted the old plain-TS `layerStore.ts`/`paintToolStore.ts`, and **stripped the old DOM `LayerPanel`/`PaintToolbar` instantiation out of `UltraPaintApp.ts` entirely** (removed `panelElementId`/`toolbarElementId` options, `mountPanel()`/`mountToolbar()`, `getPanel()`/`getToolbar()`) since that job now belongs to Svelte components mounted directly by `App.svelte` (T19/T20), not to `UltraPaintApp`. Added `getActiveUltraPaintApp()` (module-level singleton getter, mirrors the existing `layerStore`/`paintToolStore` singleton pattern) so those future Svelte components can reach the two instance-bound methods (`addImageFromFile`, `fillSelectedLayer`, the latter promoted to `public`) without prop/context drilling — reactive layer/tool data still comes straight from the `layerStore`/`paintToolStore` singletons. The `ResizeObserver`/pan-zoom-centering workaround in `mountViewportControls` was left as-is (untouched): it's generic DOM code keyed off `root.clientWidth/clientHeight`, already correct for a plain non-Gradio div, no changes needed. Old `ui/LayerPanel.ts`/`PaintToolbar.ts` (+ `panel.css`/`toolbar.css`) are now dead code, deliberately left in place until T19/T20 land — deleted then, not before. |
+| Task | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Owner  | Depends on                                                                          | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T14  | New `frontend/` Vite + Svelte 5 (runes) + Tailwind (dark theme) scaffold: `package.json`, `vite.config.ts`, `index.html` entry, Tailwind config, dark-theme CSS tokens. Old `build.mjs`/esbuild pipeline retired once cutover is verified.                                                                                                                                                                                                                                                                                                                                                                                                                       | Claude | —                                                                                   | **Done** — `npm run build` and `npm run typecheck` both pass clean (Vite 6 + `@sveltejs/vite-plugin-svelte` 5 + Tailwind 4; old `build.mjs`/esbuild deps removed). `base: "/ultra_paint/app/"` matches T16's mount prefix.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| T15  | Iframe host shim: `scripts/ultra_paint_tab.py` shrinks to a near-empty `gr.Blocks` wrapper (`gr.HTML` container div, elem_id kept stable), mirroring `sd-webui-infinite-image-browsing`'s `iib_setup.py`. New `javascript/ultra-paint-iframe.js` injects the `<iframe>` pointing at the new static route, mirroring IIB's `javascript/index.js`. Retires the two-button Generate handshake and the `Context.root_block.load(js=...)` bootstrap call.                                                                                                                                                                                                             | Codex  | —                                                                                   | **Done**, syntax-checked. Claude additionally deleted the now-orphaned old esbuild bundle (`javascript/ultra-paint.mjs` + `.mjs.map`, ~7MB dead weight) since nothing loads it post-T15.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| T16  | FastAPI static-serving route in `ultra_paint_api.py`: `StaticFiles` mount of `ultra_paint.config.FRONTEND_DIST_DIR` (already reserved in `config.py`) at e.g. `/ultra_paint/app`, `html=True`, registered in the existing `on_app_started` alongside the progress route.                                                                                                                                                                                                                                                                                                                                                                                         | Codex  | T14 (needs a `dist/` to point at, but route code itself can be written in parallel) | **Done** — mounted at `/ultra_paint/app` with `check_dir=False` + a startup warning if `dist/` is missing; verified matches T14's `base: "/ultra_paint/app/"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| T17  | New `POST /ultra_paint/api/generate` FastAPI endpoint (`ultra_paint/generate_api.py` + `scripts/ultra_paint_generate_api.py`, registered as its own `on_app_started` hook to avoid a concurrent-edit collision with T16's file): JSON body (composite image data URL + `gen_params`), decodes to `PIL.Image`, runs the existing `queue_lock`/`shared.state.begin/end`/`main_thread.run_and_wait_result(run_generation, ...)` sequence from the old `_on_generate`, returns `{images: [data URLs]}`. Retired `ultra_paint/bridge.py` (deleted — dead once a real POST endpoint exists). `build_img2img_processing`/`run_generation` in `generation.py` unchanged. | Claude | —                                                                                   | **Done**, syntax-checked. Not live-tested (no running server in this environment, same constraint as Phase 1/2).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| T18  | Port `state/layerStore.ts` + `state/paintToolStore.ts` to Svelte 5 runes (`.svelte.ts` modules). Preserve the documented public API surface (PLAN.md §4) so PixiJS-facing code (T22) doesn't need a parallel rewrite — back it with `$state` for serializable metadata (opacity/blend/transform/order) and `$state.raw` for anything holding live PixiJS instances (texture side-map), per the design note already in this section.                                                                                                                                                                                                                              | Codex  | T14                                                                                 | **Done** — `layerStore.svelte.ts`/`paintToolStore.svelte.ts`, identical class names/methods/singleton exports to the originals (verified by Claude), `$state`/`$state.raw` split applied correctly, typecheck/build both passed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| T19  | Port `ui/LayerPanel.ts` (hand-rolled DOM) to Svelte component(s) + Tailwind, dark theme. Re-verify the opacity-slider-starts-a-row-drag bug (Phase 2.5 item 6) against the new DOM — don't assume fixed or broken.                                                                                                                                                                                                                                                                                                                                                                                                                                               | Codex  | T14, T18                                                                            | **Done** — `ui/LayerPanel.svelte`, verified by Claude: full feature parity (thumbnails, inline rename, drag reorder, opacity/blend/visibility/delete), own native-DnD reorder implementation, slider-vs-row-drag bug fixed via a `pointerdowncapture` guard that synchronously toggles `draggable` before any native drag gesture can start (plus a `dragstart` fallback check) — a different, arguably more robust mechanism than the old file's. Confirmed the old manual deferred-render/focusout-polling guard is NOT needed: keyed `{#each layerOrder as id (id)}` blocks mean Svelte's reactivity doesn't tear down focused inputs the way full-DOM-rebuild did. typecheck/build both passed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| T20  | Port `ui/PaintToolbar.ts` to a Svelte component + Tailwind, dark theme.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Codex  | T14, T18                                                                            | **Done** — `ui/PaintToolbar.svelte`, verified by Claude: brush/eraser/fill buttons, size/hardness/opacity sliders with live readouts, color input, all correctly wired to the `paintToolStore` singleton and `getActiveUltraPaintApp()?.fillSelectedLayer()`. typecheck/build both passed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| T21  | Generation-settings panel as Svelte components (prompt/negative/sampler/steps/cfg/denoise/Generate button), replacing the Gradio controls removed in T15. Wire Generate to `POST /ultra_paint/api/generate` (T17) via `fetch`. Fetch sampler/scheduler choices from the new `GET /ultra_paint/api/options` (Claude, added ahead of this task — see note below). Wire the existing `GET /ultra_paint/api/progress` route for live progress display (open item, PLAN.md §5 — folded into this task rather than deferred again). Retire `bridge/pythonBridge.ts`.                                                                                                   | Codex  | T14, T17                                                                            | **Done** — `ui/GenerationPanel.svelte`, verified by Claude: prompt/negative textareas, sampler/scheduler selects populated from `/options`, steps/cfg/denoise as paired range+number inputs, Generate flattens the canvas and POSTs to `/generate`, run-id-guarded progress polling (with a `MAX_PROGRESS_POLLS` safety cutoff) drives a progress bar + live preview image, results land as new layers via `addImageFromDataURL` (Phase 2.5 item 4, resolved here rather than deferred), errors surfaced inline from the response `detail`. typecheck/build both passed. **Scope note:** this Codex session unexpectedly also rewrote `ui/LayerPanel.svelte` (T19's file — a second, independent implementation, functionally equivalent) and deleted the retired `ui/LayerPanel.ts`/`panel.css`/`bridge/pythonBridge.ts` — a real concurrent-edit collision with the T19 agent, caught via file-mtime inspection and a full re-read/re-verify (typecheck 0 errors/0 warnings, build clean) rather than assumed safe. Claude additionally deleted the now-dead `ui/PaintToolbar.ts`/`toolbar.css` (superseded by T20) once T20 was confirmed integrated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| T22  | Mount-shell migration: `UltraPaintApp.ts`'s PixiJS init now mounts inside the new Svelte app's own root elements (own `document`, not a Gradio DOM subtree) — thin `App.svelte` hosting `#upaint-root`/`#upaint-root-toolbar`/`#upaint-root-panel`, `onMount` wiring. Re-evaluate the `ResizeObserver`/pan-zoom-centering workaround for Gradio's hidden-tab-0x0 problem — likely simplifies or is no longer needed since there's no hidden Gradio tab anymore.                                                                                                                                                                                                  | Claude | T14, T18                                                                            | **Done** — `npm run build` (837 modules, full PixiJS renderer bundle) and `npm run typecheck` both pass. Turned out to be broader than "mount shell": swapped `state/layerStore`→`layerStore.svelte`/`paintToolStore`→`paintToolStore.svelte` imports across `LayerTree.ts`/`BrushEngine.ts`/`EraserEngine.ts`/`StrokeController.ts` (type-only, no behavior change — T18 preserved identical class names/method signatures/singleton exports), deleted the old plain-TS `layerStore.ts`/`paintToolStore.ts`, and **stripped the old DOM `LayerPanel`/`PaintToolbar` instantiation out of `UltraPaintApp.ts` entirely** (removed `panelElementId`/`toolbarElementId` options, `mountPanel()`/`mountToolbar()`, `getPanel()`/`getToolbar()`) since that job now belongs to Svelte components mounted directly by `App.svelte` (T19/T20), not to `UltraPaintApp`. Added `getActiveUltraPaintApp()` (module-level singleton getter, mirrors the existing `layerStore`/`paintToolStore` singleton pattern) so those future Svelte components can reach the two instance-bound methods (`addImageFromFile`, `fillSelectedLayer`, the latter promoted to `public`) without prop/context drilling — reactive layer/tool data still comes straight from the `layerStore`/`paintToolStore` singletons. The `ResizeObserver`/pan-zoom-centering workaround in `mountViewportControls` was left as-is (untouched): it's generic DOM code keyed off `root.clientWidth/clientHeight`, already correct for a plain non-Gradio div, no changes needed. Old `ui/LayerPanel.ts`/`PaintToolbar.ts` (+ `panel.css`/`toolbar.css`) are now dead code, deliberately left in place until T19/T20 land — deleted then, not before. |
 
 **Extra task discovered while scoping T21 (2026-08-23, Claude):** the old
 Gradio settings panel got its sampler/scheduler dropdown `choices=` baked in
@@ -1005,6 +2346,7 @@ whether plain Vite still holds once more views (settings, config, etc.) get adde
 and separately floated a bigger possible future — splitting the frontend into its
 own repo with a pluggable (non-REST) backend-adapter API so other generation tools
 could host the same UI. Resolved:
+
 - **More views within this app ≠ a reason for SvelteKit.** Settings/config are
   panels/tabs within one running SPA instance (`activeView`-style conditional
   rendering, or a tiny client-side router if URL sync is wanted), not separate
@@ -1013,7 +2355,7 @@ could host the same UI. Resolved:
   SvelteKit's routing/adapter machinery.
 - **The repo-split / pluggable-backend-adapter idea is explicitly a "just
   exploring" future direction, not a near-term plan** (developer confirmed
-  2026-08-23). Worth remembering *if* it becomes concrete: that's the condition
+  2026-08-23). Worth remembering _if_ it becomes concrete: that's the condition
   that would flip the calculus toward SvelteKit (standalone settings/backend-
   selection screens, `adapter-static` still gives an offline SPA but with routing/
   layouts available if the app needs to stand alone outside any host's iframe). Not
@@ -1052,6 +2394,7 @@ for later.
 ---
 
 ## 6b. Phase 2.75 — Playwright testing infrastructure (COMPLETE — see §3 and the
+
 dated entry near the end of this file; this section is kept as the original design
 record)
 
@@ -1099,6 +2442,7 @@ Two tiers:
 
 **Open design questions, to resolve when this phase actually starts (per §2's
 delivery approach — not pre-deciding these now):**
+
 - Where do tests live — `frontend/tests/` (co-located, npm-script-driven) vs a
   top-level `tests/` dir?
 - Route-interception-only, or also build the real stub server from day one?
@@ -1136,19 +2480,20 @@ live-tested by the developer.
 
 ### Phase 2 task breakdown (starts now — Phase 1 confirmed working)
 
-| Task | What | Notes |
-|---|---|---|
-| T7 | Paintable raster layer backing | Done — uploaded/generated images are copied once into store-owned `RenderTexture`s. Existing `ImageRef`/`LayerStore` metadata shape doesn't need to change — this is a `LayerNode`/texture-lifetime concern, not a schema concern. Get a layer's texture via `store.getTexture(layerId)`; paint into it via `app.renderer.render({ container, target: texture, clear: false })` — no store emit or sprite-swap needed, the layer's sprite already references that texture. |
-| T8 | Pointer/stroke capture | Done — left-pointer capture uses `Container.toLocal()` through the pan/zoom chain, consumes coalesced events, and builds evenly interpolated document-space stroke points with pointer capture through stroke end. |
-| T9 | Brush stamping | Done — each stroke rasterizes one reusable PixiJS radial-gradient stamp, then writes it at radius-scaled spacing into the selected layer's existing `RenderTexture`; hardness controls the opaque-core-to-feather boundary. |
-| T10 | Eraser | Done — transformed radial stamps use PixiJS v8's `"erase"` blend mode to subtract target RGBA, with the shared size/hardness/opacity settings. |
-| T11 | Fill tool | Done — the toolbar's Fill action clears and fills the selected raster layer's `RenderTexture` with the current brush color and opacity; connected-region flood fill remains a stretch goal. |
-| T12 | Toolbar UI + color/size/hardness controls | Done — `#upaint-root-toolbar` hosts brush, eraser, and fill controls plus size, hardness, opacity, and color, backed by shared `PaintToolStore` state. |
-| T13 | Undo/redo | Done — one affected-layer `RenderTexture` GPU snapshot per brush/eraser stroke or fill, combined with lightweight state entries for reorder/opacity/blend/visibility/name/transform/document size in a 40-entry history; Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, and Ctrl/Cmd+Y work while the canvas is focused, and add/remove/clear invalidate history. |
+| Task | What                                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T7   | Paintable raster layer backing            | Done — uploaded/generated images are copied once into store-owned `RenderTexture`s. Existing `ImageRef`/`LayerStore` metadata shape doesn't need to change — this is a `LayerNode`/texture-lifetime concern, not a schema concern. Get a layer's texture via `store.getTexture(layerId)`; paint into it via `app.renderer.render({ container, target: texture, clear: false })` — no store emit or sprite-swap needed, the layer's sprite already references that texture. |
+| T8   | Pointer/stroke capture                    | Done — left-pointer capture uses `Container.toLocal()` through the pan/zoom chain, consumes coalesced events, and builds evenly interpolated document-space stroke points with pointer capture through stroke end.                                                                                                                                                                                                                                                         |
+| T9   | Brush stamping                            | Done — each stroke rasterizes one reusable PixiJS radial-gradient stamp, then writes it at radius-scaled spacing into the selected layer's existing `RenderTexture`; hardness controls the opaque-core-to-feather boundary.                                                                                                                                                                                                                                                |
+| T10  | Eraser                                    | Done — transformed radial stamps use PixiJS v8's `"erase"` blend mode to subtract target RGBA, with the shared size/hardness/opacity settings.                                                                                                                                                                                                                                                                                                                             |
+| T11  | Fill tool                                 | Done — the toolbar's Fill action clears and fills the selected raster layer's `RenderTexture` with the current brush color and opacity; connected-region flood fill remains a stretch goal.                                                                                                                                                                                                                                                                                |
+| T12  | Toolbar UI + color/size/hardness controls | Done — `#upaint-root-toolbar` hosts brush, eraser, and fill controls plus size, hardness, opacity, and color, backed by shared `PaintToolStore` state.                                                                                                                                                                                                                                                                                                                     |
+| T13  | Undo/redo                                 | Done — one affected-layer `RenderTexture` GPU snapshot per brush/eraser stroke or fill, combined with lightweight state entries for reorder/opacity/blend/visibility/name/transform/document size in a 40-entry history; Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, and Ctrl/Cmd+Y work while the canvas is focused, and add/remove/clear invalidate history.                                                                                                                           |
 
 Suggested build order: T7 → T8 → T9 (brush working end-to-end) → T12 (so brush is
 actually usable/testable in the browser) → T10 → T11 → T13 last, since undo needs
 the other tools' mutation shapes to exist first.
+
 - **Phase 2.R — migrate to an embedded custom-HTML app (Svelte), replacing the
   Gradio-component tab.** Decided 2026-08-23, full detail in §6a. **COMPLETE**
   (2026-08-23, static/build-verified, not yet live-tested — see §3). T14-T22 all
@@ -1183,8 +2528,8 @@ the other tools' mutation shapes to exist first.
     with the tab-bar-height offset measured once (before the wrapper is ever
     taken out of normal flow) and reused on every later tab switch, to avoid
     a feedback loop where reading `getBoundingClientRect()` after `position:
-    fixed` is already applied would read back a stale/zeroed value. `node
-    --check` passed. Not yet live-confirmed.
+fixed` is already applied would read back a stale/zeroed value. `node
+--check` passed. Not yet live-confirmed.
   - **Item 6 (opacity slider starts a row-drag): RE-VERIFIED AND FIXED by T19/T21's
     `LayerPanel.svelte`** — rows start non-draggable and are armed for dragging only
     via a capture-phase `pointerdown` check that excludes interactive targets
@@ -1233,6 +2578,7 @@ the other tools' mutation shapes to exist first.
 
 **LIVE TEST SESSION, round 2 (2026-08-23, developer live-testing Phase 2.R):**
 Two issues found and fixed:
+
 1. **Generate button position** — moved above the prompt fields in
    `ui/GenerationPanel.svelte` (was at the bottom of the panel).
 2. **Real bug: wrong-resolution/misaligned Generate output.** Root cause: the
@@ -1252,7 +2598,7 @@ Two issues found and fixed:
    - **Sub-canvas visualization**, directly from the developer's own
      suggestion: `UltraPaintApp.init()` (`app/UltraPaintApp.ts`) now gives
      `tree.root` a rectangular `Graphics` mask sized to `doc.width x
-     doc.height` (clips on-screen rendering to the document bounds, same
+doc.height` (clips on-screen rendering to the document bounds, same
      paradigm as Photoshop/Krita -- content painted outside the boundary
      still exists in the layer's texture, it's just not shown or exported),
      plus a separate unmasked `Graphics` stroke outline in the app's accent
@@ -1264,7 +2610,7 @@ Two issues found and fixed:
      **purely a visual fix** — `flatten()` already only ever captured exactly
      `doc.width x doc.height` regardless of the mask, so Generate's actual
      output was already correctly bounded once the document size itself was
-     right; the mask's job is making that boundary visible *before* you hit
+     right; the mask's job is making that boundary visible _before_ you hit
      Generate, not changing what gets sent.
 
    `npm run typecheck`/`npm run build` both pass clean (840 modules, 0
@@ -1279,15 +2625,15 @@ looked like a mostly-blank/gray composite had been sent for img2img (a
 low-denoise pass over near-nothing). **Root cause, confirmed against PixiJS
 v8's actual source** (`node_modules/pixi.js/lib/rendering/renderers/shared/system/AbstractRenderer.mjs`,
 not assumed): `renderer.render({container})` computes its render transform
-from `container.updateLocalTransform()`/`.localTransform` *only* -- it never
+from `container.updateLocalTransform()`/`.localTransform` _only_ -- it never
 composes with the container's real ancestor chain. `Compositor.flatten()`
 already relied on this correctly for `tree.root` itself (resetting root's own
-transform is sufficient; `world`'s live pan/zoom on `root`'s *parent* was
+transform is sufficient; `world`'s live pan/zoom on `root`'s _parent_ was
 never going to leak in regardless). But the round-2 document-bounds mask
 (`root.mask = boundsMask`) lives on `boundsMask`, a **sibling** of `root`
 under `world`, not a descendant -- so during `flatten()`'s special direct
 render call, `boundsMask`'s clip geometry still reflected whatever transform
-it had from the last *normal* per-frame render (which DOES include `world`'s
+it had from the last _normal_ per-frame render (which DOES include `world`'s
 live pan/zoom), while `root`'s content was being rendered in a
 freshly-reset, un-panned/unzoomed space. The two disagreed the moment the
 user was anything other than exactly-centered/unzoomed when clicking
@@ -1304,7 +2650,7 @@ cannot affect what gets exported, regardless of pan/zoom state at click time.
 **LIVE TEST SESSION, round 4 (2026-08-23): the round-3 fix was incomplete —
 a second, distinct problem from the same feature.** The gray-border/detached
 symptom was gone, but the developer found the layer's rendered content still
-visibly *shrinks* within the document-bounds outline, and critically: it
+visibly _shrinks_ within the document-bounds outline, and critically: it
 happens the instant Generate is clicked, before the network request even
 starts. The only code that runs synchronously on click before the `fetch` is
 `flattenToDataURL()` — i.e. still the mask, not the generation result itself.
@@ -1314,7 +2660,7 @@ stencil-mask pooling / render-group state (`MaskEffectManager`,
 `StencilMask.init/reset`, `Container.enableRenderGroup()`) actually behaves
 as expected across a manual off-cycle `renderer.render()` call — the kind of
 thing that needs a live browser to confirm, not static source reading (round
-3's fix *was* verified against real PixiJS source and was still incomplete,
+3's fix _was_ verified against real PixiJS source and was still incomplete,
 which is the point). The document-bounds **outline** (a plain unmasked
 `Graphics` stroke, always known to be low-risk, nothing ever indicated it was
 broken) is kept; the **clip** (`tree.root.mask = boundsMask`) is removed.
@@ -1330,60 +2676,60 @@ pass clean. **Not yet live-confirmed** — this is now the fourth live-test
 round on Generate specifically; strongly recommend the next round tests
 Generate in isolation (no other changes bundled) before moving on.
 
-  1. **Canvas controls — SUPERSEDED (2026-08-23).** The original fixed
-     document-width/document-height controls were replaced by the Invoke-style
-     boundary-box operating region documented in the dated section below.
-  2. **Blank/general raster layers.** Right now the only way to create a raster
-     layer is `addImageFromFile`/`addImageFromDataURL` (`UltraPaintApp.ts`) — both
-     require an actual image. Need a "+ Add blank layer" path that creates an empty
-     (fully transparent) `RenderTexture` at document dimensions via
-     `LayerStore.addRasterLayer()`, so a user can paint on a fresh layer without
-     uploading anything first.
-  3. **Brush opacity built up wrong *within* a single stroke — FIXED
-     (2026-08-23; typecheck/build-verified, not live-browser-confirmed).** Diagnosed root
-     cause: `BrushEngine.ts`'s `BrushStroke.addPoints()` renders each stamp straight
-     onto the target `RenderTexture` with normal alpha "over" compositing
-     (`clear: false`), and stamps within one stroke overlap heavily (spacing is
-     `radius * 0.25`, i.e. dense). Every overlapping stamp re-composites on top of
-     the previous one, so opacity keeps accumulating in overlap regions for the
-     *entire duration of one continuous stroke* — the screenshot shows visibly
-     darker patches where the stroke self-overlapped. Standard painting-app
-     behavior (confirmed by the developer's reference screenshot: 3 *separate*
-     strokes at the same opacity DO visibly build up on each other, which is
-     correct) is that build-up should only happen *between* strokes, not *within*
-     one. Implemented in `frontend/src/paint/ConsistentOpacityStroke.ts`: stamp
-     coverage accumulates in a per-stroke scratch `RenderTexture` using `max`
-     blending, then the scratch texture is composited once at `end()` using the
-     selected opacity. `BrushEngine.ts` and `EraserEngine.ts` are now thin
-     tool-specific wrappers over that shared implementation, also resolving the
-     BrushEngine/EraserEngine stamp-compositing duplication noted in the Phase 2
-     code review. Static verification passed (`npm run typecheck`, `npm run build`);
-     not live-browser-confirmed because no dev server/browser is available here,
-     and this interaction remains best verified with Playwright or a live session.
-  4. **Generated images should land as a layer, not a separate gallery.** Currently
-     Generate results go to `#upaint-gallery` (see PLAN.md §4 elem_id table), a
-     stock Gradio gallery component separate from the layer stack. Should instead
-     call `UltraPaintApp.addImageFromDataURL()` (already exists, already used by
-     the Python bridge conceptually) to push the result directly onto the layer
-     stack as a new raster layer, matching the "layers are the working surface"
-     model instead of a side-channel output view.
-  5. **Canvas viewport doesn't reach the bottom of the screen.** Layout/CSS sizing
-     issue in the center canvas column (`scripts/ultra_paint_tab.py` /
-     `UltraPaintApp.ts`'s `resizeTo: root` wiring) — the `#upaint-root` container
-     is not filling available vertical space down to the page bottom. Needs
-     investigation into what's constraining its height inside the Gradio column.
-  6. **Layer-panel opacity slider still starts a row-drag, not fixed by the Phase 2
-     Task A fix.** Developer screenshot shows the classic HTML5 native
-     drag-and-drop "ghost" image (a translucent copy of the dragged element
-     following the cursor) when attempting to drag the opacity slider thumb — i.e.
-     the row-level `draggable=true` is still winning over the `<input
-     type="range">`'s own drag gesture, exactly the bug PLAN.md previously recorded
-     as fixed in `LayerPanel.ts`'s `attachDragHandlers`/`renderRow`. Either that fix
-     didn't fully work (e.g. the interactive-control check in `dragstart` doesn't
-     catch every code path pointerdown can take before dragstart fires) or there's
-     a regression from a later change. Needs fresh investigation directly in
-     `frontend/src/ui/LayerPanel.ts`, re-reading the current state of
-     `attachDragHandlers` rather than assuming the old fix's diff is still correct.
+1. **Canvas controls — SUPERSEDED (2026-08-23).** The original fixed
+   document-width/document-height controls were replaced by the Invoke-style
+   boundary-box operating region documented in the dated section below.
+2. **Blank/general raster layers.** Right now the only way to create a raster
+   layer is `addImageFromFile`/`addImageFromDataURL` (`UltraPaintApp.ts`) — both
+   require an actual image. Need a "+ Add blank layer" path that creates an empty
+   (fully transparent) `RenderTexture` at document dimensions via
+   `LayerStore.addRasterLayer()`, so a user can paint on a fresh layer without
+   uploading anything first.
+3. **Brush opacity built up wrong _within_ a single stroke — FIXED
+   (2026-08-23; typecheck/build-verified, not live-browser-confirmed).** Diagnosed root
+   cause: `BrushEngine.ts`'s `BrushStroke.addPoints()` renders each stamp straight
+   onto the target `RenderTexture` with normal alpha "over" compositing
+   (`clear: false`), and stamps within one stroke overlap heavily (spacing is
+   `radius * 0.25`, i.e. dense). Every overlapping stamp re-composites on top of
+   the previous one, so opacity keeps accumulating in overlap regions for the
+   _entire duration of one continuous stroke_ — the screenshot shows visibly
+   darker patches where the stroke self-overlapped. Standard painting-app
+   behavior (confirmed by the developer's reference screenshot: 3 _separate_
+   strokes at the same opacity DO visibly build up on each other, which is
+   correct) is that build-up should only happen _between_ strokes, not _within_
+   one. Implemented in `frontend/src/paint/ConsistentOpacityStroke.ts`: stamp
+   coverage accumulates in a per-stroke scratch `RenderTexture` using `max`
+   blending, then the scratch texture is composited once at `end()` using the
+   selected opacity. `BrushEngine.ts` and `EraserEngine.ts` are now thin
+   tool-specific wrappers over that shared implementation, also resolving the
+   BrushEngine/EraserEngine stamp-compositing duplication noted in the Phase 2
+   code review. Static verification passed (`npm run typecheck`, `npm run build`);
+   not live-browser-confirmed because no dev server/browser is available here,
+   and this interaction remains best verified with Playwright or a live session.
+4. **Generated images should land as a layer, not a separate gallery.** Currently
+   Generate results go to `#upaint-gallery` (see PLAN.md §4 elem_id table), a
+   stock Gradio gallery component separate from the layer stack. Should instead
+   call `UltraPaintApp.addImageFromDataURL()` (already exists, already used by
+   the Python bridge conceptually) to push the result directly onto the layer
+   stack as a new raster layer, matching the "layers are the working surface"
+   model instead of a side-channel output view.
+5. **Canvas viewport doesn't reach the bottom of the screen.** Layout/CSS sizing
+   issue in the center canvas column (`scripts/ultra_paint_tab.py` /
+   `UltraPaintApp.ts`'s `resizeTo: root` wiring) — the `#upaint-root` container
+   is not filling available vertical space down to the page bottom. Needs
+   investigation into what's constraining its height inside the Gradio column.
+6. **Layer-panel opacity slider still starts a row-drag, not fixed by the Phase 2
+   Task A fix.** Developer screenshot shows the classic HTML5 native
+   drag-and-drop "ghost" image (a translucent copy of the dragged element
+   following the cursor) when attempting to drag the opacity slider thumb — i.e.
+   the row-level `draggable=true` is still winning over the `<input
+type="range">`'s own drag gesture, exactly the bug PLAN.md previously recorded
+   as fixed in `LayerPanel.ts`'s `attachDragHandlers`/`renderRow`. Either that fix
+   didn't fully work (e.g. the interactive-control check in `dragstart` doesn't
+   catch every code path pointerdown can take before dragstart fires) or there's
+   a regression from a later change. Needs fresh investigation directly in
+   `frontend/src/ui/LayerPanel.ts`, re-reading the current state of
+   `attachDragHandlers` rather than assuming the old fix's diff is still correct.
 
 - **Phase 2.75 — Playwright testing infrastructure. COMPLETE (2026-08-24).** Decided
   2026-08-23 (developer request, prompted directly by round 2-4 of Generate
@@ -1391,7 +2737,7 @@ Generate in isolation (no other changes bundled) before moving on.
   couldn't catch, each needing a live round-trip with the developer to find). 4/4
   tests passing against a real installed Chromium — see §3 and the dated entry near
   the end of this file for detail and the current coverage gap (eraser/fill/
-  undo-redo/layer-management/real-backend are not yet covered). Ran *before* Phase 3
+  undo-redo/layer-management/real-backend are not yet covered). Ran _before_ Phase 3
   as planned, so the boundary box below already has baseline interactive coverage
   before masking adds more canvas interaction on top of it.
 - **Phase 3 — InvokeAI-style boundary box, masking, auto-res inpainting. NEXT UP —
@@ -1405,8 +2751,8 @@ Generate in isolation (no other changes bundled) before moving on.
 - **Phase 4 — Multi-layer ControlNet.** Populates the reserved `LayerBase.controlNet`
   field; any layer can be assigned to a CN unit slot. No external ControlNet API
   exists in this fork — attach via `p.script_args[cn.args_from + i] =
-  ControlNetUnit(...)`, found via `next(s for s in p.scripts.alwayson_scripts if
-  s.title() == "ControlNet")`. Reuse the existing `image_fg`/`mask_image_fg`
+ControlNetUnit(...)`, found via `next(s for s in p.scripts.alwayson_scripts if
+s.title() == "ControlNet")`. Reuse the existing `image_fg`/`mask_image_fg`
   alpha-channel per-unit masking idiom rather than inventing regional conditioning.
 - **Phase 5 — Groups, transforms, selection, shape tools.** Activates the `"group"`
   `LayerKind` fully (already structurally supported by `LayerTree`'s reconciliation
@@ -1429,13 +2775,14 @@ don't pre-plan implementation details for phases 2+ speculatively.
 original roadmap bullet:** masks are a distinct layer kind, not a per-layer
 `LayerBase.mask` attachment — `LayerBase.mask` stays reserved/unused, that field
 was too vague to build against directly. Concretely:
+
 - New `LayerKind` value `"mask"`. Mask layers live in their own collapsible
   accordion section in the layer panel, separate from an accordion holding the
   existing raster/group layers (both accordions new — today's panel is one flat
   list).
-- Mask layers are painted with the *existing* brush/eraser tool and stroke
+- Mask layers are painted with the _existing_ brush/eraser tool and stroke
   pipeline, unchanged — no new paint engine. Only coverage (alpha) painted into
-  the mask layer's texture matters; the *color* the brush happens to be set to
+  the mask layer's texture matters; the _color_ the brush happens to be set to
   when painting is irrelevant to a mask layer and must not leak into the
   exported mask (see Compositor task below).
 - Each mask layer has one solid display color, chosen per-layer (a color swatch
@@ -1450,26 +2797,26 @@ was too vague to build against directly. Concretely:
   soft/partial edges preserved from brush hardness) and sent to the backend
   alongside the composite image.
 
-| Task | What | Owner |
-|---|---|---|
-| T23 | `ultra_paint/model_profile.py` — pure function(s) mapping a loaded model to a native/recommended resolution. Input should be duck-typed (accept anything with `.is_sd1`/`.is_sdxl`/`.is_wan` attributes plus a class-name string), not a hard `shared` import, so it is unit-testable without a running Forge instance. Table from research (2026-08-24): SD1.x (`is_sd1`) -> 512; SDXL/Mugen (`is_sdxl`) -> 1024; Flux/Flux2/Chroma/Lumina2/ErnieImage/PiD/ZImage (class-name match, no dedicated boolean) -> 1024; Wan/Qwen/Anima/Krea2 (`is_wan` — note this flag is really "WAN-VAE latent layout", reused by non-video models, not a clean architecture signal by itself) -> 1024 unless a more specific class-name match applies. Unknown/no model loaded (bare `FakeInitialModel`, missing attributes) -> safe fallback 512, via `getattr(..., False)` guards, never `AttributeError`. Full class-name list and file:line citations are in the 2026-08-24 research note this table is built from (kept in agent history, not re-copied here — re-derive from `backend/diffusion_engine/*.py` if this table ever needs updating). | Claude |
-| T24 | Backend generation.py / generate_api.py wiring. `GenerateRequest` gets an optional `mask_image: str \| None` (same data-URL shape as `composite_image`). New `GEN_PARAM_DEFAULTS` keys: `inpainting_fill` (0-3, default 1 = "original", matching `modules/processing.py`'s own default), `inpaint_full_res` (bool, default `True` — but only meaningful when a mask is present), `inpaint_full_res_padding` (px, default 32), `mask_blur` (px, default 4), `inpainting_mask_invert` (0/1, default 0). `build_img2img_processing` decodes `mask_image` (reuse `generate_api.py`'s `_decode_data_url`, convert to `"L"` not `"RGBA"` for the mask), passes it as `mask=`, and only when a mask is present: if the boundary box is smaller than `model_profile`'s native resolution for `shared.sd_model`, set `inpaint_full_res=True` (crop-and-upscale-to-native path); otherwise leave the developer's `inpaint_full_res` choice alone. No mask -> `mask=None`, exactly today's Phase 1 behavior, unchanged. | Claude |
-| T25 | Backend unit tests (pytest, no running Forge instance needed). `model_profile.py`: cover every class-name branch, both boolean flags, the `getattr`-guarded unknown-model fallback, and boundary sizes (native-1, native, native+1). `generation.py`: mock `modules.shared`/`modules.processing`/`modules.scripts` at import boundaries and assert `build_img2img_processing` produces the right `mask`/`inpaint_full_res`/`inpainting_fill`/`mask_blur` fields for (a) no mask, (b) mask + undersized box, (c) mask + adequately-sized box. New test files live under `extensions/sd-forge-ultra-paint/tests/` (no test infra exists anywhere in this repo yet — this is the first). | Claude |
-| T26 | Frontend schema/store. `frontend/src/state/schema.ts`: add `"mask"` to `LayerKind`, new `MaskLayer extends LayerBase { kind: "mask"; image: ImageRef; color: string }` (hex string), add to the `Layer` union. `layerStore.svelte.ts`: `addMaskLayer(name?, color?): LayerId` mirroring `addBlankLayer()` (document/boundary-box-sized transparent texture, positioned at `boundaryBox.x/y` — same fix class as the 2026-08-24 blank-layer-positioning bug, don't reintroduce it), `setMaskColor(id, color)`. Audit every existing `kind === "raster"` / `kind === "group"` switch (`LayerTree.ts` reconciliation, `Compositor.ts`, `StrokeController.ts`'s raster-only gate, `LayerPanel.svelte` thumbnail/icon logic) for exhaustiveness now that a third kind exists — TypeScript's discriminated-union exhaustiveness checking should catch most of these at `npm run typecheck` if switches use a `never` default case; add one anywhere it's missing. | Codex (gpt-5.6-sol) |
-| T27 | Paint pipeline. `StrokeController.handlePointerDown`'s raster-only gate (`layer.kind !== "raster"`) must also accept `"mask"`. `BrushEngine`/`EraserEngine`/`ConsistentOpacityStroke` need no logic changes — they already only care about a texture + `LayerTree` node, and mask-layer coverage painting is semantically identical to raster alpha painting; verify `LayerTree`'s node kind check (used by `BrushEngine.beginStroke`, currently `node.kind !== "raster"`) is updated to allow `"mask"` too. | Codex (gpt-5.6-sol) |
-| T28 | Mask display filter. New `frontend/src/scene/MaskHatchFilter.ts` (or similar), a PixiJS `Filter` (consult the `pixijs-filters` skill) applied only to mask-kind layer nodes' sprites: forces output RGB to the mask layer's chosen color wherever the source has coverage (alpha > 0), modulated by a diagonal-stripe pattern (e.g. `mod(fragCoord.x - fragCoord.y, spacing)`) so painted regions read as a colored hatch, not flat fill. Purely a display effect — never touches the underlying `RenderTexture`. `LayerTree` (or `LayerNode`) attaches/updates this filter (and its color uniform) for mask nodes only, removes it for everything else. | Codex (gpt-5.6-sol) |
-| T29 | Layer panel UI. `LayerPanel.svelte`: split the flat list into two collapsible accordion sections — "Layers" (raster + group, existing rows unchanged) and "Masks" (new). A "+ Mask" toolbar button (next to "+ Add"/"+ Blank") calls `addMaskLayer()`. Mask rows reuse the existing row layout but swap the opacity-slider grid cell for a `<input type="color">` bound to `setMaskColor`; no opacity control, no blend-mode `<select>` (masks don't composite into the visible image at all — see T30/T31, they're export-only). Keep the existing drag-reorder/rename/visibility/delete affordances working for mask rows within their own accordion (reordering across accordions is out of scope — masks and layers are independent stacks). | Codex (gpt-5.6-sol) |
-| T30 | Mask export. `Compositor.flattenMask(app, store, box): string \| null` — returns `null` if no visible mask layer exists (so the frontend can omit `mask_image` from the request entirely, preserving today's no-mask behavior byte-for-byte). Otherwise: build a temporary container of plain (unfiltered — do NOT reuse the T28 hatch-filtered sprites) sprites for every visible mask-kind layer within `boundaryBox`, apply a `ColorMatrixFilter` per sprite with matrix `[0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,1,0]` (forces RGB to pure white, alpha untouched, regardless of source pixel color — this is what makes the brush's arbitrary paint color irrelevant to the export, per the design note above), render onto an opaque black-cleared `RenderTexture` sized to the box (mirrors `flatten()`'s crop-to-box approach), export as PNG data URL. `UltraPaintApp`/`GenerationPanel.svelte`: call this alongside `flattenToDataURL()` on Generate, include `mask_image` in the POST body only when non-null. | Codex (gpt-5.6-sol) |
-| T31 | Playwright coverage. Extend `frontend/tests/e2e/ultra-paint.spec.ts`: add a mask layer via the new "+ Mask" button and assert it appears under the Masks accordion (not Layers); paint a stroke on it and assert `Compositor.flattenMask()` (or an equivalent app-exposed hook) returns a non-null data URL with the expected painted-pixel coverage, mirroring the existing brush-paint pixel-check test; assert the stubbed Generate flow includes `mask_image` in its request body when a mask layer has paint, and omits it when none exists. This is additive to the existing 4 tests, not a rewrite — keep them passing. | Codex (gpt-5.6-sol) |
+| Task | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Owner               |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| T23  | `ultra_paint/model_profile.py` — pure function(s) mapping a loaded model to a native/recommended resolution. Input should be duck-typed (accept anything with `.is_sd1`/`.is_sdxl`/`.is_wan` attributes plus a class-name string), not a hard `shared` import, so it is unit-testable without a running Forge instance. Table from research (2026-08-24): SD1.x (`is_sd1`) -> 512; SDXL/Mugen (`is_sdxl`) -> 1024; Flux/Flux2/Chroma/Lumina2/ErnieImage/PiD/ZImage (class-name match, no dedicated boolean) -> 1024; Wan/Qwen/Anima/Krea2 (`is_wan` — note this flag is really "WAN-VAE latent layout", reused by non-video models, not a clean architecture signal by itself) -> 1024 unless a more specific class-name match applies. Unknown/no model loaded (bare `FakeInitialModel`, missing attributes) -> safe fallback 512, via `getattr(..., False)` guards, never `AttributeError`. Full class-name list and file:line citations are in the 2026-08-24 research note this table is built from (kept in agent history, not re-copied here — re-derive from `backend/diffusion_engine/*.py` if this table ever needs updating). | Claude              |
+| T24  | Backend generation.py / generate_api.py wiring. `GenerateRequest` gets an optional `mask_image: str \| None` (same data-URL shape as `composite_image`). New `GEN_PARAM_DEFAULTS` keys: `inpainting_fill` (0-3, default 1 = "original", matching `modules/processing.py`'s own default), `inpaint_full_res` (bool, default `True` — but only meaningful when a mask is present), `inpaint_full_res_padding` (px, default 32), `mask_blur` (px, default 4), `inpainting_mask_invert` (0/1, default 0). `build_img2img_processing` decodes `mask_image` (reuse `generate_api.py`'s `_decode_data_url`, convert to `"L"` not `"RGBA"` for the mask), passes it as `mask=`, and only when a mask is present: if the boundary box is smaller than `model_profile`'s native resolution for `shared.sd_model`, set `inpaint_full_res=True` (crop-and-upscale-to-native path); otherwise leave the developer's `inpaint_full_res` choice alone. No mask -> `mask=None`, exactly today's Phase 1 behavior, unchanged.                                                                                                                            | Claude              |
+| T25  | Backend unit tests (pytest, no running Forge instance needed). `model_profile.py`: cover every class-name branch, both boolean flags, the `getattr`-guarded unknown-model fallback, and boundary sizes (native-1, native, native+1). `generation.py`: mock `modules.shared`/`modules.processing`/`modules.scripts` at import boundaries and assert `build_img2img_processing` produces the right `mask`/`inpaint_full_res`/`inpainting_fill`/`mask_blur` fields for (a) no mask, (b) mask + undersized box, (c) mask + adequately-sized box. New test files live under `extensions/sd-forge-ultra-paint/tests/` (no test infra exists anywhere in this repo yet — this is the first).                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Claude              |
+| T26  | Frontend schema/store. `frontend/src/state/schema.ts`: add `"mask"` to `LayerKind`, new `MaskLayer extends LayerBase { kind: "mask"; image: ImageRef; color: string }` (hex string), add to the `Layer` union. `layerStore.svelte.ts`: `addMaskLayer(name?, color?): LayerId` mirroring `addBlankLayer()` (document/boundary-box-sized transparent texture, positioned at `boundaryBox.x/y` — same fix class as the 2026-08-24 blank-layer-positioning bug, don't reintroduce it), `setMaskColor(id, color)`. Audit every existing `kind === "raster"` / `kind === "group"` switch (`LayerTree.ts` reconciliation, `Compositor.ts`, `StrokeController.ts`'s raster-only gate, `LayerPanel.svelte` thumbnail/icon logic) for exhaustiveness now that a third kind exists — TypeScript's discriminated-union exhaustiveness checking should catch most of these at `npm run typecheck` if switches use a `never` default case; add one anywhere it's missing.                                                                                                                                                                             | Codex (gpt-5.6-sol) |
+| T27  | Paint pipeline. `StrokeController.handlePointerDown`'s raster-only gate (`layer.kind !== "raster"`) must also accept `"mask"`. `BrushEngine`/`EraserEngine`/`ConsistentOpacityStroke` need no logic changes — they already only care about a texture + `LayerTree` node, and mask-layer coverage painting is semantically identical to raster alpha painting; verify `LayerTree`'s node kind check (used by `BrushEngine.beginStroke`, currently `node.kind !== "raster"`) is updated to allow `"mask"` too.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Codex (gpt-5.6-sol) |
+| T28  | Mask display filter. New `frontend/src/scene/MaskHatchFilter.ts` (or similar), a PixiJS `Filter` (consult the `pixijs-filters` skill) applied only to mask-kind layer nodes' sprites: forces output RGB to the mask layer's chosen color wherever the source has coverage (alpha > 0), modulated by a diagonal-stripe pattern (e.g. `mod(fragCoord.x - fragCoord.y, spacing)`) so painted regions read as a colored hatch, not flat fill. Purely a display effect — never touches the underlying `RenderTexture`. `LayerTree` (or `LayerNode`) attaches/updates this filter (and its color uniform) for mask nodes only, removes it for everything else.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Codex (gpt-5.6-sol) |
+| T29  | Layer panel UI. `LayerPanel.svelte`: split the flat list into two collapsible accordion sections — "Layers" (raster + group, existing rows unchanged) and "Masks" (new). A "+ Mask" toolbar button (next to "+ Add"/"+ Blank") calls `addMaskLayer()`. Mask rows reuse the existing row layout but swap the opacity-slider grid cell for a `<input type="color">` bound to `setMaskColor`; no opacity control, no blend-mode `<select>` (masks don't composite into the visible image at all — see T30/T31, they're export-only). Keep the existing drag-reorder/rename/visibility/delete affordances working for mask rows within their own accordion (reordering across accordions is out of scope — masks and layers are independent stacks).                                                                                                                                                                                                                                                                                                                                                                                        | Codex (gpt-5.6-sol) |
+| T30  | Mask export. `Compositor.flattenMask(app, store, box): string \| null` — returns `null` if no visible mask layer exists (so the frontend can omit `mask_image` from the request entirely, preserving today's no-mask behavior byte-for-byte). Otherwise: build a temporary container of plain (unfiltered — do NOT reuse the T28 hatch-filtered sprites) sprites for every visible mask-kind layer within `boundaryBox`, apply a `ColorMatrixFilter` per sprite with matrix `[0,0,0,0,1, 0,0,0,0,1, 0,0,0,0,1, 0,0,0,1,0]` (forces RGB to pure white, alpha untouched, regardless of source pixel color — this is what makes the brush's arbitrary paint color irrelevant to the export, per the design note above), render onto an opaque black-cleared `RenderTexture` sized to the box (mirrors `flatten()`'s crop-to-box approach), export as PNG data URL. `UltraPaintApp`/`GenerationPanel.svelte`: call this alongside `flattenToDataURL()` on Generate, include `mask_image` in the POST body only when non-null.                                                                                                               | Codex (gpt-5.6-sol) |
+| T31  | Playwright coverage. Extend `frontend/tests/e2e/ultra-paint.spec.ts`: add a mask layer via the new "+ Mask" button and assert it appears under the Masks accordion (not Layers); paint a stroke on it and assert `Compositor.flattenMask()` (or an equivalent app-exposed hook) returns a non-null data URL with the expected painted-pixel coverage, mirroring the existing brush-paint pixel-check test; assert the stubbed Generate flow includes `mask_image` in its request body when a mask layer has paint, and omits it when none exists. This is additive to the existing 4 tests, not a rewrite — keep them passing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Codex (gpt-5.6-sol) |
 
-| Frontend task | Status |
-|---|---|
-| T26 | **Done** — added the mask discriminant/data shape and boundary-box-positioned mask texture/color store API in `frontend/src/state/schema.ts` and `frontend/src/state/layerStore.svelte.ts`; made `frontend/src/scene/LayerNode.ts`/`LayerTree.ts` exhaustive for all three kinds. Verified by typecheck, production build, and browser suite. |
-| T27 | **Done** — admitted masks through `frontend/src/paint/StrokeController.ts`, `BrushEngine.ts`, `EraserEngine.ts`, the store's texture growth/replacement guards, and `frontend/src/app/UltraPaintApp.ts` pixel history. `ConsistentOpacityStroke.ts` remained unchanged as designed. Verified by a real pointer stroke and pixel-readback Playwright test. |
-| T28 | **Done** — added `frontend/src/scene/MaskHatchFilter.ts` with PixiJS v8 WebGL/WebGPU filter programs and lifecycle/color updates from `LayerNode.ts`; the source `RenderTexture` stays untouched. Verified the WebGL path in Chromium with no console/page errors and mask export pixel checks; the WebGPU program was build/typechecked but not runtime-selected by Playwright. |
-| T29 | **Done** — split `frontend/src/ui/LayerPanel.svelte` into collapsible Layers/Masks stacks, added `+ Mask`, mask color controls, and same-stack rename/visibility/reorder/delete behavior. Verified all new controls in Playwright. |
-| T30 | **Done** — added black/white mask flattening with the specified `ColorMatrixFilter` matrix in `frontend/src/scene/Compositor.ts`, excluded mask overlays from normal flattening and exposed mask export in `frontend/src/app/UltraPaintApp.ts`, and conditionally posted `mask_image` from `frontend/src/ui/GenerationPanel.svelte`. Verified white painted coverage, black background, transparent regular composite, and both request shapes in Chromium. |
-| T31 | **Done** — extended `frontend/tests/e2e/ultra-paint.spec.ts` additively from 4 to 7 tests. Final verification: `npm run typecheck` 0 errors/0 warnings; `npm run build` clean (844 modules); `npm run test:e2e` 7 passed, 0 failed. |
+| Frontend task | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T26           | **Done** — added the mask discriminant/data shape and boundary-box-positioned mask texture/color store API in `frontend/src/state/schema.ts` and `frontend/src/state/layerStore.svelte.ts`; made `frontend/src/scene/LayerNode.ts`/`LayerTree.ts` exhaustive for all three kinds. Verified by typecheck, production build, and browser suite.                                                                                                               |
+| T27           | **Done** — admitted masks through `frontend/src/paint/StrokeController.ts`, `BrushEngine.ts`, `EraserEngine.ts`, the store's texture growth/replacement guards, and `frontend/src/app/UltraPaintApp.ts` pixel history. `ConsistentOpacityStroke.ts` remained unchanged as designed. Verified by a real pointer stroke and pixel-readback Playwright test.                                                                                                   |
+| T28           | **Done** — added `frontend/src/scene/MaskHatchFilter.ts` with PixiJS v8 WebGL/WebGPU filter programs and lifecycle/color updates from `LayerNode.ts`; the source `RenderTexture` stays untouched. Verified the WebGL path in Chromium with no console/page errors and mask export pixel checks; the WebGPU program was build/typechecked but not runtime-selected by Playwright.                                                                            |
+| T29           | **Done** — split `frontend/src/ui/LayerPanel.svelte` into collapsible Layers/Masks stacks, added `+ Mask`, mask color controls, and same-stack rename/visibility/reorder/delete behavior. Verified all new controls in Playwright.                                                                                                                                                                                                                          |
+| T30           | **Done** — added black/white mask flattening with the specified `ColorMatrixFilter` matrix in `frontend/src/scene/Compositor.ts`, excluded mask overlays from normal flattening and exposed mask export in `frontend/src/app/UltraPaintApp.ts`, and conditionally posted `mask_image` from `frontend/src/ui/GenerationPanel.svelte`. Verified white painted coverage, black background, transparent regular composite, and both request shapes in Chromium. |
+| T31           | **Done** — extended `frontend/tests/e2e/ultra-paint.spec.ts` additively from 4 to 7 tests. Final verification: `npm run typecheck` 0 errors/0 warnings; `npm run build` clean (844 modules); `npm run test:e2e` 7 passed, 0 failed.                                                                                                                                                                                                                         |
 
 Suggested order: T23 -> T24 -> T25 (backend is self-contained, can run fully in
 parallel with the frontend track) · T26 -> T27 -> T28 -> T29 -> T30 -> T31 (each
@@ -1584,7 +2931,7 @@ Three items raised after reviewing the T23-T31 landing:
    `MaskHatchFilter` is attached to `LayerNode`'s persistent `this.sprite`
    (`LayerNode.ts` around the `case "mask":` branch), but the brush's live
    overlay preview (`ConsistentOpacityStroke`'s `livePreview: "overlay"` path)
-   parents a *separate* `strokeSprite` into the same `layerContainer` as an
+   parents a _separate_ `strokeSprite` into the same `layerContainer` as an
    additional sibling, not a child of `this.sprite` — so it never picks up a
    filter that's attached only to the sprite object, not the container. Fixed
    by T33.
@@ -1615,33 +2962,33 @@ crop to that target — Ultra Paint does not resample the canvas itself, so
 missing, output size falls back to the composite's own 8px-clamped dimensions,
 byte-for-byte the pre-this-change behavior. The existing `inpaint_full_res`
 native-resolution auto-force (T23-T25) deliberately keeps comparing against
-the *original* box/composite size, not `target_width`/`target_height` — scaling
+the _original_ box/composite size, not `target_width`/`target_height` — scaling
 the whole canvas to a target and tightly cropping to just the masked region
 within it are independent concerns that can both apply to one generation (see
 the module docstring's `mask_image` section for the reasoning). New:
 `tests/test_resolution_step.py`; full suite now 58 tests, all passing.
 
-| Task | What | Owner |
-|---|---|---|
-| T32 | Playwright: dedicated eraser-on-mask test (paint a mask stroke, erase part of it, assert the exported `flattenMask()` coverage drops in the erased region) — the underlying capability already exists (see item 1 above), this is coverage only. | Codex (gpt-5.6-sol) |
-| T33 | Live mask stroke preview fix. During a brush/eraser stroke on a `"mask"`-kind layer, the live overlay (`ConsistentOpacityStroke`'s `strokeSprite`, or the eraser's `previewTexture`-based preview) must render through the same `MaskHatchFilter` + layer color as the committed result, not raw paint color. Likely fix shape: `ConsistentOpacityStroke`/`BrushEngine`/`EraserEngine` need a way to know the target is a mask layer and either (a) apply a filter instance to `strokeSprite` itself for the duration of the live preview, mirroring `LayerNode`'s color, or (b) have `LayerNode` own the preview sprite's filter the same way it owns `this.sprite`'s. Pick whichever keeps `MaskHatchFilter` instantiation/color-sync in one place (`LayerNode`) rather than duplicating filter setup into the paint engines — the paint code should stay tool-generic (it already doesn't special-case mask color for brush/eraser logic itself, only for display). Must not change what gets committed to the texture or what `flattenMask()` exports (still forced-white via `ColorMatrixFilter`, per T30) — display-only, same contract `MaskHatchFilter` already has. | Codex (gpt-5.6-sol) |
-| T34 | Backend groundwork for Auto/Manual scale modes is already done (see above) — this task is the frontend scale-mode state: a new field on the document or a new small store (developer's call which fits better given the existing `layerStore`/`paintToolStore` split) holding `scaleMode: "none" \| "auto" \| "manual"` plus `manualWidth`/`manualHeight`. Fetch `native_resolution`/`is_video_model`/`resolution_step` from `GET /ultra_paint/api/options` (`GenerationPanel.svelte` already fetches this endpoint for samplers/schedulers — extend the same fetch/parse, don't add a second request). **Auto-mode formula, updated 2026-08-24 from the developer's own reference implementation in another extension (verified to reproduce their worked example exactly: 300x400 box -> 896x1152 at native resolution 1024, step 64):** given `boxWidth`/`boxHeight` and `step` = fetched `resolution_step` (NOT hardcoded 64): `ratio = boxWidth / boxHeight`; `baseArea = nativeResolution * nativeResolution`; if `ratio === 1`, both dimensions are `round(nativeResolution / step) * step`; else if `ratio > 1` (wide), `idealWidth = sqrt(baseArea * ratio)`, `idealHeight = idealWidth / ratio`, then `newWidth = floor(idealWidth / step) * step` and `newHeight = round(idealHeight / step) * step` (note: **floor** on the axis computed directly from the sqrt, **round** on the derived one — NOT a symmetric "round both independently", that was this table's original, less-precise draft); else (tall, `ratio < 1`), the mirror image: `idealHeight = sqrt(baseArea / ratio)`, `idealWidth = idealHeight * ratio`, `newHeight = floor(idealHeight / step) * step`, `newWidth = round(idealWidth / step) * step`. Clamp both final dimensions to a minimum of `step`. Put this formula in one small pure/testable function (e.g. `frontend/src/util/autoResolution.ts`) so T38 can unit/Playwright-test it directly against the worked example instead of only through UI interaction. | Codex (gpt-5.6-sol) |
-| T35 | Resolution controls UI in the left settings panel (`GenerationPanel.svelte`, per the developer — that's the panel already living in the left column). Mode selector (None/Auto/Manual) using T34's store; Manual mode shows width/height number inputs (T34's `manualWidth`/`manualHeight`); Auto mode shows the computed target size read-only (recomputed live as the boundary box changes, using T34's formula and the fetched `native_resolution`/`resolution_step`); when `is_video_model` is true, show a clear inline warning (Wan is loaded, Generate will be rejected) rather than waiting for a failed request. Wire the final `target_width`/`target_height` (omitted entirely in None mode, matching the backend's "both missing -> unchanged behavior" contract) into `GenerationPanel.svelte`'s existing POST body next to `mask_image`. | Codex (gpt-5.6-sol) |
-| T36 | Aspect-ratio lock for the boundary box. A toggle button (in `PaintToolbar.svelte`, next to the existing boundary-box width/height fields from the original boundary-box work) that captures the box's current `width/height` ratio when turned on. While locked, `BoundaryBoxOverlay.ts`'s corner-drag resize (`dragBox()`) must derive the non-dragged dimension from the dragged one to preserve that ratio, still going through the existing `snap()` (8px) logic — don't bypass or duplicate the snapping, extend `dragBox()`'s existing corner-mode branches so the locked axis is computed from the free axis post-snap. The existing manual width/height number inputs (if present in `PaintToolbar.svelte` from the original boundary-box task) should also respect the lock: editing one field while locked recomputes the other. Body/move drag is unaffected by the lock (only resize is constrained). | Codex (gpt-5.6-sol) |
-| T37 | Quick-swap button next to the boundary-box width/height controls: swaps the box's `width`/`height` values in one `setBoundaryBox` mutation (so it's a single undo entry, consistent with how drag-end already commits one mutation per gesture), keeping `x`/`y` (top-left) fixed. Already-grid-aligned inputs stay grid-aligned after a swap (swapping two multiples of 8 is still a multiple of 8, no re-snap needed). | Codex (gpt-5.6-sol) |
-| T38 | Tests: Playwright coverage for T33 (live mask stroke preview uses the hatch filter/color, not raw paint color — e.g. read back a pixel from the live (not yet committed) canvas mid-stroke and assert it matches the expected tinted/hatched output rather than the raw brush color), T35 (mode switching, Auto-computed size updates when the box changes, target fields present/absent in the POST body per mode, video-model warning shown), T36 (locked corner-drag preserves ratio within snap tolerance), T37 (swap button swaps values, position unchanged). Also add a unit test (Vitest, if configured, or a small standalone Playwright/`node --test` check — developer's call on which is less friction given the current toolchain) for T34's Auto-resolution formula directly against the worked example (300x400 @ native 1024 -> 896x1152) plus a couple of edge cases (square box, box already larger than native resolution). Extend `frontend/tests/e2e/ultra-paint.spec.ts` additively, keep all existing tests passing. | Codex (gpt-5.6-sol) |
+| Task | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Owner               |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| T32  | Playwright: dedicated eraser-on-mask test (paint a mask stroke, erase part of it, assert the exported `flattenMask()` coverage drops in the erased region) — the underlying capability already exists (see item 1 above), this is coverage only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Codex (gpt-5.6-sol) |
+| T33  | Live mask stroke preview fix. During a brush/eraser stroke on a `"mask"`-kind layer, the live overlay (`ConsistentOpacityStroke`'s `strokeSprite`, or the eraser's `previewTexture`-based preview) must render through the same `MaskHatchFilter` + layer color as the committed result, not raw paint color. Likely fix shape: `ConsistentOpacityStroke`/`BrushEngine`/`EraserEngine` need a way to know the target is a mask layer and either (a) apply a filter instance to `strokeSprite` itself for the duration of the live preview, mirroring `LayerNode`'s color, or (b) have `LayerNode` own the preview sprite's filter the same way it owns `this.sprite`'s. Pick whichever keeps `MaskHatchFilter` instantiation/color-sync in one place (`LayerNode`) rather than duplicating filter setup into the paint engines — the paint code should stay tool-generic (it already doesn't special-case mask color for brush/eraser logic itself, only for display). Must not change what gets committed to the texture or what `flattenMask()` exports (still forced-white via `ColorMatrixFilter`, per T30) — display-only, same contract `MaskHatchFilter` already has.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Codex (gpt-5.6-sol) |
+| T34  | Backend groundwork for Auto/Manual scale modes is already done (see above) — this task is the frontend scale-mode state: a new field on the document or a new small store (developer's call which fits better given the existing `layerStore`/`paintToolStore` split) holding `scaleMode: "none" \| "auto" \| "manual"` plus `manualWidth`/`manualHeight`. Fetch `native_resolution`/`is_video_model`/`resolution_step` from `GET /ultra_paint/api/options` (`GenerationPanel.svelte` already fetches this endpoint for samplers/schedulers — extend the same fetch/parse, don't add a second request). **Auto-mode formula, updated 2026-08-24 from the developer's own reference implementation in another extension (verified to reproduce their worked example exactly: 300x400 box -> 896x1152 at native resolution 1024, step 64):** given `boxWidth`/`boxHeight` and `step` = fetched `resolution_step` (NOT hardcoded 64): `ratio = boxWidth / boxHeight`; `baseArea = nativeResolution * nativeResolution`; if `ratio === 1`, both dimensions are `round(nativeResolution / step) * step`; else if `ratio > 1` (wide), `idealWidth = sqrt(baseArea * ratio)`, `idealHeight = idealWidth / ratio`, then `newWidth = floor(idealWidth / step) * step` and `newHeight = round(idealHeight / step) * step` (note: **floor** on the axis computed directly from the sqrt, **round** on the derived one — NOT a symmetric "round both independently", that was this table's original, less-precise draft); else (tall, `ratio < 1`), the mirror image: `idealHeight = sqrt(baseArea / ratio)`, `idealWidth = idealHeight * ratio`, `newHeight = floor(idealHeight / step) * step`, `newWidth = round(idealWidth / step) * step`. Clamp both final dimensions to a minimum of `step`. Put this formula in one small pure/testable function (e.g. `frontend/src/util/autoResolution.ts`) so T38 can unit/Playwright-test it directly against the worked example instead of only through UI interaction. | Codex (gpt-5.6-sol) |
+| T35  | Resolution controls UI in the left settings panel (`GenerationPanel.svelte`, per the developer — that's the panel already living in the left column). Mode selector (None/Auto/Manual) using T34's store; Manual mode shows width/height number inputs (T34's `manualWidth`/`manualHeight`); Auto mode shows the computed target size read-only (recomputed live as the boundary box changes, using T34's formula and the fetched `native_resolution`/`resolution_step`); when `is_video_model` is true, show a clear inline warning (Wan is loaded, Generate will be rejected) rather than waiting for a failed request. Wire the final `target_width`/`target_height` (omitted entirely in None mode, matching the backend's "both missing -> unchanged behavior" contract) into `GenerationPanel.svelte`'s existing POST body next to `mask_image`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Codex (gpt-5.6-sol) |
+| T36  | Aspect-ratio lock for the boundary box. A toggle button (in `PaintToolbar.svelte`, next to the existing boundary-box width/height fields from the original boundary-box work) that captures the box's current `width/height` ratio when turned on. While locked, `BoundaryBoxOverlay.ts`'s corner-drag resize (`dragBox()`) must derive the non-dragged dimension from the dragged one to preserve that ratio, still going through the existing `snap()` (8px) logic — don't bypass or duplicate the snapping, extend `dragBox()`'s existing corner-mode branches so the locked axis is computed from the free axis post-snap. The existing manual width/height number inputs (if present in `PaintToolbar.svelte` from the original boundary-box task) should also respect the lock: editing one field while locked recomputes the other. Body/move drag is unaffected by the lock (only resize is constrained).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Codex (gpt-5.6-sol) |
+| T37  | Quick-swap button next to the boundary-box width/height controls: swaps the box's `width`/`height` values in one `setBoundaryBox` mutation (so it's a single undo entry, consistent with how drag-end already commits one mutation per gesture), keeping `x`/`y` (top-left) fixed. Already-grid-aligned inputs stay grid-aligned after a swap (swapping two multiples of 8 is still a multiple of 8, no re-snap needed).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Codex (gpt-5.6-sol) |
+| T38  | Tests: Playwright coverage for T33 (live mask stroke preview uses the hatch filter/color, not raw paint color — e.g. read back a pixel from the live (not yet committed) canvas mid-stroke and assert it matches the expected tinted/hatched output rather than the raw brush color), T35 (mode switching, Auto-computed size updates when the box changes, target fields present/absent in the POST body per mode, video-model warning shown), T36 (locked corner-drag preserves ratio within snap tolerance), T37 (swap button swaps values, position unchanged). Also add a unit test (Vitest, if configured, or a small standalone Playwright/`node --test` check — developer's call on which is less friction given the current toolchain) for T34's Auto-resolution formula directly against the worked example (300x400 @ native 1024 -> 896x1152) plus a couple of edge cases (square box, box already larger than native resolution). Extend `frontend/tests/e2e/ultra-paint.spec.ts` additively, keep all existing tests passing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Codex (gpt-5.6-sol) |
 
-| Frontend task | Status |
-|---|---|
-| T32 | **Done** — added dedicated mask eraser/export coverage in `frontend/tests/e2e/ultra-paint.spec.ts`; live Chromium testing exposed and fixed PixiJS root-level erase blending by collecting the eraser sprite under a neutral preview root and copying the finished preview in `frontend/src/paint/ConsistentOpacityStroke.ts`. |
-| T33 | **Done** — moved the single `MaskHatchFilter` attachment from the persistent sprite to the mask node's owning container in `frontend/src/scene/LayerNode.ts`, so brush overlays and eraser replacement previews inherit the same color/hatch without mask-specific paint-engine setup. Verified by mid-pointer screenshot pixel readback before commit. |
-| T34 | **Done** — added rune-backed None/Auto/Manual state in `frontend/src/state/generationSettingsStore.svelte.ts` and the configurable-step, wide/tall floor+round native-area formula in `frontend/src/util/autoResolution.ts`; extended the existing options fetch for all three backend fields in `frontend/src/ui/GenerationPanel.svelte`. |
-| T35 | **Done** — added scale-mode/manual/auto controls, live boundary-driven Auto readout, Wan/video warning, and conditional `target_width`/`target_height` request fields in `frontend/src/ui/GenerationPanel.svelte`; updated `frontend/tests/fixtures/options.json` for the backend fields. |
-| T36 | **Done** — added captured aspect-lock state in `frontend/src/state/paintToolStore.svelte.ts`, lock-aware width/height editing in `frontend/src/ui/PaintToolbar.svelte`, and dominant-axis post-snap corner constraints in `frontend/src/scene/BoundaryBoxOverlay.ts`; move dragging remains unchanged. |
-| T37 | **Done** — added the width/height swap control in `frontend/src/ui/PaintToolbar.svelte`; it preserves `x`/`y` and performs exactly one `LayerStore.setBoundaryBox()` mutation. |
-| T39 | **Done** — corrected `frontend/src/scene/PixelGrid.ts` zoom-tier spacing to 64px below 150%, 32px from 150% to below 200%, and 8px at 200%+. |
-| T40 | **Done** — added bottom-left viewport controls in `frontend/src/ui/ViewportControls.svelte`, additive camera/grid APIs in `frontend/src/app/UltraPaintApp.ts`, and grid visibility in `frontend/src/scene/PixelGrid.ts`; updated `frontend/src/App.svelte` layout and extended `frontend/tests/e2e/ultra-paint.spec.ts` from 15 to 18 live Chromium tests. |
-| T41 | **Done (Claude)** — new `ultra_paint/interrupt_api.py` (`shared.state.interrupt()`, mirrors the stock UI's own Interrupt button) plus `scripts/ultra_paint_interrupt_api.py` registering `POST /ultra_paint/api/interrupt`; `GenerationPanel.svelte` gained a cancel (×) button that POSTs to it. The X button is always in the DOM (never `{#if}`-conditional) and toggled via `visibility`/`aria-hidden`/`tabindex`, not presence, specifically so the Generate button's own `flex-1` width never changes when the X appears/disappears — a conditionally-rendered sibling would have shrunk Generate's share of the row the moment it showed up. New backend tests: `tests/test_interrupt_api.py`; full pytest suite now 60, all passing. New Playwright test "cancel button interrupts generation without resizing the Generate button" (stalls the generate route until the interrupt route fires, asserts the button's `boundingBox().width` is identical idle vs. mid-generation, and that the interrupt endpoint is actually hit); full e2e suite 18/18 passing. `npm run typecheck`/`npm run build` both clean. Landed concurrently with T39/T40 in the same working tree (no worktree isolation) without file-content conflicts — `frontend/tests/e2e/ultra-paint.spec.ts` picked up both this task's and T40's new tests cleanly since they were appended at different points in the file — but a stale/incomplete file read of that shared spec file during Codex T40's concurrent write did produce one confusing transient test-run failure that resolved on a clean re-run; worth avoiding true concurrent dispatch onto the same spec file next time this happens, even though it worked out here. |
+| Frontend task | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| T32           | **Done** — added dedicated mask eraser/export coverage in `frontend/tests/e2e/ultra-paint.spec.ts`; live Chromium testing exposed and fixed PixiJS root-level erase blending by collecting the eraser sprite under a neutral preview root and copying the finished preview in `frontend/src/paint/ConsistentOpacityStroke.ts`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| T33           | **Done** — moved the single `MaskHatchFilter` attachment from the persistent sprite to the mask node's owning container in `frontend/src/scene/LayerNode.ts`, so brush overlays and eraser replacement previews inherit the same color/hatch without mask-specific paint-engine setup. Verified by mid-pointer screenshot pixel readback before commit.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| T34           | **Done** — added rune-backed None/Auto/Manual state in `frontend/src/state/generationSettingsStore.svelte.ts` and the configurable-step, wide/tall floor+round native-area formula in `frontend/src/util/autoResolution.ts`; extended the existing options fetch for all three backend fields in `frontend/src/ui/GenerationPanel.svelte`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| T35           | **Done** — added scale-mode/manual/auto controls, live boundary-driven Auto readout, Wan/video warning, and conditional `target_width`/`target_height` request fields in `frontend/src/ui/GenerationPanel.svelte`; updated `frontend/tests/fixtures/options.json` for the backend fields.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| T36           | **Done** — added captured aspect-lock state in `frontend/src/state/paintToolStore.svelte.ts`, lock-aware width/height editing in `frontend/src/ui/PaintToolbar.svelte`, and dominant-axis post-snap corner constraints in `frontend/src/scene/BoundaryBoxOverlay.ts`; move dragging remains unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| T37           | **Done** — added the width/height swap control in `frontend/src/ui/PaintToolbar.svelte`; it preserves `x`/`y` and performs exactly one `LayerStore.setBoundaryBox()` mutation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| T39           | **Done** — corrected `frontend/src/scene/PixelGrid.ts` zoom-tier spacing to 64px below 150%, 32px from 150% to below 200%, and 8px at 200%+.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| T40           | **Done** — added bottom-left viewport controls in `frontend/src/ui/ViewportControls.svelte`, additive camera/grid APIs in `frontend/src/app/UltraPaintApp.ts`, and grid visibility in `frontend/src/scene/PixelGrid.ts`; updated `frontend/src/App.svelte` layout and extended `frontend/tests/e2e/ultra-paint.spec.ts` from 15 to 18 live Chromium tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| T41           | **Done (Claude)** — new `ultra_paint/interrupt_api.py` (`shared.state.interrupt()`, mirrors the stock UI's own Interrupt button) plus `scripts/ultra_paint_interrupt_api.py` registering `POST /ultra_paint/api/interrupt`; `GenerationPanel.svelte` gained a cancel (×) button that POSTs to it. The X button is always in the DOM (never `{#if}`-conditional) and toggled via `visibility`/`aria-hidden`/`tabindex`, not presence, specifically so the Generate button's own `flex-1` width never changes when the X appears/disappears — a conditionally-rendered sibling would have shrunk Generate's share of the row the moment it showed up. New backend tests: `tests/test_interrupt_api.py`; full pytest suite now 60, all passing. New Playwright test "cancel button interrupts generation without resizing the Generate button" (stalls the generate route until the interrupt route fires, asserts the button's `boundingBox().width` is identical idle vs. mid-generation, and that the interrupt endpoint is actually hit); full e2e suite 18/18 passing. `npm run typecheck`/`npm run build` both clean. Landed concurrently with T39/T40 in the same working tree (no worktree isolation) without file-content conflicts — `frontend/tests/e2e/ultra-paint.spec.ts` picked up both this task's and T40's new tests cleanly since they were appended at different points in the file — but a stale/incomplete file read of that shared spec file during Codex T40's concurrent write did produce one confusing transient test-run failure that resolved on a clean re-run; worth avoiding true concurrent dispatch onto the same spec file next time this happens, even though it worked out here. |
 
 ### Phase 3 follow-up round 2 (developer, 2026-08-24) — T39-T41
 
@@ -1651,11 +2998,11 @@ at dispatch time, touching `autoResolution.ts`/`generationSettingsStore.svelte.t
 `GenerationPanel.svelte`/`PaintToolbar.svelte`/`BoundaryBoxOverlay.ts`/
 `LayerNode.ts`) — T39/T40 below were scoped to avoid those exact files.
 
-| Task | What | Owner |
-|---|---|---|
-| T39 | Grid zoom-tier resizing. `frontend/src/scene/PixelGrid.ts`'s `spacingForZoom()` currently maps zoom -> spacing the opposite way round from what's wanted (finer grid the more zoomed OUT). New mapping, per the developer: zoom 100% -> 64px, 150% -> 32px, 200% -> 8px, i.e. `zoom < 1.5 -> 64`, `1.5 <= zoom < 2.0 -> 32`, `zoom >= 2.0 -> 8`. Everything else in the file (extent calc, opacity, line width, the `onRender` change-detection guard) is unchanged. | Codex (gpt-5.6-luna) |
-| T40 | New bottom-left-of-canvas viewport control bar: current-zoom button (click resets to 100%), fit-to-boundary-box button (zoom so the boundary box fills as much of the viewport as possible with 8 screen px of padding on every side), grid-visibility toggle button. New Svelte component (e.g. `ui/ViewportControls.svelte`), absolutely positioned bottom-left inside `#upaint-root`'s wrapper in `App.svelte` (that wrapper needs `position: relative` if it doesn't have it already — check before assuming). Needs new additive public surface on `UltraPaintApp` (`frontend/src/app/UltraPaintApp.ts`): a way to read current zoom reactively (a plain `getZoom(): number` polled via `requestAnimationFrame` from the new component is fine, no new store required, unless a cheap hook already exists — check `PixelGrid`'s own `container.onRender` pattern for prior art before inventing a second mechanism), a `resetZoom()` or `setZoom(scale, anchor)` that recenters on the current viewport-center document point (not a hard jump), a `fitToBoundaryBox(paddingPx)` using the same `world.scale`/`world.position` math as `centerDocument()`/`handleWheel()`, and `setGridVisible(visible)`/`isGridVisible()` (currently `PixelGrid` has no visibility toggle at all — add one, e.g. `container.visible`). **Explicitly avoid editing** `PaintToolbar.svelte`, `GenerationPanel.svelte`, `BoundaryBoxOverlay.ts`, `LayerNode.ts`, and `autoResolution.ts`/`generationSettingsStore.svelte.ts` — those are owned by the concurrently-running T32-T38 formula-correction resume; touching them risks clobbering that work. | Codex (gpt-5.6-terra) |
-| T41 | Generate-cancel button. Next to the existing Generate button in `GenerationPanel.svelte`, an X icon button appears only while `generating` is true, calling Forge's existing interrupt mechanism (new backend route, see below) — Generate's own button width must not change when the X appears/disappears (size the X as an adjacent sibling, not by growing/shrinking the Generate button itself). | Claude |
+| Task | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Owner                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
+| T39  | Grid zoom-tier resizing. `frontend/src/scene/PixelGrid.ts`'s `spacingForZoom()` currently maps zoom -> spacing the opposite way round from what's wanted (finer grid the more zoomed OUT). New mapping, per the developer: zoom 100% -> 64px, 150% -> 32px, 200% -> 8px, i.e. `zoom < 1.5 -> 64`, `1.5 <= zoom < 2.0 -> 32`, `zoom >= 2.0 -> 8`. Everything else in the file (extent calc, opacity, line width, the `onRender` change-detection guard) is unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Codex (gpt-5.6-luna)  |
+| T40  | New bottom-left-of-canvas viewport control bar: current-zoom button (click resets to 100%), fit-to-boundary-box button (zoom so the boundary box fills as much of the viewport as possible with 8 screen px of padding on every side), grid-visibility toggle button. New Svelte component (e.g. `ui/ViewportControls.svelte`), absolutely positioned bottom-left inside `#upaint-root`'s wrapper in `App.svelte` (that wrapper needs `position: relative` if it doesn't have it already — check before assuming). Needs new additive public surface on `UltraPaintApp` (`frontend/src/app/UltraPaintApp.ts`): a way to read current zoom reactively (a plain `getZoom(): number` polled via `requestAnimationFrame` from the new component is fine, no new store required, unless a cheap hook already exists — check `PixelGrid`'s own `container.onRender` pattern for prior art before inventing a second mechanism), a `resetZoom()` or `setZoom(scale, anchor)` that recenters on the current viewport-center document point (not a hard jump), a `fitToBoundaryBox(paddingPx)` using the same `world.scale`/`world.position` math as `centerDocument()`/`handleWheel()`, and `setGridVisible(visible)`/`isGridVisible()` (currently `PixelGrid` has no visibility toggle at all — add one, e.g. `container.visible`). **Explicitly avoid editing** `PaintToolbar.svelte`, `GenerationPanel.svelte`, `BoundaryBoxOverlay.ts`, `LayerNode.ts`, and `autoResolution.ts`/`generationSettingsStore.svelte.ts` — those are owned by the concurrently-running T32-T38 formula-correction resume; touching them risks clobbering that work. | Codex (gpt-5.6-terra) |
+| T41  | Generate-cancel button. Next to the existing Generate button in `GenerationPanel.svelte`, an X icon button appears only while `generating` is true, calling Forge's existing interrupt mechanism (new backend route, see below) — Generate's own button width must not change when the X appears/disappears (size the X as an adjacent sibling, not by growing/shrinking the Generate button itself).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Claude                |
 
 **Note for T40:** since T32-T38 is a separate in-flight Codex session working
 in the same working tree (no git-worktree isolation), T40 was told to avoid
@@ -1671,10 +3018,10 @@ one Codex session.
 
 ### Phase 3 follow-up round 3 (developer, 2026-08-25) — T42
 
-| Task | What | Owner |
-|---|---|---|
-| T42 | Layer workflow improvements: add robust multi-selection to `LayerStore` and `LayerPanel.svelte` with normal/Shift/Ctrl/Cmd selection semantics; make right-click hide/show and delete operate on the selected compatible set; merge selected top-level raster layers or rendered groups into a new raster layer while preserving originals and document-space coordinates; copy one textured raster, mask, or control layer to the native clipboard as PNG with graceful unsupported/error feedback. | Codex (gpt-5.6-sol) |
-| T43 | Canvas-only image paste: attach a `paste` handler directly to the focusable Pixi canvas, import the first `image/*` item as a selected raster layer through `addImageFromFile()`, and prevent default only when an image was handled so prompt/other text-field pastes retain native behavior. Add focused Playwright coverage for both targets. | Codex |
+| Task | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Owner               |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| T42  | Layer workflow improvements: add robust multi-selection to `LayerStore` and `LayerPanel.svelte` with normal/Shift/Ctrl/Cmd selection semantics; make right-click hide/show and delete operate on the selected compatible set; merge selected top-level raster layers or rendered groups into a new raster layer while preserving originals and document-space coordinates; copy one textured raster, mask, or control layer to the native clipboard as PNG with graceful unsupported/error feedback. | Codex (gpt-5.6-sol) |
+| T43  | Canvas-only image paste: attach a `paste` handler directly to the focusable Pixi canvas, import the first `image/*` item as a selected raster layer through `addImageFromFile()`, and prevent default only when an image was handled so prompt/other text-field pastes retain native behavior. Add focused Playwright coverage for both targets.                                                                                                                                                     | Codex               |
 
 **T42: DONE, 2026-08-25.** Changed only `frontend/src/state/layerStore.svelte.ts`,
 `frontend/src/ui/LayerPanel.svelte`, and `frontend/src/app/UltraPaintApp.ts`;
@@ -1761,7 +3108,7 @@ real use:
 
 - **Z-order**: `UltraPaintApp.flattenToDataURL()` detaches `tree.root` from `world`
   before compositing and reattaches it afterward via `parent.addChild(tree.root)`,
-  which always appends as the *last* child — silently promoting layer content above
+  which always appends as the _last_ child — silently promoting layer content above
   `boundaryBoxOverlay.container` (added once at init, never touched again) after the
   first Generate call, permanently hiding the box behind new layers/images from then
   on. Fixed by reattaching with `parent.addChildAt(tree.root, 0)` instead, keeping
@@ -1826,7 +3173,7 @@ Two more regressions caught live by the developer immediately after the grid lan
   first child, but `flattenToDataURL()`'s detach/reattach (see the 2026-08-24
   z-order fix above) still reinserted `tree.root` at hardcoded index 0 — which was
   correct back when `world` only had two children, but now landed layer content
-  *below* the grid instead of above it, so any Generate call flipped the grid on
+  _below_ the grid instead of above it, so any Generate call flipped the grid on
   top of all layer content from then on. Fixed by computing the reinsertion index
   dynamically (`pixelGrid.container`'s current index + 1) instead of a hardcoded
   `0`, so layer content always lands directly above the grid regardless of how
