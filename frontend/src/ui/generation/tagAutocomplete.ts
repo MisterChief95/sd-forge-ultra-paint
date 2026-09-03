@@ -10,6 +10,14 @@
 const TAGS_URL = "/ultra_paint/data/tags.csv";
 const INDEX_CHUNK_SIZE = 5000;
 
+// Longest index-key prefix (see indexKeysFor); caps bucket-lookup cost once
+// a query is at least this long. Every prefix up to this length is indexed,
+// so search itself can go as low as 1 char -- for a very common single
+// letter against a full danbooru-sized CSV that bucket can hold a big slice
+// of the tag list, which is a real per-keystroke cost, not a free lunch.
+const KEY_LENGTH = 3;
+export const MIN_QUERY_LENGTH = 1;
+
 export interface TagEntry {
   name: string;
   category: number;
@@ -82,13 +90,20 @@ const tagIndex = new Map<string, TagEntry[]>();
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
 
+// Every prefix length up to KEY_LENGTH gets its own bucket (not just the
+// full 3-char one), so a 1- or 2-char query still has a bucket to look up
+// instead of only ever matching once the user reaches KEY_LENGTH chars.
+function addPrefixes(keys: Set<string>, str: string): void {
+  for (let len = 1; len <= Math.min(str.length, KEY_LENGTH); len++) {
+    keys.add(str.slice(0, len));
+  }
+}
+
 function indexKeysFor(word: string): Set<string> {
   const keys = new Set<string>();
   const lower = word.toLowerCase();
-  for (const part of lower.split(/[_ ]+/)) {
-    if (part.length >= 3) keys.add(part.slice(0, 3));
-  }
-  if (lower.length >= 3) keys.add(lower.slice(0, 3));
+  for (const part of lower.split(/[_ ]+/)) addPrefixes(keys, part);
+  addPrefixes(keys, lower);
   return keys;
 }
 
@@ -121,7 +136,10 @@ export function ensureTagsLoaded(): Promise<void> {
 
   loadPromise = (async () => {
     try {
-      const response = await fetch(TAGS_URL);
+      // no-store: StaticFiles sends Last-Modified/ETag but no Cache-Control,
+      // so the browser's heuristic cache can otherwise keep serving a
+      // pre-replacement tags.csv indefinitely without ever revalidating.
+      const response = await fetch(TAGS_URL, { cache: "no-store" });
       if (!response.ok) return;
       const text = await response.text();
       const entries = parseTagCsv(text);
@@ -140,9 +158,9 @@ export function tagsLoaded(): boolean {
 
 export function searchTags(query: string, limit = 20): TagEntry[] {
   const trimmed = query.trim().toLowerCase();
-  if (!loaded || trimmed.length < 2) return [];
+  if (!loaded || trimmed.length < MIN_QUERY_LENGTH) return [];
 
-  const key = trimmed.slice(0, 3);
+  const key = trimmed.slice(0, KEY_LENGTH);
   const candidates = tagIndex.get(key);
   if (!candidates) return [];
 

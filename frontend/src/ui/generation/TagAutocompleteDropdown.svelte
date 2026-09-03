@@ -5,23 +5,42 @@
     items?: TagEntry[];
     selectedIndex?: number;
     loading?: boolean;
+    top?: number;
+    left?: number;
     onSelect?: (entry: TagEntry) => void;
   }
 
-  let { items = [], selectedIndex = -1, loading = false, onSelect }: Props = $props();
+  let {
+    items = [],
+    selectedIndex = -1,
+    loading = false,
+    top = 0,
+    left = 0,
+    onSelect,
+  }: Props = $props();
 
   let listEl = $state<HTMLUListElement | undefined>(undefined);
+  let popoverEl = $state<HTMLDivElement | undefined>(undefined);
 
   $effect(() => {
     if (selectedIndex < 0 || !listEl) return;
     const el = listEl.children[selectedIndex] as HTMLElement | undefined;
     el?.scrollIntoView({ block: "nearest" });
   });
+
+  // Rendered in the top layer via the Popover API instead of being
+  // absolutely positioned inside the panel, so a caret near the panel's
+  // edge can't force the (non-scrolling) panel to grow and clip.
+  $effect(() => {
+    popoverEl?.showPopover();
+  });
 </script>
 
 <div
-  class="absolute top-full left-0 z-20 mt-1 max-h-52 w-full min-w-48 overflow-y-auto border bg-(--upaint-surface) text-xs text-(--upaint-text) shadow-lg"
-  style="border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
+  bind:this={popoverEl}
+  popover="manual"
+  class="m-0 max-h-52 min-w-48 overflow-y-auto border bg-(--upaint-surface) text-xs text-(--upaint-text) shadow-lg"
+  style="inset: auto; top: {top}px; left: {left}px; border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
   role="listbox"
 >
   {#if loading}

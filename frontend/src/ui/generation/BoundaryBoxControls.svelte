@@ -47,32 +47,32 @@
   let selectedRatio = $state("");
   const documentLocked = $derived(isDocumentMutationLocked());
 
-  function handleResize(event: SubmitEvent): void {
-    event.preventDefault();
+  function handleDimensionInput(event: Event, dimension: "width" | "height"): void {
     if (documentLocked) return;
-    const data = new FormData(event.currentTarget as HTMLFormElement);
-    const width = Number(data.get("boundary-width"));
-    const height = Number(data.get("boundary-height"));
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1)
-      return;
-    getActiveUltraPaintApp()?.resizeBoundaryBox(width, height);
-  }
-
-  function syncLockedDimension(event: Event, dimension: "width" | "height"): void {
     const ratio = paintToolStore.boundaryAspectRatio;
     const input = event.currentTarget as HTMLInputElement;
     const other = input.form?.elements.namedItem(
       dimension === "width" ? "boundary-height" : "boundary-width",
     );
     const value = Number(input.value);
-    if (
-      ratio === null ||
-      !(other instanceof HTMLInputElement) ||
-      !Number.isFinite(value) ||
-      value < 1
-    )
+    if (!Number.isSafeInteger(value) || value < 1) return;
+
+    let width = dimension === "width" ? value : NaN;
+    let height = dimension === "height" ? value : NaN;
+    if (ratio !== null && other instanceof HTMLInputElement) {
+      const otherValue = clampDimension(dimension === "width" ? value / ratio : value * ratio);
+      other.value = String(otherValue);
+      if (dimension === "width") height = otherValue;
+      else width = otherValue;
+    } else if (other instanceof HTMLInputElement) {
+      const otherValue = Number(other.value);
+      if (dimension === "width") height = otherValue;
+      else width = otherValue;
+    }
+
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1)
       return;
-    other.value = String(clampDimension(dimension === "width" ? value / ratio : value * ratio));
+    getActiveUltraPaintApp()?.resizeBoundaryBox(width, height);
   }
 
   function toggleAspectLock(): void {
@@ -111,7 +111,6 @@
   <form
     class="flex flex-col gap-2"
     style="border-color: var(--upaint-border); border-radius: var(--upaint-radius);"
-    onsubmit={handleResize}
   >
     <div class="flex no-wrap items-end gap-1.5">
       <div class="flex-1">
@@ -126,7 +125,7 @@
             value={layerStore.document.boundaryBox.width}
             aria-label="Boundary box width"
             disabled={documentLocked}
-            oninput={(event) => syncLockedDimension(event, "width")}
+            oninput={(event) => handleDimensionInput(event, "width")}
           />
         </label>
       </div>
@@ -142,7 +141,7 @@
             value={layerStore.document.boundaryBox.height}
             aria-label="Boundary box height"
             disabled={documentLocked}
-            oninput={(event) => syncLockedDimension(event, "height")}
+            oninput={(event) => handleDimensionInput(event, "height")}
           />
         </label>
       </div>
@@ -167,23 +166,17 @@
         </Button>
       </div>
     </div>
-    <div class="flex gap-2">
-      <Select
-        class="flex-1"
-        bind:value={selectedRatio}
-        aria-label="Boundary box aspect ratio"
-        disabled={documentLocked}
-        onchange={applyRatio}
-      >
-        <option value="">Aspect ratio…</option>
-        {#each ratios as [label, ratio] (label)}
-          <option value={ratio}>{label}</option>
-        {/each}
-      </Select>
-      <Button type="submit" title="Resize and center the boundary box" disabled={documentLocked}
-        >Resize</Button
-      >
-    </div>
+    <Select
+      bind:value={selectedRatio}
+      aria-label="Boundary box aspect ratio"
+      disabled={documentLocked}
+      onchange={applyRatio}
+    >
+      <option value="">Aspect ratio…</option>
+      {#each ratios as [label, ratio] (label)}
+        <option value={ratio}>{label}</option>
+      {/each}
+    </Select>
   </form>
 
   <label class="flex flex-col gap-1 text-(--upaint-text-muted)">

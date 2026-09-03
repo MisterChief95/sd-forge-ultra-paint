@@ -1014,6 +1014,66 @@ test("Clip to BBox deallocates transparent corner tiles from a rotated tiled lay
   ]);
 });
 
+test("Clip to BBox snaps a fractionally-positioned unrotated layer to a crisp, fully opaque edge", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 300, height: 250 });
+    const id = await app.addBlankLayer();
+    hook.layerStore.setSelectedLayerId(id);
+    hook.paintToolStore.setBrushSettings({ color: "#ff0000", opacity: 1 });
+    app.fillSelectedLayer();
+
+    // A fractional position -- e.g. left behind by a Transform-tool nudge or
+    // a paste -- puts this layer's pixels off the document's integer grid.
+    const before = hook.layerStore.document.layers.find((l) => l.id === id)!;
+    hook.layerStore.setTransform(id, {
+      ...before.transform,
+      x: before.transform.x - 0.4,
+      y: before.transform.y - 0.4,
+    });
+
+    hook.layerStore.setBoundaryBox({ x: 50, y: 50, width: 200, height: 150 });
+    const clipped = app.clipLayerToBoundaryBox(id);
+    const after = hook.layerStore.document.layers.find((l) => l.id === id)!;
+    const dataUrl = app.flattenToDataURL();
+
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("decode failed"));
+      el.src = dataUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let minAlpha = 255;
+    for (let i = 3; i < data.length; i += 4) minAlpha = Math.min(minAlpha, data[i]);
+
+    return { clipped, transform: after.transform, minAlpha };
+  });
+
+  expect(result.clipped).toBe(true);
+  // -0 from Math.round(-0.4) is numerically 0; only exact-equality assertions
+  // (like Playwright's toBe) can tell the difference.
+  expect(Object.is(result.transform.x, -0) ? 0 : result.transform.x).toBe(0);
+  expect(Object.is(result.transform.y, -0) ? 0 : result.transform.y).toBe(0);
+  // Before the fix this was ~100: a soft, partially-transparent edge band
+  // instead of a crisp match to the boundary box.
+  expect(result.minAlpha).toBe(255);
+});
+
 test("brush and eraser strokes paint and undo/redo correctly on a tiled raster layer", async ({
   page,
 }) => {
@@ -1388,6 +1448,55 @@ test("merging layers keeps every layer's content even when the boundary box sits
   expect(green).toEqual([0, 255, 0, 255]);
   expect(blue).toEqual([0, 0, 255, 255]);
   expect(gap?.[3]).toBe(0);
+});
+
+test("merging layers scans actual painted pixels for bounds instead of the tile-quantized sprite footprint", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+      getActiveUltraPaintApp(): ReturnType<
+        NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]
+      > & {
+        mergeLayersToNewLayer(ids: string[]): string;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // A throwaway first layer at the default box -- adding the very first
+    // layer of a document snaps the boundary box to (0, 0), so this dodges
+    // that reset before positioning the boundary box off-origin below. It's
+    // excluded from the merge by id, not by visibility.
+    await app.addBlankLayer();
+
+    // A small paint region well inside a single default-sized (1024) tile,
+    // nowhere near a tile boundary. The old sprite-bounds approach reported
+    // the *whole* allocated tile as content; a correct merge hugs the 40x25
+    // painted rectangle instead.
+    hook!.layerStore.setBoundaryBox({ x: 300, y: 300, width: 40, height: 25 });
+
+    const ids: string[] = [];
+    for (const color of ["#ff0000", "#00ff00"]) {
+      const id = await app.addBlankLayer();
+      hook!.layerStore.setSelectedLayerId(id);
+      hook!.paintToolStore.setBrushSettings({ color, opacity: 1 });
+      app.fillSelectedLayer();
+      ids.push(id);
+    }
+
+    const mergedId = app.mergeLayersToNewLayer(ids);
+    const mergedLayer = hook!.layerStore.document.layers.find((l) => l.id === mergedId);
+    return { transform: mergedLayer?.transform, image: mergedLayer?.image };
+  });
+
+  expect(result.transform?.x).toBe(300);
+  expect(result.transform?.y).toBe(300);
+  expect(result.image?.width).toBe(40);
+  expect(result.image?.height).toBe(25);
 });
 
 test("merging visible masks composites chunk-by-chunk into a tiled mask surface", async ({

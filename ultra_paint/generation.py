@@ -164,7 +164,12 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
-from ultra_paint.mask_ring import dilate_then_blur, scale_edge_size
+from ultra_paint.mask_ring import (
+    debug_reset,
+    debug_save,
+    dilate_then_blur,
+    scale_edge_size,
+)
 from ultra_paint.model_profile import is_unsupported_video_model
 from ultra_paint.outpaint_fill import derive_outpaint_mask, fill_transparent_region
 
@@ -603,6 +608,8 @@ def run_generation(
     if generation_mode not in {"img2img", "txt2img", "upscale"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
 
+    debug_reset()
+
     _apply_model_selection(gen_params)
 
     # The frontend predicts this from visible layer bounds, but only the
@@ -685,6 +692,8 @@ def run_generation(
             mask_for_alpha = p.mask_for_overlay or mask_image.convert("L")
 
             if coherence_enabled:
+                debug_save(mask_image.convert("L"), "07_mask_image_combined")
+
                 # Latent already patched pre-decode -- paste back like the
                 # no-coherence path, but alpha against the *dilated* mask, not
                 # the plain one: the ring's blend extends `coherence_edge_size`
@@ -704,6 +713,7 @@ def run_generation(
                         mask_image.size,
                     ),
                 )
+                debug_save(dilated, "08_dilated_blurred_alpha")
 
                 processed.images = [
                     _transparent_inpaint_patch(
@@ -714,15 +724,7 @@ def run_generation(
                     )
                     for image in processed.images
                 ]
-
-                import os
-
-                debug_dir = os.path.join(os.path.dirname(__file__), "..", "debug_dump")
-                os.makedirs(debug_dir, exist_ok=True)
-                processed.images[0].save(
-                    os.path.join(debug_dir, "05_paste_back_result.png")
-                )
-                dilated.save(os.path.join(debug_dir, "06_dilated_alpha.png"))
+                debug_save(processed.images[0], "09_paste_back_result")
             else:
                 processed.images = [
                     _transparent_inpaint_patch(

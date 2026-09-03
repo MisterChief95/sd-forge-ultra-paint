@@ -2,7 +2,13 @@
   import { fromAction } from "svelte/attachments";
 
   import TagAutocompleteDropdown from "./TagAutocompleteDropdown.svelte";
-  import { ensureTagsLoaded, searchTags, tagsLoaded, type TagEntry } from "./tagAutocomplete";
+  import {
+    ensureTagsLoaded,
+    MIN_QUERY_LENGTH,
+    searchTags,
+    tagsLoaded,
+    type TagEntry,
+  } from "./tagAutocomplete";
 
   interface Props {
     prompt: string;
@@ -21,6 +27,59 @@
     node.setAttribute("autocapitalize", "off");
   }
 
+  // Properties that affect text layout -- mirrored onto a hidden div so a
+  // marker span placed at the caret index lands at the same pixel spot the
+  // browser would render the caret, letting the dropdown open right under it
+  // instead of at the bottom of the (possibly tall) textarea.
+  const CARET_MIRROR_PROPS = [
+    "boxSizing",
+    "width",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "letterSpacing",
+    "lineHeight",
+    "textTransform",
+    "wordSpacing",
+    "tabSize",
+  ] as const;
+
+  function caretOffset(
+    textarea: HTMLTextAreaElement,
+    position: number,
+  ): { top: number; left: number } {
+    const style = getComputedStyle(textarea);
+    const mirror = document.createElement("div");
+    for (const prop of CARET_MIRROR_PROPS) mirror.style[prop] = style[prop];
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordWrap = "break-word";
+    mirror.style.top = "0";
+    mirror.style.left = "-9999px";
+
+    mirror.textContent = textarea.value.slice(0, position);
+    const marker = document.createElement("span");
+    marker.textContent = "​";
+    mirror.appendChild(marker);
+
+    document.body.appendChild(mirror);
+    const top = marker.offsetTop - textarea.scrollTop + marker.offsetHeight;
+    const left = marker.offsetLeft - textarea.scrollLeft;
+    mirror.remove();
+
+    return { top, left };
+  }
+
   // Local autocomplete state for a single textarea, so the two prompt fields
   // don't share an open/selected dropdown.
   function createFieldState() {
@@ -28,6 +87,8 @@
     let selectedIndex = $state(-1);
     let open = $state(false);
     let loading = $state(false);
+    let dropdownTop = $state(0);
+    let dropdownLeft = $state(0);
     let wordStart = 0;
     let wordEnd = 0;
     let debounceHandle: ReturnType<typeof setTimeout> | undefined;
@@ -53,10 +114,15 @@
       wordStart = start;
       wordEnd = end;
 
-      if (word.length < 2) {
+      if (word.length < MIN_QUERY_LENGTH) {
         close();
         return;
       }
+
+      const rect = textarea.getBoundingClientRect();
+      const offset = caretOffset(textarea, caret);
+      dropdownTop = rect.top + offset.top;
+      dropdownLeft = rect.left + offset.left;
 
       if (!tagsLoaded()) {
         loading = true;
@@ -143,6 +209,12 @@
       get loading() {
         return loading;
       },
+      get dropdownTop() {
+        return dropdownTop;
+      },
+      get dropdownLeft() {
+        return dropdownLeft;
+      },
       onInput,
       onKeydown,
       onBlur,
@@ -170,6 +242,8 @@
       items={promptField.results}
       selectedIndex={promptField.selectedIndex}
       loading={promptField.loading}
+      top={promptField.dropdownTop}
+      left={promptField.dropdownLeft}
       onSelect={(entry) => {
         const textarea = document.activeElement as HTMLTextAreaElement;
         promptField.onSelect(textarea, entry);
@@ -194,6 +268,8 @@
       items={negativePromptField.results}
       selectedIndex={negativePromptField.selectedIndex}
       loading={negativePromptField.loading}
+      top={negativePromptField.dropdownTop}
+      left={negativePromptField.dropdownLeft}
       onSelect={(entry) => {
         const textarea = document.activeElement as HTMLTextAreaElement;
         negativePromptField.onSelect(textarea, entry);

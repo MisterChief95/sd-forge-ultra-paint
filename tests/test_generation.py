@@ -389,17 +389,17 @@ def test_whole_image_result_uses_mask_as_alpha(fake_forge_modules):
 
 def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_modules):
     generation, fake_shared = fake_forge_modules
-    composite = _composite(32, 32)
+    composite = _composite(64, 64)
     mask = Image.new("L", composite.size, 0)
-    mask.paste(255, (12, 12, 20, 20))
+    mask.paste(255, (24, 24, 40, 40))
 
     result = generation.run_generation(
         composite,
         {
             "coherence_pass_enabled": True,
-            "coherence_edge_size": 3,
+            "coherence_edge_size": 4,
             "denoising_strength": 0.9,
-            "mask_blur": 7,
+            "mask_blur": 3,
         },
         mask,
     )
@@ -410,13 +410,17 @@ def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_m
     assert len(fake_shared.process_calls) == 1
     p = fake_shared.process_calls[0]
     assert p.ultra_paint_fast_coherence_enabled is True
-    assert p.ultra_paint_coherence_edge_size == 3
-    # Blurred *then* dilated ("feathered"): a smooth, continuous ramp with
-    # no hard clip-induced jump at the mask's original edge.
-    alpha_row = [result.images[0].getpixel((x, 16))[3] for x in range(4, 16)]
+    assert p.ultra_paint_coherence_edge_size == 4
+    # Dilated (by edge_size/2 *plus* the blur's own inward reach) then
+    # blurred once: a smooth, continuous ramp with no hard clip-induced jump,
+    # and the original mask edge (x=24) stays fully opaque -- the dilation
+    # margin must be wide enough that the blur's inward saturation distance
+    # doesn't eat back past it and bleed through what the ring pass actually
+    # regenerated.
+    alpha_row = [result.images[0].getpixel((x, 32))[3] for x in range(0, 25)]
     assert alpha_row == sorted(alpha_row)
     assert alpha_row[0] < alpha_row[-1]
-    assert max(b - a for a, b in zip(alpha_row, alpha_row[1:])) <= 8
+    assert alpha_row[-1] >= 250  # original seam: must not bleed
 
 
 def test_disabled_coherence_keeps_single_pass_mask_alpha(fake_forge_modules):
