@@ -11,12 +11,16 @@ const TAGS_URL = "/ultra_paint/data/tags.csv";
 const INDEX_CHUNK_SIZE = 5000;
 
 // Longest index-key prefix (see indexKeysFor); caps bucket-lookup cost once
-// a query is at least this long. Every prefix up to this length is indexed,
-// so search itself can go as low as 1 char -- for a very common single
-// letter against a full danbooru-sized CSV that bucket can hold a big slice
-// of the tag list, which is a real per-keystroke cost, not a free lunch.
+// a query is at least this long. Every prefix up to this length is indexed.
+// ponytail: MIN_QUERY_LENGTH is 2, not 1 -- on the real 188k-row tags.csv a
+// 1-char bucket (e.g. "s") holds 15-20k+ entries vs. ~5k for 2 chars, and
+// searchTags does an O(bucket) .includes()+sort on every matching keystroke.
+// If profiling still shows jank at 2 chars on real hardware, move the index
+// and search into a Web Worker (index can't be structured-cloned back
+// cheaply, so keep it and the search there; tag results with a request id
+// so a stale response can't clobber a newer one).
 const KEY_LENGTH = 3;
-export const MIN_QUERY_LENGTH = 1;
+export const MIN_QUERY_LENGTH = 2;
 
 export interface TagEntry {
   name: string;

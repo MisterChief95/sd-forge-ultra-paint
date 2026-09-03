@@ -25,6 +25,7 @@
     type GenerationOptions,
   } from "./generation/generationApi";
   import { buildLoraPrompt, type SelectedLora } from "./generation/lora";
+  import { autoFormatPromptSpacing } from "./generation/promptFormat";
 
   const SETTINGS_DEBOUNCE_MS = 1000;
 
@@ -139,6 +140,8 @@
   });
 
   function generate(): void {
+    prompt = autoFormatPromptSpacing(prompt);
+    negativePrompt = autoFormatPromptSpacing(negativePrompt);
     void controller.generate({
       generationMode,
       prompt: buildLoraPrompt(prompt, selectedLoras),
@@ -171,6 +174,8 @@
   }
 
   function upscale(): void {
+    prompt = autoFormatPromptSpacing(prompt);
+    negativePrompt = autoFormatPromptSpacing(negativePrompt);
     void controller.upscale({
       prompt: buildLoraPrompt(prompt, selectedLoras),
       negativePrompt,
@@ -390,12 +395,8 @@
 <section
   class="box-border flex h-full w-full flex-col gap-3 p-3 text-xs"
   style="color: var(--upaint-text); font-family: var(--upaint-font);"
-  aria-labelledby="upaint-generation-title"
+  aria-label="Generation"
 >
-  <header class="border-b pb-2" style="border-color: var(--upaint-border);">
-    <h2 id="upaint-generation-title" class="m-0 text-sm font-semibold">Generation</h2>
-  </header>
-
   {#if isVideoModel}
     <p
       class="m-0 border px-2 py-1.5 text-xs text-(--upaint-danger)"
@@ -418,13 +419,14 @@
     onCancelAll={() => void controller.cancelAll()}
   />
 
-  <p class="m-0 text-(--upaint-text-muted)" role="status">
-    Generation mode: {generationMode === "txt2img" ? "Text to image" : "Image to image"}
-  </p>
+  <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+    <p class="m-0 text-(--upaint-text-muted)" role="status">
+      Generation mode: {generationMode === "txt2img" ? "Text to image" : "Image to image"}
+    </p>
 
-  <PromptFields bind:prompt bind:negativePrompt />
+    <PromptFields bind:prompt bind:negativePrompt />
 
-  <div class="-mx-3 flex flex-col">
+    <div class="-mx-3 flex flex-col">
     <Accordion open title="Model">
       <div class="p-2">
         <ModelControls {models} {modules} bind:modelName bind:moduleNames />
@@ -598,5 +600,6 @@
         </Button>
       </div>
     </Accordion>
+    </div>
   </div>
 </section>
