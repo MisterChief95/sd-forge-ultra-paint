@@ -26,7 +26,6 @@
   import { handleInputKeyDown } from "./input/actionMap";
   import { isDocumentMutationLocked } from "./state/documentInteractionLock.svelte";
   import BoundaryInfoOverlay from "./ui/BoundaryInfoOverlay.svelte";
-  import FpsOverlay from "./ui/FpsOverlay.svelte";
   import FilterBar from "./ui/FilterBar.svelte";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
   import GenerationPreviewBar from "./ui/GenerationPreviewBar.svelte";
@@ -168,7 +167,6 @@
     <div class="relative min-h-0 flex-1">
       <div id="upaint-root" class="h-full w-full"></div>
       <BoundaryInfoOverlay />
-      <FpsOverlay />
       <ViewportControls />
       <GenerationPreviewBar />
       <FilterBar />
