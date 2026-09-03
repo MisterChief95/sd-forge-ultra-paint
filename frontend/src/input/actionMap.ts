@@ -280,8 +280,11 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
 /** Resolve the first matching, currently available action. */
 export function handleInputKeyDown(event: KeyboardEvent, app: UltraPaintApp | null): boolean {
-  if (!app || event.defaultPrevented || event.repeat || isEditableTarget(event.target))
-    return false;
+  if (!app || event.defaultPrevented || event.repeat) return false;
+  // Ctrl/Cmd+Enter is a conventional "submit" shortcut even inside text
+  // fields (e.g. the prompt textarea), so it alone bypasses the editable-
+  // target guard that protects normal typing/undo from every other shortcut.
+  if (isEditableTarget(event.target) && !primaryKey("enter")(event)) return false;
   const activeMaps = new Set<InputActionMapId>(["global", "canvas", app.getToolStore().activeTool]);
   const action = INPUT_ACTIONS.find(
     (candidate) => activeMaps.has(candidate.map) && candidate.matches(event),

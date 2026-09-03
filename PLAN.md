@@ -12,6 +12,11 @@ and design-decisions sections can lag a little; status should never lie.
 
 ## Current Status — tiled canvas holdovers — 2026-09-01
 
+### Canvas chrome cleanup — 2026-09-03
+
+The development-only FPS overlay has been removed from the canvas shell, and the
+shared toast viewport now appears in the bottom-right corner of the app.
+
 Upload, blank-layer creation, generated-Apply, paste-as-raster,
 paste-as-mask/control, brush/eraser painting, Fill, Clip to Boundary Box,
 mask/control read-only extraction, layer merge, mask merge, mask/control

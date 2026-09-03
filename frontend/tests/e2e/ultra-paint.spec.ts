@@ -642,6 +642,24 @@ test("X swaps primary/secondary brush colors, scoped to the brush tool and non-e
   ).toEqual({ color: "#00ff00", secondaryColor: "#ff0000" });
 });
 
+test("Ctrl+Enter starts generation even while the prompt textarea is focused", async ({ page }) => {
+  await routeOptions(page);
+  await openApp(page);
+  await page.route("**/ultra_paint/api/progress", (route) =>
+    route.fulfill({ json: { job: "ultra_paint", sampling_step: 1, sampling_steps: 1 } }),
+  );
+  await page.route("**/ultra_paint/api/generate", (route) =>
+    route.fulfill({ json: generateFixture }),
+  );
+
+  const prompt = page.getByPlaceholder("Describe what to generate");
+  await prompt.focus();
+  await prompt.fill("a cat");
+  await page.keyboard.press("Control+Enter");
+
+  await expect(page.getByRole("toolbar", { name: "Generation previews" })).toBeVisible();
+});
+
 test("holding Alt switches to the eyedropper, click samples a color, and releasing Alt restores the previous tool", async ({
   page,
 }) => {

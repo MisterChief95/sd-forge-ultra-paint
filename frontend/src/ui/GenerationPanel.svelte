@@ -419,7 +419,7 @@
     onCancelAll={() => void controller.cancelAll()}
   />
 
-  <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+  <div class="-mx-3 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3">
     <p class="m-0 text-(--upaint-text-muted)" role="status">
       Generation mode: {generationMode === "txt2img" ? "Text to image" : "Image to image"}
     </p>

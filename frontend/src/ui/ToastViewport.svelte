@@ -9,7 +9,7 @@
 </script>
 
 <div
-  class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
+  class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
 >
   {#each toastStore.toasts as toast (toast.id)}
     <div
