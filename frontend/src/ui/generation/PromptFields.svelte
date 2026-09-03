@@ -2,6 +2,7 @@
   import { fromAction } from "svelte/attachments";
 
   import TagAutocompleteDropdown from "./TagAutocompleteDropdown.svelte";
+  import { adjustPromptWeight, sanitizeInsertedTag, WEIGHT_STEP } from "./promptFormat";
   import {
     ensureTagsLoaded,
     MIN_QUERY_LENGTH,
@@ -53,29 +54,38 @@
     "tabSize",
   ] as const;
 
+  // Reused across calls (both prompt fields share it) instead of creating and
+  // removing a mirror div on every debounced keystroke -- that create/measure
+  // /destroy cycle forces layout each time, which is real cost on a page that
+  // already does an O(bucket) tag search per search (see tagAutocomplete.ts).
+  let mirrorEl: HTMLDivElement | undefined;
+  let markerEl: HTMLSpanElement | undefined;
+
   function caretOffset(
     textarea: HTMLTextAreaElement,
     position: number,
   ): { top: number; left: number } {
+    if (!mirrorEl || !markerEl) {
+      mirrorEl = document.createElement("div");
+      mirrorEl.style.position = "absolute";
+      mirrorEl.style.visibility = "hidden";
+      mirrorEl.style.whiteSpace = "pre-wrap";
+      mirrorEl.style.wordWrap = "break-word";
+      mirrorEl.style.top = "0";
+      mirrorEl.style.left = "-9999px";
+      markerEl = document.createElement("span");
+      markerEl.textContent = "​";
+      mirrorEl.appendChild(markerEl);
+      document.body.appendChild(mirrorEl);
+    }
+
     const style = getComputedStyle(textarea);
-    const mirror = document.createElement("div");
-    for (const prop of CARET_MIRROR_PROPS) mirror.style[prop] = style[prop];
-    mirror.style.position = "absolute";
-    mirror.style.visibility = "hidden";
-    mirror.style.whiteSpace = "pre-wrap";
-    mirror.style.wordWrap = "break-word";
-    mirror.style.top = "0";
-    mirror.style.left = "-9999px";
+    for (const prop of CARET_MIRROR_PROPS) mirrorEl.style[prop] = style[prop];
+    mirrorEl.textContent = textarea.value.slice(0, position);
+    mirrorEl.appendChild(markerEl);
 
-    mirror.textContent = textarea.value.slice(0, position);
-    const marker = document.createElement("span");
-    marker.textContent = "​";
-    mirror.appendChild(marker);
-
-    document.body.appendChild(mirror);
-    const top = marker.offsetTop - textarea.scrollTop + marker.offsetHeight;
-    const left = marker.offsetLeft - textarea.scrollLeft;
-    mirror.remove();
+    const top = markerEl.offsetTop - textarea.scrollTop + markerEl.offsetHeight;
+    const left = markerEl.offsetLeft - textarea.scrollLeft;
 
     return { top, left };
   }
@@ -95,7 +105,10 @@
     let blurHandle: ReturnType<typeof setTimeout> | undefined;
 
     function currentWordRange(value: string, caret: number): [number, number] {
-      const start = value.lastIndexOf(",", caret - 1) + 1;
+      let start = value.lastIndexOf(",", caret - 1) + 1;
+      // Skip past whitespace right after the comma so it lands in `before`
+      // instead of getting swallowed into the replaced word span.
+      while (start < caret && /\s/.test(value[start] ?? "")) start++;
       let end = value.indexOf(",", caret);
       if (end === -1) end = value.length;
       return [start, end];
@@ -148,7 +161,7 @@
       const before = value.slice(0, wordStart);
       const after = value.slice(wordEnd);
       const needsLeadingSpace = before.length > 0 && !/[\s,]$/.test(before);
-      const insertion = `${needsLeadingSpace ? " " : ""}${entry.name}, `;
+      const insertion = `${needsLeadingSpace ? " " : ""}${sanitizeInsertedTag(entry.name)}, `;
       const newValue = before + insertion + after.replace(/^\s+/, "");
       const caret = before.length + insertion.length;
 
@@ -160,8 +173,19 @@
     }
 
     function onKeydown(event: KeyboardEvent): void {
-      if (!open || results.length === 0) return;
       const textarea = event.currentTarget as HTMLTextAreaElement;
+
+      if (event.ctrlKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        event.preventDefault();
+        const delta = event.key === "ArrowUp" ? WEIGHT_STEP : -WEIGHT_STEP;
+        const result = adjustPromptWeight(textarea.value, textarea.selectionStart, delta);
+        textarea.value = result.value;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.setSelectionRange(result.caret, result.caret);
+        return;
+      }
+
+      if (!open || results.length === 0) return;
 
       switch (event.key) {
         case "ArrowDown":
