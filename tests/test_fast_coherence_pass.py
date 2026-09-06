@@ -96,7 +96,9 @@ def test_coherence_ring_scales_edge_size_but_not_mask_blur(
     script = module.FastCoherencePass()
 
     def _run(canvas_size):
-        p = _fake_p(mask_blur=8, edge_size=16, canvas_size=canvas_size, coherence_mask=mask)
+        p = _fake_p(
+            mask_blur=8, edge_size=16, canvas_size=canvas_size, coherence_mask=mask
+        )
         p.ultra_paint_fast_coherence_enabled = True
         ps = types.SimpleNamespace(samples=torch.zeros((1, 4, 16, 16)))
         script.post_sample(p, ps)

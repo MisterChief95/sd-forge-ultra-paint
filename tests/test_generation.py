@@ -608,7 +608,9 @@ def test_coherence_rejects_incompatible_direct_api_options(
     generation, fake_shared = fake_forge_modules
 
     with pytest.raises(ValueError, match=message):
-        generation.run_generation(_composite(), gen_params, Image.new("L", (64, 64), 255))
+        generation.run_generation(
+            _composite(), gen_params, Image.new("L", (64, 64), 255)
+        )
 
     assert fake_shared.process_calls == []
 
@@ -712,7 +714,12 @@ def test_mask_blur_unscaled_for_inpaint_full_res(fake_forge_modules):
 
     p = generation.build_img2img_processing(
         composite,
-        {"mask_blur": 6, "target_width": 64, "target_height": 64, "inpaint_full_res": True},
+        {
+            "mask_blur": 6,
+            "target_width": 64,
+            "target_height": 64,
+            "inpaint_full_res": True,
+        },
         mask_image=mask,
     )
 

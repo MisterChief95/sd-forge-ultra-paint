@@ -267,9 +267,8 @@ def validate_generation_options(gen_params: dict) -> None:
         raise ValueError(
             'Ultra Paint: Coherence Pass requires inpaint area "Whole picture"'
         )
-    if (
-        _get(gen_params, "coherence_algorithm") == "gradient"
-        and _get(gen_params, "soft_inpainting_enabled")
+    if _get(gen_params, "coherence_algorithm") == "gradient" and _get(
+        gen_params, "soft_inpainting_enabled"
     ):
         raise ValueError(
             "Ultra Paint: Gradient Coherence Pass cannot be combined with Soft Inpainting"
