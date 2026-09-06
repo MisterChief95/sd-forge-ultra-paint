@@ -110,3 +110,14 @@ def test_coherence_ring_scales_edge_size_but_not_mask_blur(
     # `canvas_size` -- matching Forge's own `mask_blur`, which blurs before
     # resizing to the output.
     assert blur_reaches[0] == blur_reaches[1]
+
+
+def test_raw_mask_blur_is_restored_for_infotext(fast_coherence_pass):
+    p = types.SimpleNamespace(
+        ultra_paint_mask_blur_infotext=8,
+        extra_generation_params={"Mask blur": 4},
+    )
+
+    fast_coherence_pass.FastCoherencePass().before_process_batch(p)
+
+    assert p.extra_generation_params["Mask blur"] == 8

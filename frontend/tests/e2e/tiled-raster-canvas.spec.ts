@@ -1191,9 +1191,12 @@ test("a stroke that allocates a new tile reports pixel-tight bounds, not the ful
       layerStore: {
         setBoundaryBox(box: { x: number; y: number; width: number; height: number }): void;
         setSelectedLayerId(id: string): void;
-        getTiledSurface(
-          id: string,
-        ): { bounds: { x: number; y: number; width: number; height: number } | null } | undefined;
+        getTiledSurface(id: string):
+          | {
+              bounds: { x: number; y: number; width: number; height: number } | null;
+              tileCount: number;
+            }
+          | undefined;
       };
       paintToolStore: {
         setBrushSettings(settings: {
@@ -1247,7 +1250,9 @@ test("a stroke that allocates a new tile reports pixel-tight bounds, not the ful
     const node = privateApp.tree.getNode(id);
     privateApp.world.scale.set(1);
     privateApp.world.position.set(0, 0);
-    const target = node.container.toGlobal({ x: 1050, y: 1050 });
+    // The stamp's square bounds touch tile (1,1), but its circular alpha does
+    // not reach that diagonal tile. The empty allocation must be pruned.
+    const target = node.container.toGlobal({ x: 1015, y: 1015 });
     privateApp.world.position.set(
       privateApp.app.renderer.width / 2 - target.x,
       privateApp.app.renderer.height / 2 - target.y,
@@ -1262,7 +1267,7 @@ test("a stroke that allocates a new tile reports pixel-tight bounds, not the ful
         y: rect.y + (global.y * rect.height) / privateApp.app.renderer.height,
       };
     };
-    return { id, dab: toClient({ x: 1050, y: 1050 }) };
+    return { id, dab: toClient({ x: 1015, y: 1015 }) };
   });
 
   await page.mouse.move(setup.dab.x, setup.dab.y);
@@ -1270,22 +1275,29 @@ test("a stroke that allocates a new tile reports pixel-tight bounds, not the ful
   await page.mouse.move(setup.dab.x + 1, setup.dab.y, { steps: 1 });
   await page.mouse.up();
 
-  const bounds = await page.evaluate((id) => {
+  const result = await page.evaluate((id) => {
     const hook = (window as TestWindow).__ultraPaintTest as unknown as {
       layerStore: {
-        getTiledSurface(
-          id: string,
-        ): { bounds: { x: number; y: number; width: number; height: number } | null } | undefined;
+        getTiledSurface(id: string):
+          | {
+              bounds: { x: number; y: number; width: number; height: number } | null;
+              tileCount: number;
+            }
+          | undefined;
       };
     };
-    return hook.layerStore.getTiledSurface(id)?.bounds ?? null;
+    const surface = hook.layerStore.getTiledSurface(id);
+    return { bounds: surface?.bounds ?? null, tileCount: surface?.tileCount ?? 0 };
   }, setup.id);
 
-  expect(bounds).not.toBeNull();
+  expect(result.bounds).not.toBeNull();
   // Pixel-tight bounds keep the union comfortably under the full 2048 span;
   // the pre-fix full-tile padding pushed both axes out to exactly 2048.
-  expect(bounds!.width).toBeLessThan(1200);
-  expect(bounds!.height).toBeLessThan(1200);
+  expect(result.bounds!.width).toBeLessThan(1200);
+  expect(result.bounds!.height).toBeLessThan(1200);
+  // Original tile (0,0) plus the two cardinal neighbors painted by the dab;
+  // the transparent diagonal candidate tile must not stay allocated.
+  expect(result.tileCount).toBe(3);
 });
 
 test("blank layers and generated-Apply images ingest through the tiled surface", async ({

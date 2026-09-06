@@ -268,7 +268,11 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
           state.originX,
           state.originY,
         );
-        if (bounds) transaction.includeBounds(bounds);
+        if (bounds) {
+          transaction.includeBounds(bounds);
+        } else {
+          this.surface.removeTile(state.coord, transaction);
+        }
       }
     }
 

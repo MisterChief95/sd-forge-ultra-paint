@@ -581,7 +581,36 @@ def test_coherence_pass_scales_edge_size_and_mask_blur_to_generation_resolution(
     # BB (mask) is half the generation resolution -- both must scale down by
     # that same ratio, and the paste-back call must reuse p.mask_blur as-is.
     assert p.mask_blur == 3
+    assert p.ultra_paint_mask_blur_infotext == 6
     assert calls == [(4, 3)]
+
+
+@pytest.mark.parametrize(
+    ("gen_params", "message"),
+    [
+        (
+            {"coherence_pass_enabled": True, "inpaint_full_res": True},
+            'requires inpaint area "Whole picture"',
+        ),
+        (
+            {
+                "coherence_pass_enabled": True,
+                "coherence_algorithm": "gradient",
+                "soft_inpainting_enabled": True,
+            },
+            "cannot be combined with Soft Inpainting",
+        ),
+    ],
+)
+def test_coherence_rejects_incompatible_direct_api_options(
+    fake_forge_modules, gen_params, message
+):
+    generation, fake_shared = fake_forge_modules
+
+    with pytest.raises(ValueError, match=message):
+        generation.run_generation(_composite(), gen_params, Image.new("L", (64, 64), 255))
+
+    assert fake_shared.process_calls == []
 
 
 def test_gradient_algorithm_opts_into_the_other_script_and_shares_dilated_paste_back(

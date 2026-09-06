@@ -51,6 +51,11 @@ class FastCoherencePass(scripts.Script):
         # nothing here ever does.
         return scripts.AlwaysVisible if is_img2img else False
 
+    def before_process_batch(self, p, *args, **kwargs):
+        raw_mask_blur = getattr(p, "ultra_paint_mask_blur_infotext", None)
+        if raw_mask_blur is not None:
+            p.extra_generation_params["Mask blur"] = raw_mask_blur
+
     def post_sample(self, p, ps, *args):
         if not getattr(p, "ultra_paint_fast_coherence_enabled", False):
             return

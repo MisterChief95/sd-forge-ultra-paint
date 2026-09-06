@@ -259,6 +259,23 @@ def _get(gen_params: dict, key: str):
     return value
 
 
+def validate_generation_options(gen_params: dict) -> None:
+    """Reject combinations the UI deliberately makes mutually exclusive."""
+    if not _get(gen_params, "coherence_pass_enabled"):
+        return
+    if _get(gen_params, "inpaint_full_res"):
+        raise ValueError(
+            'Ultra Paint: Coherence Pass requires inpaint area "Whole picture"'
+        )
+    if (
+        _get(gen_params, "coherence_algorithm") == "gradient"
+        and _get(gen_params, "soft_inpainting_enabled")
+    ):
+        raise ValueError(
+            "Ultra Paint: Gradient Coherence Pass cannot be combined with Soft Inpainting"
+        )
+
+
 def _apply_model_selection(gen_params: dict) -> None:
     """Apply Ultra Paint's optional selector values through Forge's own API."""
     model = gen_params.get("model")
@@ -465,7 +482,8 @@ def build_img2img_processing(
     # and resizes *that* to the output, a ratio this can't precompute without
     # duplicating Forge's own crop-region math, so mask_blur is left as-is
     # there (already correct for the un-scaled boundary-box case).
-    mask_blur = int(_get(gen_params, "mask_blur"))
+    raw_mask_blur = int(_get(gen_params, "mask_blur"))
+    mask_blur = raw_mask_blur
     if mask is not None and not inpaint_full_res:
         mask_blur = scale_edge_size(mask_blur, (output_width, output_height), mask.size)
 
@@ -530,6 +548,12 @@ def build_img2img_processing(
     # `setup_for_ui_only` scripts (scripts.py:1018) exactly the way
     # modules/api/api.py:476 does, leaving our explicit fields authoritative.
     p.is_api = True
+
+    if mask_blur != raw_mask_blur:
+        # Forge needs the scaled value while processing, but its infotext must
+        # preserve the user's slider value so pasted parameters reproduce the
+        # request. Our always-on script restores this after Forge's init().
+        p.ultra_paint_mask_blur_infotext = raw_mask_blur
 
     p.scripts = modules.scripts.scripts_img2img
     p.script_args = _default_script_args(p.scripts)
@@ -648,6 +672,8 @@ def run_generation(
     `control_layers` stays a separate top-level argument rather than becoming
     part of `gen_params`; see the module docstring.
     """
+    validate_generation_options(gen_params)
+
     if generation_mode not in {"img2img", "txt2img", "upscale"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
 
