@@ -52,10 +52,12 @@ authoritative, continuously-updated status and roadmap.
   Shift-constrained), and mirror one selected layer through an undoable,
   grid-snapping canvas gizmo without rewriting tiled pixels.
 - **Generation panel**: model, VAE/text-encoder, and LoRA selection, prompt/negative
-  prompt with tag autocompletion, sampler/scheduler (pulled live from Forge),
-  steps/CFG/denoise, a frontend FIFO queue, in-button progress with a live
-  preview image, current/remaining/all cancellation through Forge's interrupt
-  mechanism, and server-persisted generation-panel settings.
+  prompt with tag autocompletion, keyboard attention-weight adjustment
+  (Ctrl+Up/Down), and auto-formatting of comma/whitespace spacing,
+  sampler/scheduler (pulled live from Forge), steps/CFG/denoise, a frontend
+  FIFO queue, in-button progress with a live preview image, current/remaining/all
+  cancellation through Forge's interrupt mechanism, and server-persisted
+  generation-panel settings.
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
@@ -70,14 +72,13 @@ auto-scale to native resolution, generation-panel persistence, and
 prompt-tag autocomplete) has substantially landed; see `PLAN.md` for the
 current sub-feature breakdown. Ahead:
 
-- **In-progress**: further tag autocompletion polish, tag weighting adjustment
-  via keyboard.
 - **Phase 4 — Multi-layer ControlNet refinements**: the single-unit-per-layer
   path is implemented; multi-unit stacking and richer preprocessor controls
   remain.
 - **Phase 5 — Groups, transforms, selection, shape tools**: the first
   single-layer transform gizmo has landed; multi-selection pivots,
-  marquee/lasso selection, and basic vector shapes remain.
+  marquee/lasso selection tools, a gradient (fill) tool, and basic vector
+  shape tools remain.
 - **Phase 6 — Document persistence**: save/load the actual canvas (layers,
   pixels, boundary box, masks) as a project file, not just generation
   settings.
