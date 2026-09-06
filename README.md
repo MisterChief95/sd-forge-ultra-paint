@@ -12,7 +12,7 @@ paint, mask and ControlNet layers - wired directly into Forge's existing generat
 
 <img width="1740" height="919" alt="image" src="https://github.com/user-attachments/assets/e564ad75-18ff-4c07-a8a9-4f6f83ea202b" />
 
-**Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
+**Status: actively developed, work-in-progress.** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
 `<iframe>`. Layer painting, undo/redo, an InvokeAI-style boundary box, mask and
 ControlNet layers, an infinite tile-backed canvas, auto-scale-to-native-resolution,
@@ -65,23 +65,20 @@ authoritative, continuously-updated status and roadmap.
 
 ## Roadmap
 
-Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary
-box, Playwright e2e coverage) are complete. Phase 3 (masking/inpainting,
-outpainting, the infinite tile-backed canvas, ControlNet/LoRA integration,
-auto-scale to native resolution, generation-panel persistence, and
-prompt-tag autocomplete) has substantially landed; see `PLAN.md` for the
-current sub-feature breakdown. Ahead:
+Painting tools, the Svelte/iframe shell, the boundary box, Playwright e2e
+coverage, masking/inpainting, outpainting, the infinite tile-backed canvas,
+ControlNet/LoRA integration, auto-scale to native resolution,
+generation-panel persistence, and prompt-tag autocomplete have all
+substantially landed; see `PLAN.md` for the current sub-feature breakdown.
+Ahead:
 
-- **Phase 4 — Multi-layer ControlNet refinements**: the single-unit-per-layer
-  path is implemented; multi-unit stacking and richer preprocessor controls
-  remain.
-- **Phase 5 — Groups, transforms, selection, shape tools**: the first
-  single-layer transform gizmo has landed; multi-selection pivots,
-  marquee/lasso selection tools, a gradient (fill) tool, and basic vector
-  shape tools remain.
-- **Phase 6 — Document persistence**: save/load the actual canvas (layers,
-  pixels, boundary box, masks) as a project file, not just generation
-  settings.
+- **Multi-layer ControlNet refinements**: the single-unit-per-layer path is
+  implemented; multi-unit stacking and richer preprocessor controls remain.
+- **Selection and shape tools**: the first single-layer transform gizmo has
+  landed; multi-selection pivots, marquee/lasso selection tools, a gradient
+  (fill) tool, and basic vector shape tools remain.
+- **Document persistence**: save/load the actual canvas (layers, pixels,
+  boundary box, masks) as a project file, not just generation settings.
 - **Planned**: a pre-built single-page app bundle installed on extension load
   (no manual `npm run build` step), and registering other extensions'
   controls in the generation panel.
@@ -91,7 +88,7 @@ current sub-feature breakdown. Ahead:
   so far has exercised a real Forge server, so "build/typecheck-verified" work
   throughout the project still awaits live confirmation.
 
-`PLAN.md` is the living, continuously-updated source of truth for status, phase
+`PLAN.md` is the living, continuously-updated source of truth for status,
 task breakdowns, and architecture decisions — read it before making changes.
 
 ## Installation
