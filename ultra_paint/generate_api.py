@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from modules import call_queue, shared
 from modules_forge import main_thread
 
-from ultra_paint.generation import run_generation
+from ultra_paint.generation import run_generation, validate_generation_options
 
 __all__ = [
     "GENERATE_ROUTE",
@@ -115,6 +115,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     single worker thread via `main_thread.run_and_wait_result`.
     """
     try:
+        validate_generation_options(request.gen_params)
         composite_image = _decode_data_url(request.composite_image)
         mask_image = (
             _decode_data_url(request.mask_image) if request.mask_image else None

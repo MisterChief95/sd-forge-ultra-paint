@@ -51,6 +51,11 @@ class FastCoherencePass(scripts.Script):
         # nothing here ever does.
         return scripts.AlwaysVisible if is_img2img else False
 
+    def before_process_batch(self, p, *args, **kwargs):
+        raw_mask_blur = getattr(p, "ultra_paint_mask_blur_infotext", None)
+        if raw_mask_blur is not None:
+            p.extra_generation_params["Mask blur"] = raw_mask_blur
+
     def post_sample(self, p, ps, *args):
         if not getattr(p, "ultra_paint_fast_coherence_enabled", False):
             return
@@ -79,12 +84,18 @@ class FastCoherencePass(scripts.Script):
             ps.samples
         )  # (B, C, H, W) latent, pre-decode -- (B, C, T, H, W) for video models
 
-        # `edge_size`/`mask_blur` are pixel units in the mask's own
-        # resolution -- coherence_mask's own size, not (p.width, p.height)
-        # (Forge doesn't assume these match: processing.py:1800-1801). Scale
-        # both into latent units by the real width/height ratio -- works
-        # regardless of the model's VAE downscale factor (8x for most SD
-        # models, 16x for some, a non-uniform ratio for video models).
+        # `edge_size` has no Forge equivalent -- it's calibrated in pixels of
+        # the generation output (`canvas_size`, i.e. (p.width, p.height)), so
+        # rescale it into the mask's own pixel space first. `p.mask_blur` is
+        # used as-is: `build_img2img_processing` already rescaled it the same
+        # way (Coherence Pass always runs with `inpaint_full_res=False`), so
+        # it's already in the mask's own pixel space here too -- rescaling it
+        # *again* would make the coherence ring's blur disagree with both
+        # Forge's own main-pass mask blur and the paste-back feather in
+        # generation.py, which reuse this same already-rescaled field.
+        # Both then convert into latent units by the real width/height ratio
+        # -- works regardless of the model's VAE downscale factor (8x for
+        # most SD models, 16x for some, a non-uniform ratio for video models).
         lh, lw = samples.shape[-2], samples.shape[-1]
         iw, ih = coherence_mask.size
         edge_scale = (lw / iw + lh / ih) / 2

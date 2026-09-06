@@ -398,6 +398,7 @@ def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_m
         {
             "coherence_pass_enabled": True,
             "coherence_edge_size": 4,
+            "coherence_algorithm": "ring",
             "denoising_strength": 0.9,
             "mask_blur": 3,
         },
@@ -532,6 +533,198 @@ def test_coherence_pass_edge_size_independent_of_generation_resolution(
     )
 
     assert edge_sizes == [3]
+
+
+def test_coherence_pass_scales_edge_size_and_mask_blur_to_generation_resolution(
+    fake_forge_modules, monkeypatch
+):
+    """Regression test: `coherence_edge_size` and `mask_blur` are both
+    calibrated in pixels of the generation output (p.width/p.height), and
+    both must scale down into the mask's own pixel space when a
+    Resolution-scale mode generates larger than the boundary box -- for
+    `coherence_edge_size` (no Forge equivalent) that's this module's own
+    scaling; for `mask_blur` it works by pre-shrinking the value handed to
+    Forge's `mask_blur`, since Forge blurs at the mask's own resolution
+    before resizing it to the output, so the blur that survives Forge's
+    resize still lands on the requested output-pixel width. The paste-back
+    ring must reuse that same already-scaled `p.mask_blur`, not re-derive it,
+    so the coherence ring, Forge's own main-pass mask blur, and the
+    paste-back feather all agree."""
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    original_dilate_then_blur = generation.dilate_then_blur
+    calls = []
+
+    def _capture_dilate_then_blur(alpha, edge_size, blur):
+        calls.append((edge_size, blur))
+        return original_dilate_then_blur(alpha, edge_size, blur)
+
+    monkeypatch.setattr(generation, "dilate_then_blur", _capture_dilate_then_blur)
+
+    generation.run_generation(
+        composite,
+        {
+            "coherence_pass_enabled": True,
+            "coherence_edge_size": 8,
+            "mask_blur": 6,
+            "target_width": 64,
+            "target_height": 64,
+        },
+        mask,
+    )
+
+    p = fake_shared.process_calls[0]
+    assert (p.width, p.height) == (64, 64)
+    assert p.ultra_paint_coherence_canvas_size == (64, 64)
+    # BB (mask) is half the generation resolution -- both must scale down by
+    # that same ratio, and the paste-back call must reuse p.mask_blur as-is.
+    assert p.mask_blur == 3
+    assert p.ultra_paint_mask_blur_infotext == 6
+    assert calls == [(4, 3)]
+
+
+@pytest.mark.parametrize(
+    ("gen_params", "message"),
+    [
+        (
+            {"coherence_pass_enabled": True, "inpaint_full_res": True},
+            'requires inpaint area "Whole picture"',
+        ),
+        (
+            {
+                "coherence_pass_enabled": True,
+                "soft_inpainting_enabled": True,
+            },
+            "cannot be combined with Soft Inpainting",
+        ),
+    ],
+)
+def test_coherence_rejects_incompatible_direct_api_options(
+    fake_forge_modules, gen_params, message
+):
+    generation, fake_shared = fake_forge_modules
+
+    with pytest.raises(ValueError, match=message):
+        generation.run_generation(
+            _composite(), gen_params, Image.new("L", (64, 64), 255)
+        )
+
+    assert fake_shared.process_calls == []
+
+
+def test_gradient_algorithm_opts_into_the_other_script_and_shares_dilated_paste_back(
+    fake_forge_modules, monkeypatch
+):
+    """`"gradient"` steers the existing trajectory via
+    scripts/gradient_coherence_pass.py's on_mask_blend hook, but its per-step
+    blend now uses the same dilate+blur alpha as the ring method's paste-back
+    -- so the two share the exact same paste-back code path (no more
+    plain/no-coherence special case for "gradient")."""
+    generation, fake_shared = fake_forge_modules
+    # Roomy canvas on purpose: `dilate_then_blur` reaches edge_size/2 plus the
+    # blur's own ~2.5*mask_blur px past the mask, so on a 32px canvas the
+    # dilated alpha covers the whole frame and "fully transparent far away"
+    # has nowhere left to be true.
+    composite = _composite(96, 96)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (40, 40, 56, 56))
+
+    original_dilate_then_blur = generation.dilate_then_blur
+    calls = []
+
+    def _capture_dilate_then_blur(alpha, edge_size, blur):
+        calls.append((edge_size, blur))
+        return original_dilate_then_blur(alpha, edge_size, blur)
+
+    monkeypatch.setattr(generation, "dilate_then_blur", _capture_dilate_then_blur)
+
+    result = generation.run_generation(
+        composite,
+        {
+            "coherence_pass_enabled": True,
+            "coherence_edge_size": 4,
+            "coherence_algorithm": "gradient",
+        },
+        mask,
+    )
+
+    p = fake_shared.process_calls[0]
+    assert p.ultra_paint_gradient_coherence_enabled is True
+    assert not hasattr(p, "ultra_paint_fast_coherence_enabled")
+    # Same geometry inputs as the ring method -- that's what makes the two
+    # directly comparable at matching settings.
+    assert p.ultra_paint_coherence_edge_size == 4
+    assert p.ultra_paint_coherence_canvas_size == (p.width, p.height)
+    assert p.ultra_paint_coherence_mask is not None
+    assert calls == [(4, 4)]
+    # Dilated alpha, exactly like the ring method's paste-back: fully
+    # transparent far away, but the boundary now extends *outward* past the
+    # mask's own edge rather than clipping there.
+    assert result.images[0].getpixel((2, 48))[3] == 0
+    assert result.images[0].getpixel((59, 48))[3] > 0
+
+
+def test_gradient_algorithm_is_default_and_ring_remains_available(
+    fake_forge_modules, monkeypatch
+):
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    original_dilate_then_blur = generation.dilate_then_blur
+    calls = []
+
+    def _capture(alpha, edge_size, blur):
+        calls.append((edge_size, blur))
+        return original_dilate_then_blur(alpha, edge_size, blur)
+
+    monkeypatch.setattr(generation, "dilate_then_blur", _capture)
+
+    for gen_params in (
+        {"coherence_pass_enabled": True, "coherence_edge_size": 4},
+        {
+            "coherence_pass_enabled": True,
+            "coherence_edge_size": 4,
+            "coherence_algorithm": "ring",
+        },
+    ):
+        generation.run_generation(composite, gen_params, mask)
+
+    default_p, ring_p = fake_shared.process_calls
+    assert default_p.ultra_paint_gradient_coherence_enabled is True
+    assert not hasattr(default_p, "ultra_paint_fast_coherence_enabled")
+    assert ring_p.ultra_paint_fast_coherence_enabled is True
+    assert not hasattr(ring_p, "ultra_paint_gradient_coherence_enabled")
+    assert calls == [(4, 4), (4, 4)]
+
+
+def test_mask_blur_unscaled_for_inpaint_full_res(fake_forge_modules):
+    """`inpaint_full_res=True` ("Only masked") crops to a mask-derived
+    sub-region and resizes *that* to the output -- a different ratio than
+    boundary-box-size -> output-size, and one this module can't precompute
+    without duplicating Forge's own crop-region math. `mask_blur` must stay
+    unscaled in that case rather than applying the whole-image ratio."""
+    generation, _fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 255)
+
+    p = generation.build_img2img_processing(
+        composite,
+        {
+            "mask_blur": 6,
+            "target_width": 64,
+            "target_height": 64,
+            "inpaint_full_res": True,
+        },
+        mask_image=mask,
+    )
+
+    assert (p.width, p.height) == (64, 64)
+    assert p.mask_blur == 6
 
 
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):

@@ -1179,6 +1179,127 @@ test("brush and eraser strokes paint and undo/redo correctly on a tiled raster l
   expect(await samplePixels(page, result.afterBrushRedoUrl, brushPoint)).toEqual([white]);
 });
 
+test("a stroke that allocates a new tile reports pixel-tight bounds, not the full tile", async ({
+  page,
+}) => {
+  const setup = await page.evaluate(async () => {
+    type Hook = {
+      getActiveUltraPaintApp(): {
+        ready: Promise<void>;
+        addImageFromFile(file: File | Blob): Promise<string>;
+      } | null;
+      layerStore: {
+        setBoundaryBox(box: { x: number; y: number; width: number; height: number }): void;
+        setSelectedLayerId(id: string): void;
+        getTiledSurface(id: string):
+          | {
+              bounds: { x: number; y: number; width: number; height: number } | null;
+              tileCount: number;
+            }
+          | undefined;
+      };
+      paintToolStore: {
+        setBrushSettings(settings: {
+          color?: string;
+          radius?: number;
+          hardness?: number;
+          opacity?: number;
+        }): void;
+      };
+    };
+    type PrivateApp = {
+      app: { renderer: { width: number; height: number } };
+      world: { position: { set(x: number, y: number): void }; scale: { set(value: number): void } };
+      tree: {
+        getNode(id: string): {
+          container: { toGlobal(point: { x: number; y: number }): { x: number; y: number } };
+        };
+      };
+    };
+
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    // 2048x2048 spans a 2x2 grid at the default 1024 tile size.
+    hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 2048, height: 2048 });
+
+    // A tiny solid image ingests with bounds tight to its own pixels
+    // (`blitTexture` passes the exact source rect, not the tile it lands
+    // in), so any padding after the stroke below is attributable only to
+    // the stroke commit, not the initial ingest.
+    const canvas = document.createElement("canvas");
+    canvas.width = 40;
+    canvas.height = 40;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#202020";
+    ctx.fillRect(0, 0, 40, 40);
+    const blob: Blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
+    );
+    const id = await app.addImageFromFile(new File([blob], "solid.png", { type: blob.type }));
+    hook.layerStore.setSelectedLayerId(id);
+    hook.paintToolStore.setBrushSettings({ color: "#ffffff", radius: 10, hardness: 1, opacity: 1 });
+
+    // A single dab near (1050, 1050) lands just inside tile (1, 1), far from
+    // the origin the ingested image already occupies -- the pre-fix bug
+    // unioned in that *whole* newly-allocated tile ({1024,1024,1024,1024}),
+    // padding the layer's bounds out to the full 2048x2048 boundary box.
+    const privateApp = app as unknown as PrivateApp;
+    const node = privateApp.tree.getNode(id);
+    privateApp.world.scale.set(1);
+    privateApp.world.position.set(0, 0);
+    // The stamp's square bounds touch tile (1,1), but its circular alpha does
+    // not reach that diagonal tile. The empty allocation must be pruned.
+    const target = node.container.toGlobal({ x: 1015, y: 1015 });
+    privateApp.world.position.set(
+      privateApp.app.renderer.width / 2 - target.x,
+      privateApp.app.renderer.height / 2 - target.y,
+    );
+    const canvasEl = document.querySelector<HTMLCanvasElement>("#upaint-root canvas");
+    if (!canvasEl) throw new Error("Canvas is unavailable");
+    const rect = canvasEl.getBoundingClientRect();
+    const toClient = (point: { x: number; y: number }) => {
+      const global = node.container.toGlobal(point);
+      return {
+        x: rect.x + (global.x * rect.width) / privateApp.app.renderer.width,
+        y: rect.y + (global.y * rect.height) / privateApp.app.renderer.height,
+      };
+    };
+    return { id, dab: toClient({ x: 1015, y: 1015 }) };
+  });
+
+  await page.mouse.move(setup.dab.x, setup.dab.y);
+  await page.mouse.down();
+  await page.mouse.move(setup.dab.x + 1, setup.dab.y, { steps: 1 });
+  await page.mouse.up();
+
+  const result = await page.evaluate((id) => {
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as {
+      layerStore: {
+        getTiledSurface(id: string):
+          | {
+              bounds: { x: number; y: number; width: number; height: number } | null;
+              tileCount: number;
+            }
+          | undefined;
+      };
+    };
+    const surface = hook.layerStore.getTiledSurface(id);
+    return { bounds: surface?.bounds ?? null, tileCount: surface?.tileCount ?? 0 };
+  }, setup.id);
+
+  expect(result.bounds).not.toBeNull();
+  // Pixel-tight bounds keep the union comfortably under the full 2048 span;
+  // the pre-fix full-tile padding pushed both axes out to exactly 2048.
+  expect(result.bounds!.width).toBeLessThan(1200);
+  expect(result.bounds!.height).toBeLessThan(1200);
+  // Original tile (0,0) plus the two cardinal neighbors painted by the dab;
+  // the transparent diagonal candidate tile must not stay allocated.
+  expect(result.tileCount).toBe(3);
+});
+
 test("blank layers and generated-Apply images ingest through the tiled surface", async ({
   page,
 }) => {
@@ -1388,6 +1509,43 @@ test("merging visible layers composites chunk-by-chunk into a tiled surface, wit
     );
     expect(await hasExactColor(page, url, [0, 255, 0])).toBe(false);
   }
+});
+
+test("merging sparse corner layers prunes fully transparent destination tiles", async ({
+  page,
+}) => {
+  const mergedTileCount = await page.evaluate(async () => {
+    type Hook = NonNullable<TestWindow["__ultraPaintTest"]> & {
+      paintToolStore: { setBrushSettings(settings: { color?: string; opacity?: number }): void };
+      getActiveUltraPaintApp(): ReturnType<
+        NonNullable<TestWindow["__ultraPaintTest"]>["getActiveUltraPaintApp"]
+      > & {
+        mergeVisibleLayersToNewLayer(): string;
+      };
+    };
+    const hook = (window as TestWindow).__ultraPaintTest as unknown as Hook;
+    const app = hook!.getActiveUltraPaintApp();
+    if (!app) throw new Error("Ultra Paint app is unavailable");
+    await app.ready;
+
+    hook!.layerStore.setBoundaryBox({ x: 0, y: 0, width: 1200, height: 1200 });
+    // Opposite 100px corners span a 1200x1200 selection, or four 1024px tiles.
+    for (const { x, y, color } of [
+      { x: 0, y: 0, color: "#ff0000" },
+      { x: 1100, y: 1100, color: "#0000ff" },
+    ]) {
+      hook!.layerStore.setBoundaryBox({ x, y, width: 100, height: 100 });
+      const id = await app.addBlankLayer();
+      hook!.layerStore.setSelectedLayerId(id);
+      hook!.paintToolStore.setBrushSettings({ color, opacity: 1 });
+      app.fillSelectedLayer();
+    }
+
+    const mergedId = app.mergeVisibleLayersToNewLayer();
+    return hook!.layerStore.getTiledSurface(mergedId)?.tileCount;
+  });
+
+  expect(mergedTileCount).toBeLessThan(4);
 });
 
 test("merging layers keeps every layer's content even when the boundary box sits elsewhere", async ({

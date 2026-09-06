@@ -60,7 +60,19 @@ key                          default    notes
                                         frontend exposes both modes and defaults to whole BB.
 ``inpaint_full_res_padding``  ``32``    Pixels of context kept around the masked region when
                                         ``inpaint_full_res`` is set.
-``mask_blur``                ``4``      Pixels. Only used when a mask is supplied.
+``mask_blur``                ``4``      Pixels of the generation output. Only used when a mask
+                                        is supplied. When a Resolution-scale mode is active and
+                                        ``inpaint_full_res`` is unset ("Whole picture"/Coherence
+                                        Pass), this is rescaled down to the boundary-box-sized
+                                        mask's own pixel space before being handed to Forge, so
+                                        the blur Forge produces (it blurs before resizing the
+                                        mask to the output -- processing.py's ``init()``) still
+                                        lands on the requested output-pixel width regardless of
+                                        the scale factor. Left as-is for "Only masked"
+                                        (``inpaint_full_res=True``): Forge instead resizes a
+                                        mask-derived crop region to the output there, a ratio
+                                        this can't precompute without duplicating that crop-
+                                        region math.
 ``inpainting_mask_invert``   ``0``      0 = inpaint masked area, 1 = inpaint unmasked area.
 ``soft_inpainting_enabled``  ``False``  Enables Forge's Soft Inpainting always-on script
                                         when a mask is supplied.
@@ -74,6 +86,19 @@ key                          default    notes
 ``coherence_edge_size``       ``32``     Total pixel width of the coherence-pass ring,
                                         centered on the mask boundary (half dilates
                                         outward, half erodes inward).
+``coherence_algorithm``  ``"gradient"`` Which coherence-pass implementation runs.
+                                        ``"ring"`` re-samples the ring with fresh noise
+                                        (scripts/fast_coherence_pass.py). ``"gradient"``
+                                        instead blends the original latent against the
+                                        single existing trajectory at every step, weighted
+                                        by the same dilate-then-blur alpha the ring
+                                        method's own paste-back uses -- fully committed
+                                        deep inside the mask, softening only outward past
+                                        its boundary -- with no extra U-Net calls
+                                        (scripts/gradient_coherence_pass.py). Both read
+                                        the same ``coherence_edge_size``/``mask_blur``
+                                        geometry, and share the same dilated paste-back
+                                        alpha, so they can be compared A/B.
 ``soft_inpainting_power``    ``1``
 ``soft_inpainting_scale``    ``0.5``
 ``soft_inpainting_detail_preservation``  ``4``
@@ -207,6 +232,7 @@ GEN_PARAM_DEFAULTS: dict = {
     "inpaint_controlnet_weight": 1.0,
     "coherence_pass_enabled": False,
     "coherence_edge_size": 32,
+    "coherence_algorithm": "gradient",
     "soft_inpainting_power": 1,
     "soft_inpainting_scale": 0.5,
     "soft_inpainting_detail_preservation": 4,
@@ -231,6 +257,22 @@ def _get(gen_params: dict, key: str):
     if value is None and default is not None:
         return default
     return value
+
+
+def validate_generation_options(gen_params: dict) -> None:
+    """Reject combinations the UI deliberately makes mutually exclusive."""
+    if not _get(gen_params, "coherence_pass_enabled"):
+        return
+    if _get(gen_params, "inpaint_full_res"):
+        raise ValueError(
+            'Ultra Paint: Coherence Pass requires inpaint area "Whole picture"'
+        )
+    if _get(gen_params, "coherence_algorithm") == "gradient" and _get(
+        gen_params, "soft_inpainting_enabled"
+    ):
+        raise ValueError(
+            "Ultra Paint: Gradient Coherence Pass cannot be combined with Soft Inpainting"
+        )
 
 
 def _apply_model_selection(gen_params: dict) -> None:
@@ -425,6 +467,24 @@ def build_img2img_processing(
         output_height = height
 
     upscaler_name = _get(gen_params, "upscaler_name")
+    inpaint_full_res = bool(_get(gen_params, "inpaint_full_res"))
+
+    # `mask_blur` is pixels of the generation output, matching how the
+    # frontend's other px-denominated fields (`coherence_edge_size`) are
+    # calibrated. Forge itself blurs the mask at *its own* input resolution,
+    # before resizing it to (output_width, output_height) -- so pre-shrinking
+    # by that same ratio here means the blur that survives Forge's resize
+    # still lands on the requested output-pixel width, regardless of a
+    # Resolution-scale mode. Only valid for the "whole image" path (mask
+    # resized directly from its own full size to the output): "Only masked"
+    # (`inpaint_full_res=True`) instead crops to a mask-derived sub-region
+    # and resizes *that* to the output, a ratio this can't precompute without
+    # duplicating Forge's own crop-region math, so mask_blur is left as-is
+    # there (already correct for the un-scaled boundary-box case).
+    raw_mask_blur = int(_get(gen_params, "mask_blur"))
+    mask_blur = raw_mask_blur
+    if mask is not None and not inpaint_full_res:
+        mask_blur = scale_edge_size(mask_blur, (output_width, output_height), mask.size)
 
     p = StableDiffusionProcessingImg2Img(
         sd_model=shared.sd_model,
@@ -470,9 +530,9 @@ def build_img2img_processing(
         # False = use the whole boundary box; True = crop again around the
         # mask plus padding. The frontend exposes both and this must respect
         # the user's choice regardless of BB/model size.
-        inpaint_full_res=bool(_get(gen_params, "inpaint_full_res")),
+        inpaint_full_res=inpaint_full_res,
         inpaint_full_res_padding=int(_get(gen_params, "inpaint_full_res_padding")),
-        mask_blur=int(_get(gen_params, "mask_blur")),
+        mask_blur=mask_blur,
         inpainting_mask_invert=int(_get(gen_params, "inpainting_mask_invert")),
     )
 
@@ -487,6 +547,12 @@ def build_img2img_processing(
     # `setup_for_ui_only` scripts (scripts.py:1018) exactly the way
     # modules/api/api.py:476 does, leaving our explicit fields authoritative.
     p.is_api = True
+
+    if mask_blur != raw_mask_blur:
+        # Forge needs the scaled value while processing, but its infotext must
+        # preserve the user's slider value so pasted parameters reproduce the
+        # request. Our always-on script restores this after Forge's init().
+        p.ultra_paint_mask_blur_infotext = raw_mask_blur
 
     p.scripts = modules.scripts.scripts_img2img
     p.script_args = _default_script_args(p.scripts)
@@ -605,6 +671,8 @@ def run_generation(
     `control_layers` stays a separate top-level argument rather than becoming
     part of `gen_params`; see the module docstring.
     """
+    validate_generation_options(gen_params)
+
     if generation_mode not in {"img2img", "txt2img", "upscale"}:
         raise ValueError(f"Ultra Paint: unknown generation mode {generation_mode!r}")
 
@@ -664,12 +732,23 @@ def run_generation(
         and mask_image is not None
         and _get(gen_params, "coherence_pass_enabled")
     )
+    coherence_algorithm = _get(gen_params, "coherence_algorithm")
     if coherence_enabled:
-        # Picked up by scripts/fast_coherence_pass.py's post_sample hook --
-        # patches the latent in place before Forge's single decode.
-        p.ultra_paint_fast_coherence_enabled = True
+        if coherence_algorithm == "gradient":
+            # Picked up by scripts/gradient_coherence_pass.py's on_mask_blend
+            # hook -- steers the existing trajectory, no second sampling pass.
+            p.ultra_paint_gradient_coherence_enabled = True
+        else:
+            # Picked up by scripts/fast_coherence_pass.py's post_sample hook --
+            # patches the latent in place before Forge's single decode.
+            p.ultra_paint_fast_coherence_enabled = True
+        # Both algorithms read the same ring geometry.
         p.ultra_paint_coherence_edge_size = int(_get(gen_params, "coherence_edge_size"))
-        p.ultra_paint_coherence_canvas_size = composite_image.size
+        # `edge_size`/`mask_blur` are calibrated in pixels of the actual
+        # generation output (p.width/p.height) -- same convention as Forge's
+        # own `mask_blur` -- not the boundary-box-sized composite/mask, which
+        # a Resolution-scale mode can leave much smaller than the output.
+        p.ultra_paint_coherence_canvas_size = (p.width, p.height)
         p.ultra_paint_coherence_mask = mask_image.convert("L")
 
     with closing(p):
@@ -696,22 +775,32 @@ def run_generation(
 
                 # Latent already patched pre-decode -- paste back like the
                 # no-coherence path, but alpha against the *dilated* mask, not
-                # the plain one: the ring's blend extends `coherence_edge_size`
-                # px outside the original mask, and compositing against the
-                # un-dilated mask would clip that outward half away with
+                # the plain one: both algorithms' coherence effect extends
+                # `coherence_edge_size` px outside the original mask (ring:
+                # fresh-noise resample; gradient: the same dilate+blur alpha
+                # drives its per-step blend too -- see
+                # scripts/gradient_coherence_pass.py), and compositing against
+                # the un-dilated mask would clip that outward half away with
                 # alpha=0.
+                #
+                # `coherence_edge_size` has no Forge equivalent, so it's
+                # calibrated in output-resolution pixels and rescaled into
+                # `mask_image`'s own pixel space here. `p.mask_blur` is
+                # `build_img2img_processing`'s *already*-rescaled value (not
+                # the raw `gen_params["mask_blur"]`) -- Coherence Pass always
+                # runs with `inpaint_full_res=False`, so that rescaling
+                # applied, and reusing the same field here (rather than
+                # re-deriving it) keeps this paste-back feather, the
+                # coherence ring's own blur, and Forge's main-pass mask blur
+                # all in agreement.
                 dilated = dilate_then_blur(
                     mask_image.convert("L"),
                     scale_edge_size(
                         int(_get(gen_params, "coherence_edge_size")),
-                        composite_image.size,
+                        (p.width, p.height),
                         mask_image.size,
                     ),
-                    scale_edge_size(
-                        int(_get(gen_params, "mask_blur")),
-                        composite_image.size,
-                        mask_image.size,
-                    ),
+                    p.mask_blur,
                 )
                 debug_save(dilated, "08_dilated_blurred_alpha")
 

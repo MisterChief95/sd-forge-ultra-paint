@@ -58,6 +58,7 @@ def fake_forge_modules(monkeypatch):
         generation_calls.append((args, kwargs))
 
     fake_generation.run_generation = run_generation
+    fake_generation.validate_generation_options = lambda _gen_params: None
 
     for name, module in {
         "fastapi": fake_fastapi,
@@ -155,6 +156,29 @@ def test_malformed_control_layer_image_returns_400_without_generation(
         generate_api.generate(request)
 
     assert exc_info.value.status_code == 400
+    assert calls == []
+    assert generation_calls == []
+
+
+def test_invalid_generation_options_return_400_before_generation(
+    fake_forge_modules, monkeypatch
+):
+    generate_api, calls, generation_calls = fake_forge_modules
+
+    def reject(_gen_params):
+        raise ValueError("incompatible generation options")
+
+    monkeypatch.setattr(generate_api, "validate_generation_options", reject)
+    request = generate_api.GenerateRequest(
+        composite_image=_data_url(generate_api),
+        gen_params={"coherence_pass_enabled": True},
+    )
+
+    with pytest.raises(generate_api.HTTPException) as exc_info:
+        generate_api.generate(request)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "incompatible generation options"
     assert calls == []
     assert generation_calls == []
 

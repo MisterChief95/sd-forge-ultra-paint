@@ -3,6 +3,7 @@ import type { Application } from "pixi.js";
 
 import type { TileAllocation, TileEditDelta, TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
 import type { PixelBounds, TileCoord } from "../canvas/TileGrid";
+import { tightAlphaBounds } from "../canvas/TileRasterOps";
 import type { LayerNode } from "../scene/LayerNode";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BrushSettings } from "../state/paintToolStore.svelte";
@@ -207,7 +208,9 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
         width: this.tileSize,
         height: this.tileSize,
       };
+      let committedTarget: RenderTexture | null = null;
       this.surface.edit(region, { allocation, transaction }, (tile) => {
+        committedTarget = tile.target;
         if (this.options.mode === "eraser") {
           if (!state.previewTexture) return;
           const commitSprite = new Sprite({ texture: state.previewTexture });
@@ -258,7 +261,19 @@ export class TiledConsistentOpacityStroke implements StrokeSession {
           commitSprite.destroy({ texture: false, textureSource: false });
         }
       });
-      if (allocation === "allocate-missing") transaction.includeBounds(region);
+      if (allocation === "allocate-missing" && committedTarget) {
+        const bounds = tightAlphaBounds(
+          this.app.renderer,
+          committedTarget,
+          state.originX,
+          state.originY,
+        );
+        if (bounds) {
+          transaction.includeBounds(bounds);
+        } else {
+          this.surface.removeTile(state.coord, transaction);
+        }
+      }
     }
 
     const delta = transaction.commit();

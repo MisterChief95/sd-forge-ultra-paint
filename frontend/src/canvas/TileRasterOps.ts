@@ -7,6 +7,43 @@ import { TiledRasterCanvas } from "./TiledRasterCanvas";
 import type { PixelBounds } from "./TileGrid";
 
 /**
+ * Tight non-transparent pixel bounds of a texture, in `originX`/`originY`-
+ * offset caller space -- `null` if every pixel is fully transparent.
+ *
+ * Used to report a tile's actual painted extent instead of its full
+ * `tileSize x tileSize` allocation, which otherwise pads a layer's logical
+ * bounds out to whichever tiles a stroke merely touched.
+ */
+export function tightAlphaBounds(
+  renderer: Renderer,
+  target: RenderTexture,
+  originX: number,
+  originY: number,
+): PixelBounds | null {
+  const { pixels, width } = renderer.extract.pixels({ target });
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let offset = 3, pixel = 0; offset < pixels.length; offset += 4, pixel += 1) {
+    if (pixels[offset] === 0) continue;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  if (!Number.isFinite(minX)) return null;
+  return {
+    x: originX + minX,
+    y: originY + minY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+  };
+}
+
+/**
  * Composite a decoded/generated texture into persistent tiles at layer-local
  * coordinates. The source remains caller-owned and may be destroyed afterward.
  */

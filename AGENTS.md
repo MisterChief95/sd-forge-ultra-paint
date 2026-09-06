@@ -27,6 +27,7 @@ scripts/                         Forge auto-loaded callback/route shims
   ultra_paint_api.py              static SPA mount and progress route
   ultra_paint_*_api.py            FastAPI route registration for each feature
   fast_coherence_pass.py          Forge script for the fast coherence pass
+  gradient_coherence_pass.py      Forge script for the gradient coherence pass
 
 ultra_paint/                     Importable Python implementation
   config.py                       paths, DOM prefix, defaults, version

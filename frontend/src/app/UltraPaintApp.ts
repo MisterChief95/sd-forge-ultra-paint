@@ -77,9 +77,14 @@ import { toHexColor } from "../util/color";
 import { toPixiBlendMode } from "../util/blendModes";
 import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rendererCapabilities";
 import type { TileAllocation, TileEditDelta } from "../canvas/TiledRasterCanvas";
-import type { PixelBounds } from "../canvas/TileGrid";
+import type { PixelBounds, TileCoord } from "../canvas/TileGrid";
 import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
-import { blitTexture, copyTiledSurfaceTileByTile, flattenToCanvas } from "../canvas/TileRasterOps";
+import {
+  blitTexture,
+  copyTiledSurfaceTileByTile,
+  flattenToCanvas,
+  tightAlphaBounds,
+} from "../canvas/TileRasterOps";
 import type { LayerNode } from "../scene/LayerNode";
 
 const HISTORY_LIMIT = 40;
@@ -1876,7 +1881,11 @@ export class UltraPaintApp {
                 for (let offsetX = 0; offsetX < box.width; offsetX += tileSize) {
                   const region = { x: offsetX, y: offsetY, width: tileSize, height: tileSize };
                   transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
+                  let renderedTarget: RenderTexture | null = null;
+                  let renderedCoord: TileCoord | null = null;
                   surface.edit(region, { allocation: "allocate-missing", transaction }, (tile) => {
+                    renderedTarget = tile.target;
+                    renderedCoord = tile.coord;
                     app.renderer.render({
                       container: root,
                       target: tile.target,
@@ -1885,6 +1894,13 @@ export class UltraPaintApp {
                       clearColor: [0, 0, 0, 0],
                     });
                   });
+                  if (
+                    renderedTarget &&
+                    renderedCoord &&
+                    !tightAlphaBounds(app.renderer, renderedTarget, offsetX, offsetY)
+                  ) {
+                    surface.removeTile(renderedCoord, transaction);
+                  }
                 }
               }
               transaction.includeBounds({ x: 0, y: 0, width: box.width, height: box.height });
@@ -1968,7 +1984,11 @@ export class UltraPaintApp {
           for (let offsetX = 0; offsetX < box.width; offsetX += tileSize) {
             const region = { x: offsetX, y: offsetY, width: tileSize, height: tileSize };
             transform.set(1, 0, 0, 1, -box.x - offsetX, -box.y - offsetY);
+            let renderedTarget: RenderTexture | null = null;
+            let renderedCoord: TileCoord | null = null;
             destination.edit(region, { allocation: "allocate-missing", transaction }, (tile) => {
+              renderedTarget = tile.target;
+              renderedCoord = tile.coord;
               app.renderer.render({
                 container: root,
                 target: tile.target,
@@ -1977,6 +1997,13 @@ export class UltraPaintApp {
                 clearColor: [0, 0, 0, 0],
               });
             });
+            if (
+              renderedTarget &&
+              renderedCoord &&
+              !tightAlphaBounds(app.renderer, renderedTarget, offsetX, offsetY)
+            ) {
+              destination.removeTile(renderedCoord, transaction);
+            }
           }
         }
         transaction.includeBounds({ x: 0, y: 0, width: box.width, height: box.height });

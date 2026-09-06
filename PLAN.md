@@ -12,6 +12,28 @@ and design-decisions sections can lag a little; status should never lie.
 
 ## Current Status — tiled canvas holdovers — 2026-09-01
 
+### Coherence scaling and gradient algorithm — 2026-09-06
+
+Coherence edge size and whole-picture mask blur now remain calibrated in output
+pixels when a resolution scale changes the generation size. The backend scales
+those values into the boundary-box mask once, reuses the result for Forge,
+coherence, and paste-back, and preserves the raw mask-blur slider value in saved
+infotext. Direct API calls now reject Coherence Pass with Only masked mode and
+reject Gradient Coherence with Soft Inpainting, matching the UI's mutually
+exclusive controls.
+
+Coherence Pass now defaults to the gradient algorithm, which blends the original
+latent into the current denoising trajectory through the same dilated/blurred
+alpha without extra U-Net calls. The existing ring re-sample remains selectable.
+Tiled brush commits also prune candidate tiles whose committed alpha is empty,
+preventing transparent corner allocations from retaining GPU textures.
+
+Verification: `pytest` passed 127/127; frontend typecheck, lint, format check,
+and production build passed. The changed tile-allocation Playwright regression
+passed. The full Playwright run passed 79/82; three unrelated existing UI tests
+still target removed/changed controls or timing (`Resize`, `Auto target size`, and
+the live-preview polling expectation). No live Forge/GPU generation was run.
+
 ### Canvas chrome cleanup — 2026-09-03
 
 The development-only FPS overlay has been removed from the canvas shell, and the

@@ -1,6 +1,12 @@
 export type ScaleMode = "none" | "auto" | "manual";
 export type InpaintArea = "whole" | "masked" | "coherence";
 /**
+ * "ring": re-sample a low-strength ring straddling the mask boundary.
+ * "gradient": blend the original latent against the existing trajectory at
+ * every denoising step inside that same ring -- no extra sampling steps.
+ */
+export type CoherenceAlgorithm = "ring" | "gradient";
+/**
  * "random": send -1 every generation (backend rolls a fresh seed each time);
  * `seedValue` is display-only, refreshed from the response.
  * "reuse": send the frozen `seedValue` every generation, unchanged.
@@ -37,6 +43,8 @@ export interface GenerationSettings {
    * `"coherence"`.
    */
   coherenceEdgeSize: number;
+  /** Which Coherence Pass implementation runs. Only used when `inpaintArea` is `"coherence"`. */
+  coherenceAlgorithm: CoherenceAlgorithm;
   seedMode: SeedMode;
   /** The seed shown in the seed box and sent when `seedMode` isn't `"random"`. */
   seedValue: number;
@@ -55,6 +63,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   inpaintControlNetModel: "",
   inpaintControlNetWeight: 1,
   coherenceEdgeSize: 32,
+  coherenceAlgorithm: "gradient",
   seedMode: "random",
   seedValue: -1,
 };
@@ -88,6 +97,9 @@ export class GenerationSettingsStore {
     }
     if (typeof value.coherenceEdgeSize === "number") {
       this.setCoherenceEdgeSize(value.coherenceEdgeSize);
+    }
+    if (isCoherenceAlgorithm(value.coherenceAlgorithm)) {
+      this.setCoherenceAlgorithm(value.coherenceAlgorithm);
     }
     if (isSeedMode(value.seedMode)) this.setSeedMode(value.seedMode);
     if (typeof value.seedValue === "number") this.setSeedValue(value.seedValue);
@@ -190,6 +202,14 @@ export class GenerationSettingsStore {
     this._state.coherenceEdgeSize = normaliseRange(value, this._state.coherenceEdgeSize, 0, 256);
   }
 
+  public get coherenceAlgorithm(): CoherenceAlgorithm {
+    return this._state.coherenceAlgorithm;
+  }
+
+  public setCoherenceAlgorithm(value: CoherenceAlgorithm): void {
+    this._state.coherenceAlgorithm = value;
+  }
+
   public get seedMode(): SeedMode {
     return this._state.seedMode;
   }
@@ -224,6 +244,10 @@ function isScaleMode(value: unknown): value is ScaleMode {
 
 function isInpaintArea(value: unknown): value is InpaintArea {
   return value === "whole" || value === "masked" || value === "coherence";
+}
+
+function isCoherenceAlgorithm(value: unknown): value is CoherenceAlgorithm {
+  return value === "ring" || value === "gradient";
 }
 
 function isSeedMode(value: unknown): value is SeedMode {
