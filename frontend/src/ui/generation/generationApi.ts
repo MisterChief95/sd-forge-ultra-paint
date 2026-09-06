@@ -57,6 +57,7 @@ export interface GenerationParameters {
   inpaintControlNetWeight: number;
   coherencePassEnabled: boolean;
   coherenceEdgeSize: number;
+  coherenceAlgorithm: "ring" | "gradient";
   samplerName: string;
   scheduler: string;
   modelName: string;
@@ -238,6 +239,7 @@ export async function requestGeneration(
           : {}),
         coherence_pass_enabled: parameters.coherencePassEnabled,
         coherence_edge_size: parameters.coherenceEdgeSize,
+        coherence_algorithm: parameters.coherenceAlgorithm,
         sampler_name: parameters.samplerName || null,
         scheduler: parameters.scheduler || null,
         ...(parameters.modelName ? { model: parameters.modelName } : {}),

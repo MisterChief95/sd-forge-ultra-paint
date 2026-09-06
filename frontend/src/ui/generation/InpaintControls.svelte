@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { InpaintArea } from "../../state/generationSettingsStore.svelte";
+  import type { CoherenceAlgorithm, InpaintArea } from "../../state/generationSettingsStore.svelte";
 
   interface Props {
     maskBlur: number;
@@ -10,6 +10,7 @@
     inpaintControlNetModel: string;
     inpaintControlNetWeight: number;
     coherenceEdgeSize: number;
+    coherenceAlgorithm: CoherenceAlgorithm;
     onMaskBlurChange: (value: number) => void;
     onInpaintPaddingChange: (value: number) => void;
     onInpaintAreaChange: (value: InpaintArea) => void;
@@ -18,6 +19,7 @@
     onInpaintControlNetModelChange: (value: string) => void;
     onInpaintControlNetWeightChange: (value: number) => void;
     onCoherenceEdgeSizeChange: (value: number) => void;
+    onCoherenceAlgorithmChange: (value: CoherenceAlgorithm) => void;
   }
 
   import CheckboxField from "../lib/CheckboxField.svelte";
@@ -34,6 +36,7 @@
     inpaintControlNetModel,
     inpaintControlNetWeight,
     coherenceEdgeSize,
+    coherenceAlgorithm,
     onMaskBlurChange,
     onInpaintPaddingChange,
     onInpaintAreaChange,
@@ -42,6 +45,7 @@
     onInpaintControlNetModelChange,
     onInpaintControlNetWeightChange,
     onCoherenceEdgeSizeChange,
+    onCoherenceAlgorithmChange,
   }: Props = $props();
 
   let controlModels = $state<string[]>([]);
@@ -58,6 +62,13 @@
     const value = (event.currentTarget as HTMLSelectElement).value;
     if (value === "whole" || value === "masked" || value === "coherence") {
       onInpaintAreaChange(value);
+    }
+  }
+
+  function handleCoherenceAlgorithmChange(event: Event): void {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (value === "ring" || value === "gradient") {
+      onCoherenceAlgorithmChange(value);
     }
   }
 </script>
@@ -77,7 +88,7 @@
     value={maskBlur}
     min={0}
     max={64}
-    sliderStep={4}
+    sliderStep={1}
     numberStep={1}
     onValueInput={onMaskBlurChange}
   />
@@ -102,6 +113,14 @@
       numberStep={1}
       onValueInput={onCoherenceEdgeSizeChange}
     />
+
+    <label class="flex flex-col gap-1 text-(--upaint-text-muted)">
+      Coherence algorithm
+      <Select surface="base" value={coherenceAlgorithm} onchange={handleCoherenceAlgorithmChange}>
+        <option value="ring">Ring re-sample</option>
+        <option value="gradient">Gradient blend</option>
+      </Select>
+    </label>
   {/if}
 
   {#if inpaintArea !== "coherence"}

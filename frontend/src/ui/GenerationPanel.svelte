@@ -164,6 +164,7 @@
       inpaintControlNetWeight: generationSettingsStore.inpaintControlNetWeight,
       coherencePassEnabled: generationSettingsStore.inpaintArea === "coherence",
       coherenceEdgeSize: generationSettingsStore.coherenceEdgeSize,
+      coherenceAlgorithm: generationSettingsStore.coherenceAlgorithm,
       samplerName,
       scheduler,
       modelName: modelOptionsLoaded ? modelName : "",
@@ -488,6 +489,7 @@
             inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
             inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
             coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
+            coherenceAlgorithm={generationSettingsStore.coherenceAlgorithm}
             onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
             onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
             onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
@@ -501,6 +503,8 @@
               generationSettingsStore.setInpaintControlNetWeight(value)}
             onCoherenceEdgeSizeChange={(value) =>
               generationSettingsStore.setCoherenceEdgeSize(value)}
+            onCoherenceAlgorithmChange={(value) =>
+              generationSettingsStore.setCoherenceAlgorithm(value)}
           />
         </div>
       </Accordion>
