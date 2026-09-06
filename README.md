@@ -14,73 +14,76 @@ paint, mask and ControlNet layers - wired directly into Forge's existing generat
 
 **Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
-`<iframe>`. Layer painting, undo/redo, an InvokeAI-style boundary box, mask layers,
-auto-scale-to-native-resolution, and real img2img/inpaint generation are all
-implemented and build-verified; see [`PLAN.md`](PLAN.md) for the authoritative,
-continuously-updated status and roadmap.
+`<iframe>`. Layer painting, undo/redo, an InvokeAI-style boundary box, mask and
+ControlNet layers, an infinite tile-backed canvas, auto-scale-to-native-resolution,
+LaMA-backed auto-outpainting, a coherence pass, and real img2img/inpaint/txt2img
+generation are all implemented and build-verified; see [`PLAN.md`](PLAN.md) for the
+authoritative, continuously-updated status and roadmap.
 
 ## Features
 
-- **Layer-based canvas**: raster, group, and mask layers with blend modes, opacity,
-  drag-to-reorder, rename, and a context menu — rendered on a PixiJS v8 scene graph.
-- **Paint tools**: brush and eraser with radius/hardness/opacity, consistent
-  per-stroke opacity build-up, and dynamically growing brush textures (raster layers
-  grow on demand as a stroke crosses their edge, up to an 8192×8192 cap).
+- **Layer-based canvas**: raster, group, mask, and ControlNet layers with blend
+  modes, opacity, drag-to-reorder, rename, and a context menu (copy, duplicate,
+  convert between layer kinds) — rendered on a PixiJS v8 scene graph.
+- **Infinite tile-backed canvas**: raster/mask/control surfaces are stored as a
+  GPU tile grid (not one monolithic texture), so upload, paint, fill, clip,
+  transform, merge, mask/control conversion, and flatten-for-save/generate all
+  work tile-by-tile with automatic viewport culling of off-screen tiles.
+- **Paint tools**: brush and eraser with radius/hardness/opacity, pressure
+  sensitivity, consistent per-stroke opacity build-up, and tile-native strokes
+  that grow a layer's tile grid on demand as the stroke crosses its edge.
 - **Mask layers**: paint a mask directly on the canvas with a live hatch-pattern
   preview; flattened and sent to Forge's inpainting pipeline at generate time.
+  Coherence Pass (gradient blend by default, or the original ring re-sample) and
+  Forge-native Soft Inpainting are both supported, mutually exclusive, and kept
+  calibrated in output pixels across resolution scaling.
+- **Outpainting**: when the boundary box extends past painted content, the
+  empty region is auto-detected and seeded with a content-aware fill (LaMA when
+  installed, GPU-first with CPU fallback; OpenCV fast-marching inpaint
+  otherwise) before generation, unioned with any hand-painted mask.
+- **ControlNet integration**: any layer can be assigned to a ControlNet unit,
+  with luminance-to-alpha display treatment, a live model/module/control-type
+  catalog, and preprocessor preview — degrades gracefully when ControlNet isn't
+  installed.
 - **Boundary box**: an interactive, draggable/resizable operating region (like
-  InvokeAI's canvas bounds) that scopes Fill, Generate export, and new blank layers.
-- **Generation panel**: model and text encoder/VAE selection, prompt/negative prompt,
-  sampler/scheduler (pulled live from Forge), steps/CFG/denoise, a frontend FIFO queue,
-  in-button progress with a live preview image, and current/remaining/all cancellation
-  through Forge's interrupt mechanism.
+  InvokeAI's canvas bounds) that scopes Fill, Generate export, and new blank
+  layers.
+- **Layer transforms**: move, center-rotate, corner-scale (free or
+  Shift-constrained), and mirror one selected layer through an undoable,
+  grid-snapping canvas gizmo without rewriting tiled pixels.
+- **Generation panel**: model, VAE/text-encoder, and LoRA selection, prompt/negative
+  prompt with tag autocompletion, sampler/scheduler (pulled live from Forge),
+  steps/CFG/denoise, a frontend FIFO queue, in-button progress with a live
+  preview image, current/remaining/all cancellation through Forge's interrupt
+  mechanism, and server-persisted generation-panel settings.
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
   with zoom-tiered spacing.
-- **Layer transforms**: move, center-rotate, corner-scale (free or Shift-constrained),
-  and mirror one selected layer through an undoable, 32px/8px-snapping canvas gizmo
-  without rewriting tiled pixels.
-
-## Roadmap (WIP)
-
-### Complete ✅
-
-- Brush engine with hardness and opacity
-- Pressure sensitivity-enabled Brush and Eraser
-- Layer masks
-- Inpainting
-  - Forge-native Soft Inpainting
-  - Coherence Pass
-- ControlNet Integration
-  - Layer-based
-  - Canvas-wide Inpaint ControlNets
-
-### In-Progress 🏗️
-
-- Tag autocompletion in prompt boxes
-- Tag weighting adjustment via keyboard
-
-### Planned ✏️
-
-- Pre-built single-page app bundle that gets installed on extension load
-- Outpainting with Lama/Patch match
-- Registering other extensions in Generation Options
 
 ## Roadmap
 
-Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary box,
-Playwright e2e coverage) are complete. Phase 3 (masking/inpainting, auto-scale to
-native resolution) has substantially landed alongside generation-panel persistence,
-model/LoRA controls, the generation queue, and prompt-tag autocomplete (Phase 1 of
-that sub-feature; see `PLAN.md`). Ahead:
+Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary
+box, Playwright e2e coverage) are complete. Phase 3 (masking/inpainting,
+outpainting, the infinite tile-backed canvas, ControlNet/LoRA integration,
+auto-scale to native resolution, generation-panel persistence, and
+prompt-tag autocomplete) has substantially landed; see `PLAN.md` for the
+current sub-feature breakdown. Ahead:
 
-- **Phase 4 — Multi-layer ControlNet**: assign any layer to a ControlNet unit slot.
-- **Phase 5 — Groups, transforms, selection, shape tools**: the first single-layer
-  transform gizmo has landed; multi-selection pivots, marquee/lasso selection,
-  and basic vector shapes remain.
-- **Phase 6 — Document persistence**: save/load the actual canvas (layers, pixels,
-  boundary box, masks) as a project file, not just generation settings.
+- **In-progress**: further tag autocompletion polish, tag weighting adjustment
+  via keyboard.
+- **Phase 4 — Multi-layer ControlNet refinements**: the single-unit-per-layer
+  path is implemented; multi-unit stacking and richer preprocessor controls
+  remain.
+- **Phase 5 — Groups, transforms, selection, shape tools**: the first
+  single-layer transform gizmo has landed; multi-selection pivots,
+  marquee/lasso selection, and basic vector shapes remain.
+- **Phase 6 — Document persistence**: save/load the actual canvas (layers,
+  pixels, boundary box, masks) as a project file, not just generation
+  settings.
+- **Planned**: a pre-built single-page app bundle installed on extension load
+  (no manual `npm run build` step), and registering other extensions'
+  controls in the generation panel.
 - Known gaps: a clean clone has no `data/tags.csv` or `data/generation-settings.json`
   (`/data/` is gitignored) so autocomplete and settings persistence start empty until
   first configured; generations are pinned to one image per Generate click; no run
@@ -100,8 +103,8 @@ appears alongside txt2img/img2img.
 
 | Path                  | Purpose                                                                                                        |
 | --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `scripts/`            | Forge callback registrations (tab shell, static mount, and each API route)                                     |
-| `ultra_paint/`        | Importable Python package — config, generation pipeline, API request/response models, model/resolution lookups |
+| `scripts/`            | Forge callback registrations (tab shell, static mount, each API route, and the coherence-pass Forge scripts)   |
+| `ultra_paint/`        | Importable Python package — config, generation pipeline, API request/response models, model/resolution/mask lookups |
 | `javascript/`         | Auto-injected JS that mounts the SPA's `<iframe>` into the Gradio tab                                          |
 | `frontend/`           | Svelte 5 + PixiJS v8 + Vite SPA source, built to `frontend/dist/` (see below)                                  |
 | `tests/`              | Python tests (pytest) for the API routes and generation pipeline                                               |
@@ -110,15 +113,17 @@ appears alongside txt2img/img2img.
 
 ### Scripts and routes
 
-| File                                   | Registers                                                                                       |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `scripts/ultra_paint_tab.py`           | `on_ui_tabs` — a near-empty `gr.HTML` wrapper that the injected JS turns into an iframe         |
-| `scripts/ultra_paint_api.py`           | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
-| `scripts/ultra_paint_generate_api.py`  | `POST /ultra_paint/api/generate`                                                                |
-| `scripts/ultra_paint_options_api.py`   | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step)       |
-| `scripts/ultra_paint_options_api.py`   | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence)                            |
-| `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt`                                                               |
-| `scripts/ultra_paint_save_api.py`      | `POST /ultra_paint/api/save`                                                                    |
+| File                                          | Registers                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `scripts/ultra_paint_tab.py`                   | `on_ui_tabs` — a near-empty `gr.HTML` wrapper that the injected JS turns into an iframe         |
+| `scripts/ultra_paint_api.py`                   | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
+| `scripts/ultra_paint_generate_api.py`          | `POST /ultra_paint/api/generate`                                                                |
+| `scripts/ultra_paint_options_api.py`           | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step), `GET /ultra_paint/api/loras`, `GET`/`PUT /ultra_paint/api/settings` (generation-panel persistence) |
+| `scripts/ultra_paint_controlnet_catalog_api.py`| `GET /ultra_paint/api/controlnet/{model_list,module_list,control_types}`, `POST /ultra_paint/api/controlnet/detect` |
+| `scripts/ultra_paint_interrupt_api.py`         | `POST /ultra_paint/api/interrupt`                                                               |
+| `scripts/ultra_paint_save_api.py`              | `POST /ultra_paint/api/save`                                                                    |
+| `scripts/fast_coherence_pass.py`               | Forge script implementing the ring-resample coherence pass                                     |
+| `scripts/gradient_coherence_pass.py`           | Forge script implementing the default gradient-blend coherence pass                             |
 
 ## Development
 
@@ -126,11 +131,13 @@ appears alongside txt2img/img2img.
 
 ```bash
 cd frontend
-npm install       # once
-npm run dev        # Vite dev server with HMR
-npm run build       # production build -> frontend/dist/
+npm install         # once
+npm run dev          # Vite dev server with HMR
+npm run build        # production build -> frontend/dist/
 npm run typecheck    # svelte-check
-npm run test:e2e      # Playwright e2e tests
+npm run lint         # eslint
+npm run format:check # prettier --check
+npm run test:e2e     # Playwright e2e tests
 ```
 
 `frontend/dist/` is gitignored and not committed — it must be built at least once
@@ -140,14 +147,16 @@ Forge-server runtime otherwise.
 ### Backend
 
 No build step. Restart the WebUI (or use the Extensions tab's reload) to pick up
-Python changes. Python tests live in `tests/` and run with `pytest`.
+Python changes. Python tests live in `tests/` and run with `pytest` from the
+repository root.
 
 ## Architecture
 
 See [`PLAN.md`](PLAN.md) for the full architecture reference, file layout, layer
 data model, public API surface, and phase-by-phase history — it's kept up to date
 as the authoritative status document and is the right place to start before making
-changes.
+changes. `AGENTS.md` has the condensed agent-facing guide (layout, ownership rules,
+Svelte/PixiJS conventions, and validation commands).
 
 ## License
 
