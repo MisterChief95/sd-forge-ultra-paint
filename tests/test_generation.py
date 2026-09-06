@@ -398,6 +398,7 @@ def test_coherence_pass_patches_latent_in_place_with_expanded_alpha(fake_forge_m
         {
             "coherence_pass_enabled": True,
             "coherence_edge_size": 4,
+            "coherence_algorithm": "ring",
             "denoising_strength": 0.9,
             "mask_blur": 3,
         },
@@ -595,7 +596,6 @@ def test_coherence_pass_scales_edge_size_and_mask_blur_to_generation_resolution(
         (
             {
                 "coherence_pass_enabled": True,
-                "coherence_algorithm": "gradient",
                 "soft_inpainting_enabled": True,
             },
             "cannot be combined with Soft Inpainting",
@@ -665,7 +665,9 @@ def test_gradient_algorithm_opts_into_the_other_script_and_shares_dilated_paste_
     assert result.images[0].getpixel((59, 48))[3] > 0
 
 
-def test_ring_algorithm_is_the_default_and_unchanged(fake_forge_modules, monkeypatch):
+def test_gradient_algorithm_is_default_and_ring_remains_available(
+    fake_forge_modules, monkeypatch
+):
     generation, fake_shared = fake_forge_modules
     composite = _composite(32, 32)
     mask = Image.new("L", composite.size, 0)
@@ -690,9 +692,11 @@ def test_ring_algorithm_is_the_default_and_unchanged(fake_forge_modules, monkeyp
     ):
         generation.run_generation(composite, gen_params, mask)
 
-    for p in fake_shared.process_calls:
-        assert p.ultra_paint_fast_coherence_enabled is True
-        assert not hasattr(p, "ultra_paint_gradient_coherence_enabled")
+    default_p, ring_p = fake_shared.process_calls
+    assert default_p.ultra_paint_gradient_coherence_enabled is True
+    assert not hasattr(default_p, "ultra_paint_fast_coherence_enabled")
+    assert ring_p.ultra_paint_fast_coherence_enabled is True
+    assert not hasattr(ring_p, "ultra_paint_gradient_coherence_enabled")
     assert calls == [(4, 4), (4, 4)]
 
 

@@ -22,11 +22,11 @@ infotext. Direct API calls now reject Coherence Pass with Only masked mode and
 reject Gradient Coherence with Soft Inpainting, matching the UI's mutually
 exclusive controls.
 
-Coherence Pass now offers the existing ring re-sample and a gradient algorithm
-that blends the original latent into the current denoising trajectory through the
-same dilated/blurred alpha without extra U-Net calls. Tiled brush commits also
-prune candidate tiles whose committed alpha is empty, preventing transparent
-corner allocations from retaining GPU textures.
+Coherence Pass now defaults to the gradient algorithm, which blends the original
+latent into the current denoising trajectory through the same dilated/blurred
+alpha without extra U-Net calls. The existing ring re-sample remains selectable.
+Tiled brush commits also prune candidate tiles whose committed alpha is empty,
+preventing transparent corner allocations from retaining GPU textures.
 
 Verification: `pytest` passed 127/127; frontend typecheck, lint, format check,
 and production build passed. The changed tile-allocation Playwright regression

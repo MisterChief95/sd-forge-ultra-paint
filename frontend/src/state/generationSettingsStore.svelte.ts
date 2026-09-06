@@ -63,7 +63,7 @@ const DEFAULT_SETTINGS: GenerationSettings = {
   inpaintControlNetModel: "",
   inpaintControlNetWeight: 1,
   coherenceEdgeSize: 32,
-  coherenceAlgorithm: "ring",
+  coherenceAlgorithm: "gradient",
   seedMode: "random",
   seedValue: -1,
 };

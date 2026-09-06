@@ -86,7 +86,7 @@ key                          default    notes
 ``coherence_edge_size``       ``32``     Total pixel width of the coherence-pass ring,
                                         centered on the mask boundary (half dilates
                                         outward, half erodes inward).
-``coherence_algorithm``      ``"ring"`` Which coherence-pass implementation runs.
+``coherence_algorithm``  ``"gradient"`` Which coherence-pass implementation runs.
                                         ``"ring"`` re-samples the ring with fresh noise
                                         (scripts/fast_coherence_pass.py). ``"gradient"``
                                         instead blends the original latent against the
@@ -232,7 +232,7 @@ GEN_PARAM_DEFAULTS: dict = {
     "inpaint_controlnet_weight": 1.0,
     "coherence_pass_enabled": False,
     "coherence_edge_size": 32,
-    "coherence_algorithm": "ring",
+    "coherence_algorithm": "gradient",
     "soft_inpainting_power": 1,
     "soft_inpainting_scale": 0.5,
     "soft_inpainting_detail_preservation": 4,
