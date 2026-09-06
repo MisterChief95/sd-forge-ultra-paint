@@ -79,16 +79,19 @@ class FastCoherencePass(scripts.Script):
             ps.samples
         )  # (B, C, H, W) latent, pre-decode -- (B, C, T, H, W) for video models
 
-        # `edge_size`/`mask_blur` are pixel units in the mask's own
-        # resolution -- coherence_mask's own size, not (p.width, p.height)
-        # (Forge doesn't assume these match: processing.py:1800-1801). Scale
-        # both into latent units by the real width/height ratio -- works
-        # regardless of the model's VAE downscale factor (8x for most SD
-        # models, 16x for some, a non-uniform ratio for video models).
+        # `edge_size`/`mask_blur` are pixel units of the generation output
+        # (`canvas_size`, i.e. (p.width, p.height)) -- same convention as
+        # Forge's own `mask_blur` -- not coherence_mask's own resolution,
+        # which a Resolution-scale mode can leave smaller than the output.
+        # Rescale into the mask's pixel space first, then into latent units
+        # by the real width/height ratio -- works regardless of the model's
+        # VAE downscale factor (8x for most SD models, 16x for some, a
+        # non-uniform ratio for video models).
         lh, lw = samples.shape[-2], samples.shape[-1]
         iw, ih = coherence_mask.size
         edge_scale = (lw / iw + lh / ih) / 2
         edge_size = scale_edge_size(edge_size, canvas_size, coherence_mask.size)
+        mask_blur = scale_edge_size(p.mask_blur, canvas_size, coherence_mask.size)
 
         # MaxFilter/MinFilter (in compute_ring) are O(w*h*kernel) -- run at
         # the mask's full pixel resolution with edge_size~32 (kernel~65) this
@@ -104,7 +107,7 @@ class FastCoherencePass(scripts.Script):
         debug_save(dilated_latent, "03_dilated_latent")
         debug_save(eroded_latent, "04_eroded_latent")
         debug_save(ring, "05_ring_raw")
-        ring = blur_ring(ring, max(0, round(p.mask_blur * edge_scale)))
+        ring = blur_ring(ring, max(0, round(mask_blur * edge_scale)))
         debug_save(ring, "06_ring_blurred")
 
         ring_arr = np.asarray(ring, dtype=np.float32) / 255.0

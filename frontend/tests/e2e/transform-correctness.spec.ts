@@ -131,7 +131,9 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
     const afterUndoImage = { ...app?.getStore().getLayer(id)?.image };
     app?.redo();
     const afterRedoImage = { ...app?.getStore().getLayer(id)?.image };
-    const tiledBounds = { x: -1024, y: -1024, width: 2048, height: 2048 };
+    // Pixel-tight bounds of the two painted stamps, not the full tiles they
+    // landed in -- a stroke commit now reports its actual alpha footprint.
+    const tiledBounds = { x: -29, y: -36, width: 285, height: 292 };
     const expectedCorners = [
       [tiledBounds.x, tiledBounds.y],
       [tiledBounds.x + tiledBounds.width, tiledBounds.y],
@@ -190,21 +192,26 @@ test("tile allocation preserves painted pixels on a rotated flipped layer", asyn
   ]);
   expect(result.insidePixelGlobal.x).toBeCloseTo(setup.insidePixelGlobal.x, 5);
   expect(result.insidePixelGlobal.y).toBeCloseTo(setup.insidePixelGlobal.y, 5);
+  // Bounds are pixel-tight around the two painted stamps, not the four
+  // touched tiles' full 2048x2048 span.
   expect(result.afterPaintImage).toMatchObject({
-    width: 2048,
-    height: 2048,
+    width: 285,
+    height: 292,
     tileSize: 1024,
-    bounds: { x: -1024, y: -1024, width: 2048, height: 2048 },
+    bounds: { x: -29, y: -36, width: 285, height: 292 },
   });
+  // Undoing the second (outside) stroke leaves only the first stamp, which
+  // sits inside the blank layer's initial 256x256 bounds -- unioning it in
+  // doesn't grow those bounds at all.
   expect(result.afterUndoImage).toMatchObject({
-    width: 1024,
-    height: 1024,
-    bounds: { x: 0, y: 0, width: 1024, height: 1024 },
+    width: 256,
+    height: 256,
+    bounds: { x: 0, y: 0, width: 256, height: 256 },
   });
   expect(result.afterRedoImage).toMatchObject({
-    width: 2048,
-    height: 2048,
-    bounds: { x: -1024, y: -1024, width: 2048, height: 2048 },
+    width: 285,
+    height: 292,
+    bounds: { x: -29, y: -36, width: 285, height: 292 },
   });
   expect(result.fittedBoundaryBox).toEqual(result.expectedBoundaryBox);
   expect(result.maskNegativePoint.x).toBeCloseTo(result.originalNegativePoint.x, 5);

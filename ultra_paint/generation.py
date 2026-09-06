@@ -669,7 +669,11 @@ def run_generation(
         # patches the latent in place before Forge's single decode.
         p.ultra_paint_fast_coherence_enabled = True
         p.ultra_paint_coherence_edge_size = int(_get(gen_params, "coherence_edge_size"))
-        p.ultra_paint_coherence_canvas_size = composite_image.size
+        # `edge_size`/`mask_blur` are calibrated in pixels of the actual
+        # generation output (p.width/p.height) -- same convention as Forge's
+        # own `mask_blur` -- not the boundary-box-sized composite/mask, which
+        # a Resolution-scale mode can leave much smaller than the output.
+        p.ultra_paint_coherence_canvas_size = (p.width, p.height)
         p.ultra_paint_coherence_mask = mask_image.convert("L")
 
     with closing(p):
@@ -704,12 +708,12 @@ def run_generation(
                     mask_image.convert("L"),
                     scale_edge_size(
                         int(_get(gen_params, "coherence_edge_size")),
-                        composite_image.size,
+                        (p.width, p.height),
                         mask_image.size,
                     ),
                     scale_edge_size(
                         int(_get(gen_params, "mask_blur")),
-                        composite_image.size,
+                        (p.width, p.height),
                         mask_image.size,
                     ),
                 )

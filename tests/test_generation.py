@@ -534,6 +534,50 @@ def test_coherence_pass_edge_size_independent_of_generation_resolution(
     assert edge_sizes == [3]
 
 
+def test_coherence_pass_scales_edge_size_to_generation_resolution(
+    fake_forge_modules, monkeypatch
+):
+    """Regression test: `coherence_edge_size`/`mask_blur` are calibrated in
+    pixels of the generation output (p.width/p.height), matching Forge's own
+    `mask_blur` convention -- not the boundary-box-sized composite/mask. A
+    Resolution-scale mode that generates larger than the boundary box must
+    scale the ring geometry down into the mask's own pixel space to compensate,
+    instead of passing the raw output-pixel value straight through to the
+    BB-resolution paste-back mask (which would make the ring twice as wide as
+    intended relative to the generated image)."""
+    generation, fake_shared = fake_forge_modules
+    composite = _composite(32, 32)
+    mask = Image.new("L", composite.size, 0)
+    mask.paste(255, (12, 12, 20, 20))
+
+    original_dilate_then_blur = generation.dilate_then_blur
+    edge_sizes = []
+
+    def _capture_dilate_then_blur(alpha, edge_size, blur):
+        edge_sizes.append(edge_size)
+        return original_dilate_then_blur(alpha, edge_size, blur)
+
+    monkeypatch.setattr(generation, "dilate_then_blur", _capture_dilate_then_blur)
+
+    generation.run_generation(
+        composite,
+        {
+            "coherence_pass_enabled": True,
+            "coherence_edge_size": 8,
+            "target_width": 64,
+            "target_height": 64,
+        },
+        mask,
+    )
+
+    p = fake_shared.process_calls[0]
+    assert (p.width, p.height) == (64, 64)
+    assert p.ultra_paint_coherence_canvas_size == (64, 64)
+    # BB (mask) is half the generation resolution -- the ring's edge_size
+    # must scale down by the same ratio.
+    assert edge_sizes == [4]
+
+
 def test_soft_inpainting_args_injected_when_mask_present(fake_forge_modules):
     generation, _fake_shared = fake_forge_modules
     script = _install_soft_inpainting_script(generation, [False, 9, 9, 9, 9, 9, 9])
