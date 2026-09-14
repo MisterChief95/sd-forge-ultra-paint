@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { flip } from "svelte/animate";
 
   import { generationSettingsStore } from "../state/generationSettingsStore.svelte";
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { toastStore } from "../state/toastStore.svelte";
+  import { uiLayoutStore } from "../state/uiLayoutStore.svelte";
   import { registerGenerationActions } from "../input/actionMap";
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
@@ -28,6 +30,24 @@
   import { autoFormatPromptSpacing } from "./generation/promptFormat";
 
   const SETTINGS_DEBOUNCE_MS = 1000;
+  const DEFAULT_SECTION_ORDER = [
+    "generation.model",
+    "generation.bounding-box",
+    "generation.loras",
+    "generation.sampling",
+    "generation.composition",
+    "generation.upscale",
+  ] as const;
+  type SectionId = (typeof DEFAULT_SECTION_ORDER)[number];
+
+  const SECTION_LABELS: Record<SectionId, string> = {
+    "generation.model": "Model",
+    "generation.bounding-box": "Bounding Box",
+    "generation.loras": "LoRAs",
+    "generation.sampling": "Sampling",
+    "generation.composition": "Composition",
+    "generation.upscale": "Upscale",
+  };
 
   let prompt = $state("");
   let negativePrompt = $state("");
@@ -60,6 +80,13 @@
   let persistenceTimer: number | null = null;
   let pendingSettings: Record<string, unknown> | null = null;
   let saveInFlight = false;
+  let sectionOrder = $state<SectionId[]>(normaliseSectionOrder(uiLayoutStore.panelOrder));
+  let draggingSectionId = $state<SectionId | null>(null);
+  let dropAnchorId = $state<SectionId | null>(null);
+  let dropBefore = $state(true);
+  let dropLineOffset = $state(0);
+  let prefersReducedMotion = $state(false);
+  let moveAnnouncement = $state("");
 
   const enabledLoraCount = $derived(selectedLoras.filter((lora) => lora.enabled).length);
 
@@ -123,8 +150,15 @@
   });
 
   onMount(() => {
+    const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updateReducedMotion = (): void => {
+      prefersReducedMotion = reducedMotionQuery.matches;
+    };
+    updateReducedMotion();
+    reducedMotionQuery.addEventListener("change", updateReducedMotion);
+
     void initialiseSettings();
-    return registerGenerationActions({
+    const unregisterActions = registerGenerationActions({
       isGenerating: () => generationRuntimeStore.generating,
       generate,
       save: () => void controller.saveImage(),
@@ -132,6 +166,10 @@
       cancelRemaining: () => controller.cancelRemaining(),
       cancelAll: () => void controller.cancelAll(),
     });
+    return () => {
+      reducedMotionQuery.removeEventListener("change", updateReducedMotion);
+      unregisterActions();
+    };
   });
 
   onDestroy(() => {
@@ -174,6 +212,88 @@
     });
   }
 
+  function normaliseSectionOrder(stored: string[] | null): SectionId[] {
+    const known = new Set<string>(DEFAULT_SECTION_ORDER);
+    const restored = stored?.filter(
+      (id, index): id is SectionId => known.has(id) && stored.indexOf(id) === index,
+    );
+    return [...(restored ?? []), ...DEFAULT_SECTION_ORDER.filter((id) => !restored?.includes(id))];
+  }
+
+  function handleSectionDragStart(event: DragEvent, id: SectionId): void {
+    draggingSectionId = id;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", id);
+    }
+  }
+
+  function clearSectionDragState(): void {
+    draggingSectionId = null;
+    dropAnchorId = null;
+  }
+
+  function headerRectFor(section: HTMLElement): DOMRect | null {
+    return (
+      section
+        .querySelector<HTMLElement>(":scope > section > [data-accordion-header]")
+        ?.getBoundingClientRect() ?? null
+    );
+  }
+
+  function handleSectionDragOver(event: DragEvent, id: SectionId): void {
+    if (draggingSectionId === null || draggingSectionId === id) return;
+    const section = event.currentTarget as HTMLElement;
+    const headerRect = headerRectFor(section);
+    if (!headerRect) return;
+
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dropAnchorId = id;
+    dropBefore = event.clientY < headerRect.top + headerRect.height / 2;
+    dropLineOffset =
+      (dropBefore ? headerRect.top : headerRect.bottom) - section.getBoundingClientRect().top;
+  }
+
+  function handleSectionDragLeave(event: DragEvent, id: SectionId): void {
+    const section = event.currentTarget as HTMLElement;
+    if (event.relatedTarget instanceof Node && section.contains(event.relatedTarget)) return;
+    if (dropAnchorId === id) dropAnchorId = null;
+  }
+
+  function handleSectionDrop(event: DragEvent, anchorId: SectionId): void {
+    event.preventDefault();
+    const draggedId = draggingSectionId;
+    const headerRect = headerRectFor(event.currentTarget as HTMLElement);
+    const before = headerRect ? event.clientY < headerRect.top + headerRect.height / 2 : dropBefore;
+    clearSectionDragState();
+    if (draggedId === null || draggedId === anchorId) return;
+
+    const reduced = sectionOrder.filter((id) => id !== draggedId);
+    const anchorIndex = reduced.indexOf(anchorId);
+    if (anchorIndex === -1) return;
+    moveSection(draggedId, before ? anchorIndex : anchorIndex + 1);
+  }
+
+  function handleSectionGripKeydown(event: KeyboardEvent, id: SectionId): void {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const currentIndex = sectionOrder.indexOf(id);
+    const nextIndex = currentIndex + (event.key === "ArrowUp" ? -1 : 1);
+    if (currentIndex === -1 || nextIndex < 0 || nextIndex >= sectionOrder.length) return;
+    moveSection(id, nextIndex);
+  }
+
+  function moveSection(id: SectionId, index: number): void {
+    const currentIndex = sectionOrder.indexOf(id);
+    if (currentIndex === -1 || currentIndex === index) return;
+    const reordered = sectionOrder.filter((sectionId) => sectionId !== id);
+    reordered.splice(index, 0, id);
+    sectionOrder = reordered;
+    uiLayoutStore.setPanelOrder(sectionOrder);
+    moveAnnouncement = `${SECTION_LABELS[id]} moved to position ${index + 1} of ${sectionOrder.length}`;
+  }
+
   function upscale(): void {
     prompt = autoFormatPromptSpacing(prompt);
     negativePrompt = autoFormatPromptSpacing(negativePrompt);
@@ -210,10 +330,8 @@
   }
 
   function settingsSnapshot(): Record<string, unknown> {
-    const box = layerStore.document.boundaryBox;
     return {
       version: 1,
-      boundaryBox: { ...box },
       prompt,
       negativePrompt,
       samplerName,
@@ -281,7 +399,6 @@
     if (stored.version !== 1) return;
 
     restoredPersistedSettings = true;
-    restoreBoundaryBox(stored.boundaryBox);
     prompt = stringValue(stored.prompt, prompt);
     negativePrompt = stringValue(stored.negativePrompt, negativePrompt);
     samplerName = stringValue(stored.samplerName, samplerName);
@@ -315,28 +432,6 @@
 
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
-  function restoreBoundaryBox(value: unknown): void {
-    if (!isRecord(value)) return;
-    const { x, y, width, height } = value;
-    if (
-      !isSafeInteger(x) ||
-      !isSafeInteger(y) ||
-      !isSafeInteger(width) ||
-      !isSafeInteger(height) ||
-      width < 1 ||
-      width > 8192 ||
-      height < 1 ||
-      height > 8192
-    ) {
-      return;
-    }
-    layerStore.restoreBoundaryBox({ x, y, width, height });
-  }
-
-  function isSafeInteger(value: unknown): value is number {
-    return typeof value === "number" && Number.isSafeInteger(value);
   }
 
   function stringValue(value: unknown, fallback: string): string {
@@ -428,183 +523,228 @@
     <PromptFields bind:prompt bind:negativePrompt />
 
     <div class="-mx-3 flex flex-col">
-      <Accordion open title="Model">
-        <div class="p-2">
-          <ModelControls {models} {modules} bind:modelName bind:moduleNames />
-        </div>
-      </Accordion>
+      {#each sectionOrder as id (id)}
+        <div
+          class={`relative ${draggingSectionId === id ? "opacity-40" : ""}`}
+          style="transition: opacity var(--upaint-transition);"
+          data-generation-section={id}
+          role="group"
+          aria-label={`${SECTION_LABELS[id]} generation section`}
+          animate:flip={{ duration: prefersReducedMotion ? 0 : 160 }}
+          ondragover={(event) => handleSectionDragOver(event, id)}
+          ondragleave={(event) => handleSectionDragLeave(event, id)}
+          ondrop={(event) => handleSectionDrop(event, id)}
+        >
+          {#snippet headerLeading()}
+            <button
+              type="button"
+              class="flex h-6 w-5 cursor-grab flex-col items-center justify-center gap-[2px] border-0 bg-transparent p-0 text-(--upaint-text-muted) focus-visible:outline-2 focus-visible:outline-(--upaint-accent) active:cursor-grabbing"
+              draggable="true"
+              aria-label={`Move ${SECTION_LABELS[id]} section`}
+              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+              title={`Move ${SECTION_LABELS[id]} section`}
+              ondragstart={(event) => handleSectionDragStart(event, id)}
+              ondragend={clearSectionDragState}
+              onkeydown={(event) => handleSectionGripKeydown(event, id)}
+            >
+              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
+              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
+              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
+            </button>
+          {/snippet}
 
-      <Accordion title="Bounding Box">
-        <div class="p-2">
-          <BoundaryBoxControls
-            scaleMode={generationSettingsStore.scaleMode}
-            autoBaseWidth={generationSettingsStore.autoBaseWidth}
-            manualWidth={generationSettingsStore.manualWidth}
-            manualHeight={generationSettingsStore.manualHeight}
-            onScaleModeChange={(value) => generationSettingsStore.setScaleMode(value)}
-            onAutoBaseWidthChange={(value) => generationSettingsStore.setAutoBaseWidth(value)}
-            onManualWidthChange={(value) => generationSettingsStore.setManualWidth(value)}
-            onManualHeightChange={(value) => generationSettingsStore.setManualHeight(value)}
-          />
-        </div>
-      </Accordion>
+          {#if dropAnchorId === id}
+            <span
+              class="pointer-events-none absolute right-1 left-1 z-10 h-0.5 bg-(--upaint-accent)"
+              style={`top: ${dropLineOffset}px; border-radius: var(--upaint-radius-sm);`}
+              aria-hidden="true"
+            ></span>
+          {/if}
 
-      <Accordion title="LoRAs" count={enabledLoraCount}>
-        <div class="p-2">
-          <LoraControls
-            {selectedLoras}
-            onSelectedLorasChange={(value) => (selectedLoras = value)}
-            onAddActivationWords={addActivationWords}
-          />
-        </div>
-      </Accordion>
-
-      <Accordion open title="Sampling">
-        <div class="p-2">
-          <SamplingControls
-            {samplers}
-            {schedulers}
-            bind:samplerName
-            bind:scheduler
-            bind:steps
-            bind:cfgScale
-            bind:denoisingStrength
-            denoisingDisabled={generationMode === "txt2img"}
-            seedMode={generationSettingsStore.seedMode}
-            seedValue={generationSettingsStore.seedValue}
-            onSeedModeChange={(value) => generationSettingsStore.setSeedMode(value)}
-            onSeedValueChange={(value) => generationSettingsStore.setSeedValue(value)}
-          />
-        </div>
-      </Accordion>
-
-      <Accordion title="Composition">
-        <div class="p-2">
-          <InpaintControls
-            maskBlur={generationSettingsStore.maskBlur}
-            inpaintPadding={generationSettingsStore.inpaintPadding}
-            inpaintArea={generationSettingsStore.inpaintArea}
-            softInpaintingEnabled={generationSettingsStore.softInpaintingEnabled}
-            inpaintControlNetEnabled={generationSettingsStore.inpaintControlNetEnabled}
-            inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
-            inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
-            coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
-            coherenceAlgorithm={generationSettingsStore.coherenceAlgorithm}
-            onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
-            onInpaintPaddingChange={(value) => generationSettingsStore.setInpaintPadding(value)}
-            onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
-            onSoftInpaintingChange={(value) =>
-              generationSettingsStore.setSoftInpaintingEnabled(value)}
-            onInpaintControlNetEnabledChange={(value) =>
-              generationSettingsStore.setInpaintControlNetEnabled(value)}
-            onInpaintControlNetModelChange={(value) =>
-              generationSettingsStore.setInpaintControlNetModel(value)}
-            onInpaintControlNetWeightChange={(value) =>
-              generationSettingsStore.setInpaintControlNetWeight(value)}
-            onCoherenceEdgeSizeChange={(value) =>
-              generationSettingsStore.setCoherenceEdgeSize(value)}
-            onCoherenceAlgorithmChange={(value) =>
-              generationSettingsStore.setCoherenceAlgorithm(value)}
-          />
-        </div>
-      </Accordion>
-
-      <Accordion title="Upscale">
-        <div class="flex flex-col gap-3 p-2">
-          <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
-            Upscaler
-            <Select bind:value={upscalerName}>
-              <option value="">Default</option>
-              {#each upscalers as upscalerOption (upscalerOption)}
-                <option value={upscalerOption}>{upscalerOption}</option>
-              {/each}
-            </Select>
-          </label>
-
-          <SliderNumberInput
-            label="Size multiplier"
-            bind:value={upscaleMultiplier}
-            min={0.25}
-            max={4}
-            sliderStep={0.25}
-            numberStep={0.25}
-          />
-
-          <SliderNumberInput
-            label="Denoising strength"
-            bind:value={upscaleDenoisingStrength}
-            min={0}
-            max={1}
-            sliderStep={0.01}
-          />
-
-          <Accordion title="Advanced">
-            {#snippet headerActions()}
-              <label
-                class="flex cursor-pointer items-center gap-1 text-[11px] text-(--upaint-text-muted)"
-              >
-                <input
-                  type="checkbox"
-                  bind:checked={upscaleAdvancedEnabled}
-                  class="m-0 h-3.5 w-3.5 accent-(--upaint-accent) focus-visible:ring-2 focus-visible:ring-(--upaint-accent)"
-                />
-                Enabled
-              </label>
-            {/snippet}
-
-            <div class="flex flex-col gap-2 p-2">
-              <div class="grid grid-cols-2 gap-2">
-                <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
-                  Sampler
-                  <Select bind:value={upscaleSamplerName} disabled={!upscaleAdvancedEnabled}>
-                    <option value="">Default</option>
-                    {#each samplers as sampler (sampler)}
-                      <option value={sampler}>{sampler}</option>
-                    {/each}
-                  </Select>
-                </label>
-
-                <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
-                  Scheduler
-                  <Select bind:value={upscaleScheduler} disabled={!upscaleAdvancedEnabled}>
-                    <option value="">Default</option>
-                    {#each schedulers as schedulerOption (schedulerOption)}
-                      <option value={schedulerOption}>{schedulerOption}</option>
-                    {/each}
-                  </Select>
-                </label>
+          {#if id === "generation.model"}
+            <Accordion open title="Model" persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <ModelControls {models} {modules} bind:modelName bind:moduleNames />
               </div>
+            </Accordion>
+          {:else if id === "generation.bounding-box"}
+            <Accordion title="Bounding Box" persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <BoundaryBoxControls
+                  scaleMode={generationSettingsStore.scaleMode}
+                  autoBaseWidth={generationSettingsStore.autoBaseWidth}
+                  manualWidth={generationSettingsStore.manualWidth}
+                  manualHeight={generationSettingsStore.manualHeight}
+                  onScaleModeChange={(value) => generationSettingsStore.setScaleMode(value)}
+                  onAutoBaseWidthChange={(value) => generationSettingsStore.setAutoBaseWidth(value)}
+                  onManualWidthChange={(value) => generationSettingsStore.setManualWidth(value)}
+                  onManualHeightChange={(value) => generationSettingsStore.setManualHeight(value)}
+                />
+              </div>
+            </Accordion>
+          {:else if id === "generation.loras"}
+            <Accordion title="LoRAs" count={enabledLoraCount} persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <LoraControls
+                  {selectedLoras}
+                  onSelectedLorasChange={(value) => (selectedLoras = value)}
+                  onAddActivationWords={addActivationWords}
+                />
+              </div>
+            </Accordion>
+          {:else if id === "generation.sampling"}
+            <Accordion open title="Sampling" persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <SamplingControls
+                  {samplers}
+                  {schedulers}
+                  bind:samplerName
+                  bind:scheduler
+                  bind:steps
+                  bind:cfgScale
+                  bind:denoisingStrength
+                  denoisingDisabled={generationMode === "txt2img"}
+                  seedMode={generationSettingsStore.seedMode}
+                  seedValue={generationSettingsStore.seedValue}
+                  onSeedModeChange={(value) => generationSettingsStore.setSeedMode(value)}
+                  onSeedValueChange={(value) => generationSettingsStore.setSeedValue(value)}
+                />
+              </div>
+            </Accordion>
+          {:else if id === "generation.composition"}
+            <Accordion title="Composition" persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <InpaintControls
+                  maskBlur={generationSettingsStore.maskBlur}
+                  inpaintPadding={generationSettingsStore.inpaintPadding}
+                  inpaintArea={generationSettingsStore.inpaintArea}
+                  softInpaintingEnabled={generationSettingsStore.softInpaintingEnabled}
+                  inpaintControlNetEnabled={generationSettingsStore.inpaintControlNetEnabled}
+                  inpaintControlNetModel={generationSettingsStore.inpaintControlNetModel}
+                  inpaintControlNetWeight={generationSettingsStore.inpaintControlNetWeight}
+                  coherenceEdgeSize={generationSettingsStore.coherenceEdgeSize}
+                  coherenceAlgorithm={generationSettingsStore.coherenceAlgorithm}
+                  onMaskBlurChange={(value) => generationSettingsStore.setMaskBlur(value)}
+                  onInpaintPaddingChange={(value) =>
+                    generationSettingsStore.setInpaintPadding(value)}
+                  onInpaintAreaChange={(value) => generationSettingsStore.setInpaintArea(value)}
+                  onSoftInpaintingChange={(value) =>
+                    generationSettingsStore.setSoftInpaintingEnabled(value)}
+                  onInpaintControlNetEnabledChange={(value) =>
+                    generationSettingsStore.setInpaintControlNetEnabled(value)}
+                  onInpaintControlNetModelChange={(value) =>
+                    generationSettingsStore.setInpaintControlNetModel(value)}
+                  onInpaintControlNetWeightChange={(value) =>
+                    generationSettingsStore.setInpaintControlNetWeight(value)}
+                  onCoherenceEdgeSizeChange={(value) =>
+                    generationSettingsStore.setCoherenceEdgeSize(value)}
+                  onCoherenceAlgorithmChange={(value) =>
+                    generationSettingsStore.setCoherenceAlgorithm(value)}
+                />
+              </div>
+            </Accordion>
+          {:else}
+            <Accordion title="Upscale" persistKey={id} {headerLeading}>
+              <div class="flex flex-col gap-3 p-2">
+                <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+                  Upscaler
+                  <Select bind:value={upscalerName}>
+                    <option value="">Default</option>
+                    {#each upscalers as upscalerOption (upscalerOption)}
+                      <option value={upscalerOption}>{upscalerOption}</option>
+                    {/each}
+                  </Select>
+                </label>
 
-              <SliderNumberInput
-                label="Steps"
-                bind:value={upscaleSteps}
-                min={1}
-                max={150}
-                sliderStep={1}
-                disabled={!upscaleAdvancedEnabled}
-              />
+                <SliderNumberInput
+                  label="Size multiplier"
+                  bind:value={upscaleMultiplier}
+                  min={0.25}
+                  max={4}
+                  sliderStep={0.25}
+                  numberStep={0.25}
+                />
 
-              <SliderNumberInput
-                label="CFG scale"
-                bind:value={upscaleCfgScale}
-                min={1}
-                max={30}
-                sliderStep={0.5}
-                disabled={!upscaleAdvancedEnabled}
-              />
-            </div>
-          </Accordion>
+                <SliderNumberInput
+                  label="Denoising strength"
+                  bind:value={upscaleDenoisingStrength}
+                  min={0}
+                  max={1}
+                  sliderStep={0.01}
+                />
 
-          <Button
-            variant="primary"
-            class="w-full"
-            onclick={upscale}
-            disabled={generationRuntimeStore.generating}
-          >
-            Upscale
-          </Button>
+                <Accordion title="Advanced">
+                  {#snippet headerActions()}
+                    <label
+                      class="flex cursor-pointer items-center gap-1 text-[11px] text-(--upaint-text-muted)"
+                    >
+                      <input
+                        type="checkbox"
+                        bind:checked={upscaleAdvancedEnabled}
+                        class="m-0 h-3.5 w-3.5 accent-(--upaint-accent) focus-visible:ring-2 focus-visible:ring-(--upaint-accent)"
+                      />
+                      Enabled
+                    </label>
+                  {/snippet}
+
+                  <div class="flex flex-col gap-2 p-2">
+                    <div class="grid grid-cols-2 gap-2">
+                      <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+                        Sampler
+                        <Select bind:value={upscaleSamplerName} disabled={!upscaleAdvancedEnabled}>
+                          <option value="">Default</option>
+                          {#each samplers as sampler (sampler)}
+                            <option value={sampler}>{sampler}</option>
+                          {/each}
+                        </Select>
+                      </label>
+
+                      <label class="flex min-w-0 flex-col gap-1 text-(--upaint-text-muted)">
+                        Scheduler
+                        <Select bind:value={upscaleScheduler} disabled={!upscaleAdvancedEnabled}>
+                          <option value="">Default</option>
+                          {#each schedulers as schedulerOption (schedulerOption)}
+                            <option value={schedulerOption}>{schedulerOption}</option>
+                          {/each}
+                        </Select>
+                      </label>
+                    </div>
+
+                    <SliderNumberInput
+                      label="Steps"
+                      bind:value={upscaleSteps}
+                      min={1}
+                      max={150}
+                      sliderStep={1}
+                      disabled={!upscaleAdvancedEnabled}
+                    />
+
+                    <SliderNumberInput
+                      label="CFG scale"
+                      bind:value={upscaleCfgScale}
+                      min={1}
+                      max={30}
+                      sliderStep={0.5}
+                      disabled={!upscaleAdvancedEnabled}
+                    />
+                  </div>
+                </Accordion>
+
+                <Button
+                  variant="primary"
+                  class="w-full"
+                  onclick={upscale}
+                  disabled={generationRuntimeStore.generating}
+                >
+                  Upscale
+                </Button>
+              </div>
+            </Accordion>
+          {/if}
         </div>
-      </Accordion>
+      {/each}
     </div>
+
+    <p class="sr-only" aria-live="polite" aria-atomic="true">{moveAnnouncement}</p>
   </div>
 </section>

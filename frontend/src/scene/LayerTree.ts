@@ -101,7 +101,14 @@ export class LayerTree {
 
     // 2/3. Create nodes for new layers, update the ones we keep.
     for (const layer of doc.layers) {
-      const existing = this.nodes.get(layer.id);
+      let existing = this.nodes.get(layer.id);
+      const surface = layer.kind === "group" ? undefined : this.store.getTiledSurface(layer.id);
+      if (existing && !existing.usesTiledSurface(surface)) {
+        existing.container.removeFromParent();
+        existing.destroy();
+        this.nodes.delete(layer.id);
+        existing = undefined;
+      }
       if (existing) {
         existing.update(layer);
         continue;

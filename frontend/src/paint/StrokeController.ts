@@ -287,6 +287,9 @@ export class StrokeController {
       this.canvas.style.cursor = "not-allowed";
       return;
     }
+    // The LassoController owns its own cursor states (replace/add/subtract,
+    // closing range) while it is the active tool.
+    if (this.tools.getState().activeTool === "lasso") return;
     if (this.tools.getState().activeTool === "eyedropper") {
       this.canvas.style.cursor = "crosshair";
       return;

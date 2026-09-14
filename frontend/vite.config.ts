@@ -14,13 +14,21 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { readFileSync } from "node:fs";
 
 // Forge backend origin for `npm run dev` -- override with
 // `ULTRA_PAINT_BACKEND` if it's not running on the default port.
 const BACKEND_ORIGIN = process.env.ULTRA_PAINT_BACKEND ?? "http://127.0.0.1:7860";
+const configSource = readFileSync(new URL("../ultra_paint/config.py", import.meta.url), "utf8");
+const extensionVersion = configSource.match(/^VERSION:\s*str\s*=\s*["']([^"']+)["']/m)?.[1];
+if (!extensionVersion)
+  throw new Error("Could not read Ultra Paint VERSION from ultra_paint/config.py");
 
 export default defineConfig({
   base: "/ultra_paint/app/",
+  define: {
+    __ULTRA_PAINT_VERSION__: JSON.stringify(extensionVersion),
+  },
   plugins: [svelte(), tailwindcss()],
   server: {
     proxy: {

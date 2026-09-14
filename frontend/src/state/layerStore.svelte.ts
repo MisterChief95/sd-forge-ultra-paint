@@ -108,6 +108,9 @@ export type LayerStoreMutation =
 /** Subscriber for undoable document mutations. */
 export type MutationListener = (mutation: LayerStoreMutation) => void;
 
+/** Subscriber for every persisted-document revision, including pixel edits. */
+export type ProjectRevisionListener = () => void;
+
 /** Identity transform for a freshly created layer. */
 function identityTransform(): Transform {
   return { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
@@ -271,12 +274,20 @@ export class LayerStore {
 
   private readonly mutationListeners = new Set<MutationListener>();
 
+  private readonly projectRevisionListeners = new Set<ProjectRevisionListener>();
+
   private _selectedLayerId = $state<LayerId | null>(null);
 
   private _selectedLayerIds = $state<LayerId[]>([]);
 
   /** Bumped by {@link touchTexture} whenever a layer's pixels change in place, for thumbnail cache invalidation. */
   private _textureVersions = $state<Record<LayerId, number>>({});
+
+  /** Monotonic revision covering every persisted document or pixel mutation. */
+  private _projectRevision = $state(0);
+
+  /** Import-only UI state; the serialized ControlLayer.model string remains untouched. */
+  private _unresolvedControlModels = $state<Record<LayerId, true>>({});
 
   /**
    * Display-only "hide all masks" toggle. Independent of each mask's own
@@ -405,10 +416,18 @@ export class LayerStore {
     return this._textureVersions[id] ?? 0;
   }
 
+  public get projectRevision(): number {
+    return this._projectRevision;
+  }
+
+  public isControlModelUnresolved(id: LayerId): boolean {
+    return this._unresolvedControlModels[id] === true;
+  }
+
   /**
-   * Mark a layer's texture as freshly painted, without touching document
-   * state. Not a {@link LayerStoreMutation} -- purely a cache-invalidation
-   * signal for UI (e.g. layer thumbnails) to observe.
+   * Mark a layer's texture as freshly committed. Not a {@link LayerStoreMutation}
+   * because pixel undo is already recorded by `UndoHistory`; it still advances
+   * the portable-project revision and invalidates thumbnail caches.
    */
   public touchTexture(id: LayerId): void {
     this.syncTiledImageMetadata(id);
@@ -417,6 +436,7 @@ export class LayerStore {
       ...this._textureVersions,
       [id]: (this._textureVersions[id] ?? 0) + 1,
     };
+    this.bumpProjectRevision();
   }
 
   /**
@@ -659,7 +679,13 @@ export class LayerStore {
     const layer = this.getLayer(id);
     if (!layer || layer.kind !== "control") return;
     Object.assign(layer, patch);
+    if (patch.model !== undefined && this._unresolvedControlModels[id]) {
+      const remaining = { ...this._unresolvedControlModels };
+      delete remaining[id];
+      this._unresolvedControlModels = remaining;
+    }
     this.emit();
+    this.bumpProjectRevision();
   }
 
   /** Apply the user-visible settings from a same-kind source to a newly created copy. */
@@ -689,6 +715,7 @@ export class LayerStore {
       });
     }
     this.emit();
+    this.bumpProjectRevision();
   }
 
   /**
@@ -726,6 +753,7 @@ export class LayerStore {
     }
 
     this.emit();
+    this.bumpProjectRevision();
     return { layer, index, tiledSurface };
   }
 
@@ -738,6 +766,7 @@ export class LayerStore {
       siblings.splice(Math.max(0, Math.min(index, siblings.length)), 0, layer.id);
     }
     this.emit();
+    this.bumpProjectRevision();
   }
 
   /** Remove `id` and, if it is a group, every descendant. */
@@ -800,11 +829,15 @@ export class LayerStore {
     for (const doomedId of doomed) {
       this._tiledSurfaces.delete(doomedId);
     }
+    this._unresolvedControlModels = Object.fromEntries(
+      Object.entries(this._unresolvedControlModels).filter(([id]) => !doomed.has(id)),
+    );
 
     const selectedLayerIds = [...this._selectedLayerIds];
     this._selectedLayerIds = this._selectedLayerIds.filter((selected) => !doomed.has(selected));
     this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
     this.emit();
+    this.bumpProjectRevision();
     return { rootIds, placements, layers, selectedLayerIds };
   }
 
@@ -835,6 +868,7 @@ export class LayerStore {
     );
     this._selectedLayerId = this._selectedLayerIds[this._selectedLayerIds.length - 1] ?? null;
     this.emit();
+    this.bumpProjectRevision();
   }
 
   /** Release a detached delete snapshot after it falls out of bounded history. */
@@ -954,6 +988,7 @@ export class LayerStore {
     if (layer.color === next) return;
     layer.color = next;
     this.emit();
+    this.bumpProjectRevision();
   }
 
   /** Patch any subset of a layer's transform. */
@@ -1002,21 +1037,6 @@ export class LayerStore {
     });
   }
 
-  /** Restore a persisted operating region without adding an undo-history entry. */
-  public restoreBoundaryBox(box: BoundaryBox): void {
-    const next = this.normaliseBoundaryBox(box);
-    if (
-      this._document.boundaryBox.x === next.x &&
-      this._document.boundaryBox.y === next.y &&
-      this._document.boundaryBox.width === next.width &&
-      this._document.boundaryBox.height === next.height
-    ) {
-      return;
-    }
-    this._document.boundaryBox = next;
-    this.emit();
-  }
-
   /** Ensure all boundary-box mutations stay safe for later texture allocation. */
   private normaliseBoundaryBox(box: BoundaryBox): BoundaryBox {
     const previous = this._document.boundaryBox;
@@ -1042,8 +1062,55 @@ export class LayerStore {
     this._document.layerOrder = [];
     this._selectedLayerId = null;
     this._selectedLayerIds = [];
+    this._unresolvedControlModels = {};
     this.emit();
     this.emitMutation({ kind: "clear" });
+  }
+
+  /**
+   * Atomically adopt a fully decoded portable document. The incoming surfaces
+   * transfer to this store; prior surfaces are destroyed only after subscribers
+   * have reconciled against the complete replacement.
+   */
+  public replaceDocument(
+    document: Document,
+    surfaces: Map<LayerId, TiledRasterCanvas>,
+    unresolvedControlLayerIds: ReadonlySet<LayerId> = new Set(),
+  ): void {
+    const previousDocument = this._document;
+    const previousSurfaceEntries = [...this._tiledSurfaces.entries()];
+    const previousSelectedLayerId = this._selectedLayerId;
+    const previousSelectedLayerIds = this._selectedLayerIds;
+    const previousTextureVersions = this._textureVersions;
+    const previousUnresolvedControlModels = this._unresolvedControlModels;
+    this._document = document;
+    this._tiledSurfaces.clear();
+    for (const [id, surface] of surfaces) this._tiledSurfaces.set(id, surface);
+    this._selectedLayerId = null;
+    this._selectedLayerIds = [];
+    this._textureVersions = {};
+    this._unresolvedControlModels = Object.fromEntries(
+      [...unresolvedControlLayerIds].map((id) => [id, true] as const),
+    );
+    try {
+      this.emit();
+    } catch (error) {
+      this._document = previousDocument;
+      this._tiledSurfaces.clear();
+      for (const [id, surface] of previousSurfaceEntries) this._tiledSurfaces.set(id, surface);
+      this._selectedLayerId = previousSelectedLayerId;
+      this._selectedLayerIds = previousSelectedLayerIds;
+      this._textureVersions = previousTextureVersions;
+      this._unresolvedControlModels = previousUnresolvedControlModels;
+      this.emit();
+      throw error;
+    }
+    this.emitMutation({ kind: "clear" });
+
+    const adopted = new Set(this._tiledSurfaces.values());
+    for (const surface of new Set(previousSurfaceEntries.map(([, surface]) => surface))) {
+      if (!adopted.has(surface)) surface.destroy();
+    }
   }
 
   // ----------------------------------------------------------- observers
@@ -1064,6 +1131,14 @@ export class LayerStore {
     };
   }
 
+  /** Subscribe to the monotonic portable-project revision. */
+  public subscribeProjectRevisions(fn: ProjectRevisionListener): Unsubscribe {
+    this.projectRevisionListeners.add(fn);
+    return () => {
+      this.projectRevisionListeners.delete(fn);
+    };
+  }
+
   /** Notify legacy listeners with the current rune-backed document. */
   public emit(): void {
     for (const fn of [...this.listeners]) {
@@ -1072,9 +1147,15 @@ export class LayerStore {
   }
 
   private emitMutation(mutation: LayerStoreMutation): void {
+    this.bumpProjectRevision();
     for (const fn of [...this.mutationListeners]) {
       fn(mutation);
     }
+  }
+
+  private bumpProjectRevision(): void {
+    this._projectRevision += 1;
+    for (const fn of [...this.projectRevisionListeners]) fn();
   }
 
   // ------------------------------------------------------------ internals

@@ -36,6 +36,11 @@ continuously-updated status and roadmap.
   through Forge's interrupt mechanism.
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
+- **Portable projects**: save/open the complete editable document as a client-side
+  `.uproj` archive, including sparse tile pixels, masks, transforms, groups, and
+  ControlNet layer settings.
+- **Crash/reload autosave**: quietly checkpoints that same editable document to a
+  single backend slot and restores it before the canvas scene and undo history start.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
   with zoom-tiered spacing.
 - **Layer transforms**: move, center-rotate, corner-scale (free or Shift-constrained),
@@ -79,8 +84,6 @@ that sub-feature; see `PLAN.md`). Ahead:
 - **Phase 5 — Groups, transforms, selection, shape tools**: the first single-layer
   transform gizmo has landed; multi-selection pivots, marquee/lasso selection,
   and basic vector shapes remain.
-- **Phase 6 — Document persistence**: save/load the actual canvas (layers, pixels,
-  boundary box, masks) as a project file, not just generation settings.
 - Known gaps: a clean clone has no `data/tags.csv` or `data/generation-settings.json`
   (`/data/` is gitignored) so autocomplete and settings persistence start empty until
   first configured; generations are pinned to one image per Generate click; no run
@@ -119,6 +122,7 @@ appears alongside txt2img/img2img.
 | `scripts/ultra_paint_options_api.py`   | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence)                            |
 | `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt`                                                               |
 | `scripts/ultra_paint_save_api.py`      | `POST /ultra_paint/api/save`                                                                    |
+| `scripts/ultra_paint_autosave_api.py`  | `POST /ultra_paint/api/autosave` plus checkpoint restore routes                                |
 
 ## Development
 

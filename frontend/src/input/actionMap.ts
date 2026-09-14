@@ -24,7 +24,9 @@ export type InputActionId =
   | "layer.merge-selected"
   | "boundary.fit-to-mask"
   | "generation.generate"
-  | "generation.cancel";
+  | "generation.cancel"
+  | "lasso.cancel"
+  | "lasso.close-loop";
 
 export interface InputAction {
   id: InputActionId;
@@ -175,6 +177,21 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     },
   },
   {
+    id: "lasso.cancel",
+    map: "global",
+    shortcut: "Escape",
+    matches: key("escape"),
+    run: (app) => app.cancelLasso(),
+  },
+  {
+    id: "lasso.close-loop",
+    map: "lasso",
+    shortcut: "Enter",
+    matches: key("enter"),
+    run: (app) => app.closeLassoLoop(),
+    mutatesDocument: true,
+  },
+  {
     id: "generation.cancel",
     map: "global",
     shortcut: "Escape",
@@ -286,17 +303,17 @@ export function handleInputKeyDown(event: KeyboardEvent, app: UltraPaintApp | nu
   // target guard that protects normal typing/undo from every other shortcut.
   if (isEditableTarget(event.target) && !primaryKey("enter")(event)) return false;
   const activeMaps = new Set<InputActionMapId>(["global", "canvas", app.getToolStore().activeTool]);
-  const action = INPUT_ACTIONS.find(
-    (candidate) => activeMaps.has(candidate.map) && candidate.matches(event),
-  );
-  if (!action) return false;
-  if (action.mutatesDocument && isDocumentMutationLocked()) return false;
-  try {
-    if (!action.run(app)) return false;
-  } catch (error) {
-    console.error(`[ultra-paint] input action "${action.id}" failed`, error);
-    return false;
+  for (const action of INPUT_ACTIONS) {
+    if (!activeMaps.has(action.map) || !action.matches(event)) continue;
+    if (action.mutatesDocument && isDocumentMutationLocked()) continue;
+    try {
+      if (!action.run(app)) continue;
+    } catch (error) {
+      console.error(`[ultra-paint] input action "${action.id}" failed`, error);
+      continue;
+    }
+    event.preventDefault();
+    return true;
   }
-  event.preventDefault();
-  return true;
+  return false;
 }

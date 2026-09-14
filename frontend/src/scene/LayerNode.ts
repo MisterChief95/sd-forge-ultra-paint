@@ -35,6 +35,8 @@ export class LayerNode {
 
   private tiledView: TiledRasterView | null = null;
 
+  private readonly tiledSurface: TiledRasterCanvas | undefined;
+
   private previewOverride: Texture | null = null;
 
   private previewSprite: Sprite | null = null;
@@ -45,11 +47,14 @@ export class LayerNode {
 
   private controlDisplayFilter: ControlLayerDisplayFilter | null = null;
 
+  private maskDisplaySuppressed = false;
+
   private destroyed = false;
 
   constructor(layer: Layer, tiledSurface?: TiledRasterCanvas) {
     this.id = layer.id;
     this.kind = layer.kind;
+    this.tiledSurface = tiledSurface;
 
     this.container = new Container({ label: `layer:${layer.id}` });
 
@@ -153,9 +158,20 @@ export class LayerNode {
     return this.tiledView !== null;
   }
 
+  public usesTiledSurface(surface: TiledRasterCanvas | undefined): boolean {
+    return this.tiledSurface === surface;
+  }
+
   /** Hide one persistent tile sprite while a stroke overlay stands in for it. */
   public setTileSpriteHidden(coord: TileCoord, hidden: boolean): void {
     this.tiledView?.setTileHidden(coord, hidden);
+  }
+
+  /** Hide only this node's persistent mask pixels while a replace preview stands in for them. */
+  public setMaskDisplaySuppressed(suppressed: boolean): void {
+    if (this.kind !== "mask" || this.maskDisplaySuppressed === suppressed) return;
+    this.maskDisplaySuppressed = suppressed;
+    if (this.tiledView) this.tiledView.container.visible = !suppressed && !this.previewOverride;
   }
 
   /**
@@ -177,7 +193,9 @@ export class LayerNode {
   public setPreviewOverride(texture: Texture | null): void {
     if (this.destroyed || !this.tiledView) return;
     this.previewOverride = texture;
-    if (this.tiledView) this.tiledView.container.visible = !texture;
+    if (this.tiledView) {
+      this.tiledView.container.visible = !texture && !this.maskDisplaySuppressed;
+    }
     if (texture) {
       if (this.previewSprite) {
         this.previewSprite.texture = texture;

@@ -5,9 +5,12 @@
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
+  import { toastStore } from "../state/toastStore.svelte";
   import brushIcon from "./img/brush-tool-svgrepo-com.svg";
   import eraserIcon from "./img/eraser-svgrepo-com.svg";
   import fillIcon from "./img/fill-svgrepo-com.svg";
+  import lassoFreehandIcon from "./img/lasso-svgrepo-com.svg";
+  import lassoPolygonIcon from "./img/lasso-polygon-svgrepo-com.svg";
   import Button from "./lib/Button.svelte";
   import CheckboxField from "./lib/CheckboxField.svelte";
   import Slider from "./lib/Slider.svelte";
@@ -23,11 +26,18 @@
   }
 
   let pressurePopoverOpen = $state(false);
+  let projectBusy = $state(false);
+  let projectInput: HTMLInputElement;
   const fillLayer = $derived.by(() => {
     const id = layerStore.selectedLayerId;
     return id ? layerStore.getLayer(id) : undefined;
   });
   const fillDisabled = $derived(fillLayer?.kind !== "raster" || fillLayer.locked);
+  const lassoLayer = $derived.by(() => {
+    const id = layerStore.selectedLayerId;
+    return id ? layerStore.getLayer(id) : undefined;
+  });
+  const lassoDisabled = $derived(lassoLayer?.kind !== "mask" || lassoLayer.locked);
   const transformLayer = $derived.by(() => {
     if (layerStore.selectedLayerIds.length !== 1) return undefined;
     return layerStore.getLayer(layerStore.selectedLayerIds[0]!);
@@ -54,6 +64,50 @@
     const popover = document.getElementById("upaint-pressure-popover");
     if (popover instanceof HTMLElement && popover.matches(":popover-open")) {
       popover.hidePopover();
+    }
+  }
+
+  async function saveProject(): Promise<void> {
+    const app = getActiveUltraPaintApp();
+    if (!app || projectBusy) return;
+    projectBusy = true;
+    try {
+      await app.saveProject();
+      toastStore.success("Project saved.");
+    } catch (error) {
+      toastStore.error(error instanceof Error ? error.message : "Could not save project.");
+    } finally {
+      projectBusy = false;
+    }
+  }
+
+  function chooseProject(): void {
+    if (projectBusy || isDocumentMutationLocked()) return;
+    const app = getActiveUltraPaintApp();
+    if (!app) return;
+    if (
+      (layerStore.document.layers.length > 0 || app.hasUnsavedProjectChanges()) &&
+      !window.confirm("Open this project and replace the current document?")
+    ) {
+      return;
+    }
+    projectInput.click();
+  }
+
+  async function openProject(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    const app = getActiveUltraPaintApp();
+    if (!file || !app || projectBusy) return;
+    projectBusy = true;
+    try {
+      await app.openProject(file);
+      toastStore.success("Project opened.");
+    } catch (error) {
+      toastStore.error(error instanceof Error ? error.message : "Could not open project.");
+    } finally {
+      projectBusy = false;
     }
   }
 </script>
@@ -98,6 +152,47 @@
     >
       <img src={fillIcon} alt="" class="h-4 w-4 brightness-0 invert" />
     </Button>
+    <Button
+      size="icon"
+      pressed={paintToolStore.activeTool === "lasso"}
+      title={isDocumentMutationLocked()
+        ? "Document edits are locked while previewing"
+        : lassoDisabled
+          ? "Select an unlocked mask layer to use Lasso"
+          : "Lasso mask coverage"}
+      aria-label="Lasso mask coverage"
+      disabled={isDocumentMutationLocked() || lassoDisabled}
+      onclick={() => paintToolStore.setActiveTool("lasso")}
+    >
+      <img
+        src={paintToolStore.lassoMode === "polygonal" ? lassoPolygonIcon : lassoFreehandIcon}
+        alt=""
+        class="h-4 w-4 brightness-0 invert"
+      />
+    </Button>
+    {#if paintToolStore.activeTool === "lasso"}
+      <div class="flex shrink-0" aria-label="Lasso mode">
+        <Button
+          size="sm"
+          radius="left"
+          pressed={paintToolStore.lassoMode === "polygonal"}
+          title="Click vertices; close near the first point or double-click"
+          onclick={() => paintToolStore.setLassoMode("polygonal")}
+        >
+          Polygon
+        </Button>
+        <Button
+          size="sm"
+          radius="right"
+          pressed={paintToolStore.lassoMode === "freehand"}
+          title="Drag to draw a closed outline"
+          style="border-left-width: 0;"
+          onclick={() => paintToolStore.setLassoMode("freehand")}
+        >
+          Freehand
+        </Button>
+      </div>
+    {/if}
     <Button
       size="icon"
       pressed={paintToolStore.activeTool === "eyedropper"}
@@ -328,11 +423,14 @@
   </div>
 
   <Button
-    size="icon"
-    class="ml-auto"
+    class="ml-auto gap-1.5"
     disabled={generationRuntimeStore.saving}
-    title={generationRuntimeStore.saving ? "Saving canvas" : "Save canvas"}
-    aria-label={generationRuntimeStore.saving ? "Saving canvas" : "Save canvas"}
+    title={generationRuntimeStore.saving
+      ? "Saving image to Forge output"
+      : "Save image to Forge output"}
+    aria-label={generationRuntimeStore.saving
+      ? "Saving image to Forge output"
+      : "Save image to Forge output"}
     onclick={() => saveGeneration()}
   >
     <svg
@@ -346,7 +444,38 @@
       <path d="M2.5 2.5h8.75l2.25 2.25V13.5h-11z" stroke-linejoin="round" />
       <path d="M5 2.5v4h5.5v-4M5 13.5V9h6v4.5" stroke-linejoin="round" />
     </svg>
+    Save Image
   </Button>
+
+  <div
+    class="flex shrink-0 items-center gap-1 border-l pl-2"
+    style="border-color: var(--upaint-border);"
+  >
+    <Button
+      size="sm"
+      disabled={projectBusy}
+      title="Download the complete editable document"
+      onclick={saveProject}
+    >
+      Save Project
+    </Button>
+    <Button
+      size="sm"
+      disabled={projectBusy || isDocumentMutationLocked()}
+      title="Open an Ultra Paint project"
+      onclick={chooseProject}
+    >
+      Open Project
+    </Button>
+    <input
+      bind:this={projectInput}
+      class="sr-only"
+      type="file"
+      accept=".uproj,application/zip"
+      aria-label="Choose an Ultra Paint project"
+      onchange={openProject}
+    />
+  </div>
 </div>
 
 <div

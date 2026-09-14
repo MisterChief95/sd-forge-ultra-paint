@@ -71,6 +71,12 @@
     </p>
   {/if}
 
+  {#if layerStore.isControlModelUnresolved(layer.id)}
+    <p class="m-0 text-(--upaint-danger)">
+      Saved model is not installed. Choose a model before generation.
+    </p>
+  {/if}
+
   <div class="grid grid-cols-[auto_minmax(0,1fr)_36px] items-center gap-1.5">
     <span>Weight</span>
     <Slider
