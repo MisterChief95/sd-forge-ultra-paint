@@ -12,6 +12,84 @@ and design-decisions sections can lag a little; status should never lie.
 
 ## Current Status — tiled canvas holdovers — 2026-09-01
 
+### Mask lasso tool — 2026-09-08
+
+Mask layers now support polygonal and freehand lasso coverage with replace,
+Shift-add, and Alt-subtract operations. Gestures use the native canvas pointer
+boundary, preview through one non-interactive Pixi `Graphics` overlay, reject
+self-intersecting sampled polygons, and commit through one atomic tiled edit /
+undo entry. Replace and subtract recompute tight alpha bounds and release empty
+tiles; temporary previews and their hatch filter are controller-owned and
+destroyed on teardown.
+
+Verification: frontend typecheck, lint, format check, and production build
+passed. The Svelte autofixer passed for `PaintToolbar.svelte`. The configured
+Playwright run needed a temporary writable Vite-cache override; it displayed
+73 passes and 10 unrelated failures among all 83 existing tests, then hung in
+runner teardown. The new focused lasso browser regression passed 1/1. No live
+Forge/GPU validation was run.
+
+### Portable project saving — 2026-09-08
+
+User-initiated **Save Project** / **Open Project** now round-trips the complete
+working document through a client-side `.uproj` ZIP: `manifest.json` contains
+the versioned plain `Document` plus one entry per allocated signed tile, and
+`pixels/*.png` stores each tile independently. The reusable non-ZIP codec is
+`frontend/src/state/projectCodec.ts`; `projectArchive.ts` is only the thin
+`fflate` packaging/download adapter, while autosave reuses the codec directly.
+Import validates document fields, hierarchy/order integrity,
+cycles, blend modes, transforms, opacity, ControlNet settings, image metadata,
+archive paths, and tile coordinates before decoding into temporary surfaces.
+Only a fully decoded project is atomically adopted; failed imports destroy all
+temporary GPU resources and retain the current document. Missing ControlNet
+models remain named on their layers and receive an in-memory reassignment warning.
+
+Static typechecking, lint, format checking, and the production build pass. The
+focused Playwright round-trip was not rerun during autosave implementation. No live
+Forge/GPU validation was run.
+
+### Backend crash/reload autosave — 2026-09-08
+
+Implemented a single-slot backend autosave using the portable-document codec landed
+with project saving. `frontend/src/app/autosave.ts` watches `projectRevision`, saves
+after 25 seconds of quiet or at most 2 minutes of continuous committed edits, keeps
+one upload in flight, and declines snapshots that changed or gained an active stroke
+during PNG encoding. Startup restores and atomically adopts the decoded document
+after Pixi renderer initialization but before `LayerTree` and `UndoHistory` exist;
+missing or invalid checkpoints fail soft to the normal blank document.
+
+`ultra_paint/autosave_api.py` accepts bounded multipart manifest/tile uploads,
+validates referenced tile metadata and PNG IHDR dimensions, commits a complete new
+checkpoint before atomically replacing `current.json`, then removes the prior slot.
+Its thin script shim prunes crash-orphaned directories on backend startup. Generation
+settings no longer save or restore `boundaryBox`, making the document/autosave value
+the sole persisted owner and removing startup-order races. The shared revision signal
+now also covers committed tile pixels and persisted mask/ControlNet configuration.
+Focused pytest coverage covers multipart limits, replacement, failed pointer swaps,
+orphan pruning, and dimension rejection.
+
+Verification: `pytest` passed 133/133; frontend typecheck (0 errors/warnings), lint,
+format check, and production build passed. The Svelte autofixer was invoked for the
+touched component but npm package lookup was blocked by the sandbox. No browser or
+live Forge/GPU validation was run.
+
+### Browser-local UI layout persistence — 2026-09-08
+
+Top-level Generation and Layer panel accordions now restore and persist their
+open/closed state through one versioned, fail-soft browser `localStorage`
+snapshot. The six top-level Generation sections can also be reordered from a
+dedicated header grip by native drag/drop or `Alt+ArrowUp`/`Alt+ArrowDown`;
+their order persists through the same layout store, with unknown/duplicate IDs
+discarded and newly introduced sections appended in default order. Drag targets
+use the accordion header midpoint, and the keyed reorder animation respects
+reduced-motion preference. This remains completely separate from the server-side
+generation settings blob.
+
+Verification: frontend typecheck, lint, and format check passed. The Svelte
+autofixer was invoked for both changed Svelte components but produced no output
+and stalled because its external service is blocked in this environment. No
+browser or live Forge validation was run.
+
 ### Coherence scaling and gradient algorithm — 2026-09-06
 
 Coherence edge size and whole-picture mask blur now remain calibrated in output

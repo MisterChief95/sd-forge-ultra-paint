@@ -11,3 +11,6 @@ declare module "*.css" {
   const contents: string;
   export default contents;
 }
+
+/** Injected by Vite from the extension's single version source in ultra_paint/config.py. */
+declare const __ULTRA_PAINT_VERSION__: string;

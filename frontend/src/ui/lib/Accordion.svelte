@@ -1,12 +1,16 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
+  import { uiLayoutStore } from "../../state/uiLayoutStore.svelte";
+
   type Props = {
     open?: boolean;
     title?: string;
     count?: number | null;
     id?: string;
+    persistKey?: string;
     children?: Snippet;
+    headerLeading?: Snippet;
     headerActions?: Snippet;
   } & Record<string, unknown>;
 
@@ -15,13 +19,22 @@
     title = "",
     count = null,
     id = "",
+    persistKey,
     children,
+    headerLeading,
     headerActions,
     ...rest
   }: Props = $props();
 
+  restorePersistedOpen();
+
+  function restorePersistedOpen(): void {
+    if (persistKey) open = uiLayoutStore.getAccordionOpen(persistKey, open);
+  }
+
   function toggle(): void {
     open = !open;
+    if (persistKey) uiLayoutStore.setAccordionOpen(persistKey, open);
   }
 </script>
 
@@ -30,7 +43,12 @@
   class="w-full border-b bg-(--upaint-surface)"
   style="border-color: var(--upaint-border);"
 >
-  <div class="flex w-full items-center gap-1 px-2 py-1">
+  <div class="flex w-full items-center gap-1 px-2 py-1" data-accordion-header>
+    {#if headerLeading}
+      <div class="flex shrink-0 items-center">
+        {@render headerLeading()}
+      </div>
+    {/if}
     <button
       type="button"
       class="flex flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent py-1 text-left text-xs font-semibold text-(--upaint-text)"

@@ -7,7 +7,9 @@
 import type { BoundaryBox } from "./schema";
 
 /** Available paint-canvas tools. Only brush and eraser create stroke sessions. */
-export type PaintTool = "brush" | "eraser" | "eyedropper" | "transform" | "boundary-box";
+export type PaintTool = "brush" | "eraser" | "lasso" | "eyedropper" | "transform" | "boundary-box";
+
+export type LassoMode = "polygonal" | "freehand";
 
 export interface BrushSettings {
   /** Brush radius in document pixels. */
@@ -28,6 +30,8 @@ export interface BrushSettings {
 
 export interface PaintToolState {
   activeTool: PaintTool;
+  /** Transient interaction preference; not part of the saved document. */
+  lassoMode: LassoMode;
   brush: BrushSettings;
   /** Secondary (background) color, swapped with the brush color by "X". */
   secondaryColor: string;
@@ -42,6 +46,7 @@ export type PaintToolUnsubscribe = () => void;
 
 const DEFAULT_STATE: PaintToolState = {
   activeTool: "brush",
+  lassoMode: "freehand",
   boundaryAspectRatio: null,
   liveBoundaryBox: null,
   secondaryColor: "#000000",
@@ -73,6 +78,10 @@ export class PaintToolStore {
   /** Convenience reactive getter for tool-selection controls. */
   public get activeTool(): PaintTool {
     return this._state.activeTool;
+  }
+
+  public get lassoMode(): LassoMode {
+    return this._state.lassoMode;
   }
 
   /** Convenience reactive getter for brush controls. */
@@ -124,6 +133,12 @@ export class PaintToolStore {
   public setActiveTool(activeTool: PaintTool): void {
     if (this._state.activeTool === activeTool) return;
     this._state.activeTool = activeTool;
+    this.emit();
+  }
+
+  public setLassoMode(lassoMode: LassoMode): void {
+    if (this._state.lassoMode === lassoMode) return;
+    this._state.lassoMode = lassoMode;
     this.emit();
   }
 

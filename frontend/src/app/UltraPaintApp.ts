@@ -50,6 +50,7 @@ import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelt
 import { PixelGrid } from "../scene/PixelGrid";
 import { BrushEngine } from "../paint/BrushEngine";
 import { EraserEngine } from "../paint/EraserEngine";
+import { LassoController } from "../paint/LassoController";
 import { StrokeController, type StrokeSession } from "../paint/StrokeController";
 import { LayerTree } from "../scene/LayerTree";
 import {
@@ -86,6 +87,13 @@ import {
   tightAlphaBounds,
 } from "../canvas/TileRasterOps";
 import type { LayerNode } from "../scene/LayerNode";
+import {
+  createProjectArchive,
+  downloadProjectArchive,
+  openProjectArchive,
+} from "../state/projectArchive";
+import { fetchControlModels } from "../ui/generation/controlnetApi";
+import { AutosaveController, fetchAutosavedDocument } from "./autosave";
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
@@ -184,7 +192,15 @@ export class UltraPaintApp {
 
   private strokeController: StrokeController | null = null;
 
+  private lassoController: LassoController | null = null;
+
   private history: UndoHistory | null = null;
+
+  private autosave: AutosaveController | null = null;
+
+  private strokeInProgress = false;
+
+  private savedProjectRevision: number;
 
   private viewportCanvas: HTMLCanvasElement | null = null;
 
@@ -219,6 +235,7 @@ export class UltraPaintApp {
     this.rootElementId = rootElementId;
     this.options = options;
     this.store = options.store ?? layerStore;
+    this.savedProjectRevision = this.store.projectRevision;
     this.toolStore = options.toolStore ?? paintToolStore;
     activeInstance = this;
     // Constructors cannot be async; callers await `instance.ready`.
@@ -236,7 +253,6 @@ export class UltraPaintApp {
     // "inherit" makes them match the target resolution.
     Filter.defaultOptions.resolution = "inherit";
 
-    const doc = this.store.getDocument();
     const app = new Application();
 
     await app.init({
@@ -269,6 +285,13 @@ export class UltraPaintApp {
 
     app.canvas.style.display = "block";
     root.replaceChildren(app.canvas);
+
+    await this.restoreAutosave(app.renderer);
+    if (this.destroyed) {
+      app.destroy({ removeView: true, releaseGlobalResources: true }, { children: true });
+      return;
+    }
+    const doc = this.store.getDocument();
 
     this.tree = new LayerTree(this.store, () => this.updateTiledVisibleRegions());
     if (this.tileDebugBordersVisible) this.tree.setTileDebugBorders(true);
@@ -316,6 +339,16 @@ export class UltraPaintApp {
     this.mountViewportControls(app.canvas, root);
     this.brushEngine = new BrushEngine(app, this.tree.root, this.tree, this.store, history);
     this.eraserEngine = new EraserEngine(app, this.tree.root, this.tree, this.store, history);
+    this.lassoController = new LassoController(
+      app.canvas,
+      app,
+      this.tree.root,
+      this.world,
+      this.tree,
+      this.store,
+      this.toolStore,
+      history,
+    );
     this.strokeController = new StrokeController(
       app.canvas,
       app,
@@ -324,6 +357,7 @@ export class UltraPaintApp {
       this.toolStore,
       this.beginStroke,
     );
+    this.autosave = new AutosaveController(app.renderer, this.store, () => !this.strokeInProgress);
 
     const tileCapabilities = getTileRendererCapabilities(app.renderer);
 
@@ -333,6 +367,30 @@ export class UltraPaintApp {
         `${tileCapabilities.backend}, max texture ${tileCapabilities.maxTextureDimension2D ?? "unknown"}, ` +
         `planned tile ${tileCapabilities.selectedTileSize ?? "unsupported"})`,
     );
+  }
+
+  private async restoreAutosave(renderer: Renderer): Promise<void> {
+    try {
+      const decoded = await fetchAutosavedDocument(renderer, await fetchControlModels());
+      if (!decoded) return;
+      let adopted = false;
+      try {
+        if (this.destroyed) return;
+        this.store.replaceDocument(
+          decoded.document,
+          decoded.surfaces,
+          decoded.unresolvedControlLayerIds,
+        );
+        adopted = true;
+        this.savedProjectRevision = this.store.projectRevision;
+      } finally {
+        if (!adopted) {
+          for (const surface of decoded.surfaces.values()) surface.destroy();
+        }
+      }
+    } catch (error) {
+      console.warn("[ultra-paint] autosave restore failed; starting with a blank document:", error);
+    }
   }
 
   /**
@@ -595,7 +653,7 @@ export class UltraPaintApp {
       return;
     }
     const tool = this.toolStore.activeTool;
-    if (tool === "eyedropper") return;
+    if (tool === "eyedropper" || tool === "lasso") return;
     this.previousToolBeforeEyedropper = tool;
     this.toolStore.setActiveTool("eyedropper");
   };
@@ -805,13 +863,37 @@ export class UltraPaintApp {
     }
   }
 
+  /** Cancel an in-progress lasso without changing mask pixels. */
+  public cancelLasso(): boolean {
+    return this.lassoController?.cancel() ?? false;
+  }
+
+  /** Close an in-progress polygonal lasso from its last placed vertex. */
+  public closeLassoLoop(): boolean {
+    return this.lassoController?.closeFromKeyboard() ?? false;
+  }
+
   private readonly beginStroke = (tool: PaintTool, layerId: LayerId): StrokeSession | null => {
     if (isDocumentMutationLocked()) return null;
     if (tool !== "brush" && tool !== "eraser") return null;
     const settings = this.toolStore.getState().brush;
-    return tool === "brush"
-      ? (this.brushEngine?.beginStroke(layerId, settings) ?? null)
-      : (this.eraserEngine?.beginStroke(layerId, settings) ?? null);
+    const session =
+      tool === "brush"
+        ? (this.brushEngine?.beginStroke(layerId, settings) ?? null)
+        : (this.eraserEngine?.beginStroke(layerId, settings) ?? null);
+    if (!session) return null;
+    this.strokeInProgress = true;
+    return {
+      spacing: session.spacing,
+      addPoints: (points) => session.addPoints(points),
+      end: (points, cancelled) => {
+        try {
+          session.end(points, cancelled);
+        } finally {
+          this.strokeInProgress = false;
+        }
+      },
+    };
   };
 
   /**
@@ -1170,6 +1252,41 @@ export class UltraPaintApp {
   /** The `LayerTree`, for callers that need node-level access. */
   public getTree(): LayerTree | null {
     return this.tree;
+  }
+
+  /** Encode and download the complete tiled working document as a .uproj archive. */
+  public async saveProject(): Promise<void> {
+    await this.ready;
+    if (!this.app) throw new Error("Ultra Paint renderer is unavailable.");
+    const blob = await createProjectArchive(this.app.renderer, this.store);
+    downloadProjectArchive(blob, this.store.getDocument().id);
+    this.savedProjectRevision = this.store.projectRevision;
+  }
+
+  public hasUnsavedProjectChanges(): boolean {
+    return this.store.projectRevision !== this.savedProjectRevision;
+  }
+
+  /** Decode into temporary surfaces, then replace the live document in one store adoption. */
+  public async openProject(file: File): Promise<void> {
+    await this.ready;
+    if (!this.app) throw new Error("Ultra Paint renderer is unavailable.");
+    const decoded = await openProjectArchive(this.app.renderer, file, await fetchControlModels());
+    let adopted = false;
+    try {
+      this.store.replaceDocument(
+        decoded.document,
+        decoded.surfaces,
+        decoded.unresolvedControlLayerIds,
+      );
+      adopted = true;
+      this.savedProjectRevision = this.store.projectRevision;
+      this.fitToBoundaryBox(8);
+    } finally {
+      if (!adopted) {
+        for (const surface of decoded.surfaces.values()) surface.destroy();
+      }
+    }
   }
 
   /** Mirror the single selected layer without rewriting its pixels or tiles. */
@@ -2362,11 +2479,16 @@ export class UltraPaintApp {
 
     this.strokeController?.destroy();
     this.strokeController = null;
+    this.lassoController?.destroy();
+    this.lassoController = null;
     this.brushEngine = null;
     this.eraserEngine = null;
 
     this.history?.destroy();
     this.history = null;
+
+    this.autosave?.destroy();
+    this.autosave = null;
 
     this.unmountViewportControls();
 

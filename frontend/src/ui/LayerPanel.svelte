@@ -966,6 +966,7 @@
         title="Masks"
         count={maskLayers.length}
         id="upaint-mask-layer-list"
+        persistKey="layers.masks"
         data-layer-section="masks"
       >
         {#snippet headerActions()}
@@ -1004,6 +1005,7 @@
         title="Control"
         count={controlLayers.length}
         id="upaint-control-layer-list"
+        persistKey="layers.controls"
         data-layer-section="controls"
       >
         {#snippet headerActions()}
@@ -1031,6 +1033,7 @@
         title="Layers"
         count={regularLayers.length}
         id="upaint-regular-layer-list"
+        persistKey="layers.layers"
         data-layer-section="layers"
       >
         {#snippet headerActions()}
