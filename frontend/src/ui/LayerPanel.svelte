@@ -736,6 +736,20 @@
   }
 </script>
 
+{#snippet addButton(noun: string, onAdd: () => void)}
+  <Button
+    size="icon"
+    title={isPreviewing || isFiltering
+      ? "Adding layers is disabled while previewing a generation"
+      : `Add a ${noun} layer`}
+    aria-label={`Add a ${noun} layer`}
+    disabled={isPreviewing || isFiltering}
+    onclick={onAdd}
+  >
+    <Icon name="plus" />
+  </Button>
+{/snippet}
+
 {#snippet layerRows(layers: Layer[])}
   {#each layers as layer (layer.id)}
     {@const thumbnail = thumbnailFor(layer)}
@@ -1013,6 +1027,7 @@
         data-layer-section="masks"
       >
         {#snippet headerActions()}
+          {@render addButton("mask", () => void handleAddMaskLayer())}
           <Button
             size="icon"
             title={isPreviewing || isFiltering
@@ -1052,6 +1067,7 @@
         data-layer-section="controls"
       >
         {#snippet headerActions()}
+          {@render addButton("control", () => void handleAddControlLayer())}
           <Button
             size="icon"
             pressed={layerStore.controlsHidden}
@@ -1080,6 +1096,7 @@
         data-layer-section="layers"
       >
         {#snippet headerActions()}
+          {@render addButton("layer", () => void handleAddBlankLayer())}
           <Button
             size="icon"
             title={isPreviewing || isFiltering

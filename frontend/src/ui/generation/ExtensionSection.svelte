@@ -64,18 +64,20 @@
 {/snippet}
 
 {#each manifests as manifest (manifest.id)}
-  {#if manifest.canEnable}
-    <Accordion
-      title={manifest.title}
-      canEnable={true}
-      enabled={values[manifest.id]?.enabled ?? false}
-      onEnabledChange={(next) => updateEnabled(manifest.id, next)}
-    >
-      {@render extensionBody(manifest)}
-    </Accordion>
-  {:else}
-    <Accordion title={manifest.title}>
-      {@render extensionBody(manifest)}
-    </Accordion>
-  {/if}
+  <div class="border-l-2 border-(--upaint-border)">
+    {#if manifest.canEnable}
+      <Accordion
+        title={manifest.title}
+        canEnable={true}
+        enabled={values[manifest.id]?.enabled ?? false}
+        onEnabledChange={(next) => updateEnabled(manifest.id, next)}
+      >
+        {@render extensionBody(manifest)}
+      </Accordion>
+    {:else}
+      <Accordion title={manifest.title}>
+        {@render extensionBody(manifest)}
+      </Accordion>
+    {/if}
+  </div>
 {/each}
