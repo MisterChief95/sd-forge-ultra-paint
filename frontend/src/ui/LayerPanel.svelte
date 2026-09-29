@@ -1027,7 +1027,6 @@
         data-layer-section="masks"
       >
         {#snippet headerActions()}
-          {@render addButton("mask", () => void handleAddMaskLayer())}
           <Button
             size="icon"
             title={isPreviewing || isFiltering
@@ -1052,6 +1051,7 @@
           >
             <Icon name={layerStore.masksHidden ? "eye-off" : "eye"} />
           </Button>
+          {@render addButton("mask", () => void handleAddMaskLayer())}
         {/snippet}
         {@render layerRows(maskLayers)}
       </Accordion>
@@ -1067,7 +1067,6 @@
         data-layer-section="controls"
       >
         {#snippet headerActions()}
-          {@render addButton("control", () => void handleAddControlLayer())}
           <Button
             size="icon"
             pressed={layerStore.controlsHidden}
@@ -1081,6 +1080,7 @@
           >
             <Icon name={layerStore.controlsHidden ? "eye-off" : "eye"} />
           </Button>
+          {@render addButton("control", () => void handleAddControlLayer())}
         {/snippet}
         {@render layerRows(controlLayers)}
       </Accordion>
@@ -1096,7 +1096,6 @@
         data-layer-section="layers"
       >
         {#snippet headerActions()}
-          {@render addButton("blank", () => void handleAddBlankLayer())}
           <Button
             size="icon"
             title={isPreviewing || isFiltering
@@ -1123,6 +1122,7 @@
           >
             <Icon name={layerStore.layersHidden ? "eye-off" : "eye"} />
           </Button>
+          {@render addButton("blank", () => void handleAddBlankLayer())}
         {/snippet}
         {@render layerRows(regularLayers)}
       </Accordion>
