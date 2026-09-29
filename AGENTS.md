@@ -255,7 +255,12 @@ From the repository root:
 
 ```bash
 pytest
+ruff check .
+ruff format --check .
 ```
+
+CI (`.github/workflows/lint.yml`) runs eslint, prettier, and ruff. Optional
+auto-format on commit: `pip install pre-commit && pre-commit install`.
 
 `npm run test:e2e` starts its own Vite server (port 5179) with the API proxy
 aimed at a dead origin, so a running Forge is never touched (autosave uploads
