@@ -19,9 +19,6 @@ Track tasks, status, and handoffs with the `dibs` skill (`dibs:list`,
 records dependencies, ownership leases, and an auditable history so
 concurrent agents don't collide.
 
-Do not treat `ai-docs/` refactor suggestions as accepted architecture unless
-adopted here.
-
 ## Repository layout
 
 ```text
@@ -63,6 +60,7 @@ frontend/                         Vite SPA source and frontend tooling
 tests/                             focused Python pytest modules
 frontend/tests/                    Playwright fixtures and browser tests
 README.md                          user-facing setup and architecture overview
+pyproject.toml                     ruff and pytest config (tooling only)
 ```
 
 ## Runtime flow
@@ -141,20 +139,24 @@ Preserve these backend rules:
 - right: `LayerPanel.svelte`.
 
 At widths of 1100px and below (portrait tablets) the side panels float over
-the canvas as drawers below the top bar instead of docking beside it. Touch
-input: one finger paints, two fingers pan and pinch-zoom (claimed in
-`UltraPaintApp.handleTouchGesture`, which cancels the first finger's stroke via
-a synthetic `pointercancel`), the Pan tool and viewport zoom buttons cover
-one-finger/pen navigation, and a long-press on a layer row opens its menu,
-because iPadOS never fires `contextmenu`. The same handler recognizes a quick
-two-finger tap as undo and three-finger tap as redo, rejects touches that land
-while a pen is down or was active in the last 500ms (palm rejection), and in
-the default "auto" touch mode makes a lone finger pan instead of paint once a
-pen has been used. Pen specifics: the eraser end (`buttons & 32`) erases while
-the brush is selected (`StrokeController`), the barrel button samples color,
-and pressure sensitivity/minimum and stroke smoothing are per-device settings
-in `appSettingsStore` (localStorage), not document or brush state. Keep every action reachable without a
-keyboard or right-click.
+the canvas as drawers below the top bar instead of docking beside it.
+
+Touch input is handled in `UltraPaintApp.handleTouchGesture`:
+
+- One finger paints; two fingers pan and pinch-zoom (the first finger's stroke
+  is cancelled via a synthetic `pointercancel`). The Pan tool and viewport zoom
+  buttons cover one-finger/pen navigation.
+- A quick two-finger tap is undo, three-finger tap is redo.
+- Palm rejection: touches landing while a pen is down, or within 500ms of pen
+  activity, are ignored. In the default "auto" touch mode a lone finger pans
+  instead of painting once a pen has been used.
+- A long-press on a layer row opens its menu (iPadOS never fires `contextmenu`).
+
+Pen: the eraser end (`buttons & 32`) erases while the brush is selected
+(`StrokeController`), the barrel button samples color, and pressure
+sensitivity/minimum and stroke smoothing are per-device settings in
+`appSettingsStore` (localStorage), not document or brush state. Keep every
+action reachable without a keyboard or right-click.
 
 Both side panels collapse from the top bar's toggles. Collapse state and panel
 widths persist in `uiLayoutStore`; a collapsed panel stays mounted (`hidden`)
@@ -242,23 +244,34 @@ This repository uses PixiJS v8. Follow v8 lifecycle and scene-graph rules:
   texture churn. A performance shortcut with a known ceiling should carry a
   `ponytail:` comment naming the ceiling and the upgrade trigger.
 
-## Ponytail working style
+## Working style (ponytail)
 
-Use ponytail as an implementation discipline, not an excuse to skip analysis:
-
-1. Read the complete flow and search callers before changing a shared function.
-2. Reuse an existing helper, store, controller, native browser feature, or
-   installed dependency before writing a new abstraction.
-3. Prefer the smallest correct diff, fewest files, and deletion of dead code
-   over speculative flexibility. Do not add SvelteKit, a new state library,
-   another renderer, or a backend dependency without a demonstrated need.
-4. Fix root causes at shared boundaries. Do not scatter symptom guards across
-   callers.
-5. Never simplify away validation at trust boundaries, error handling,
+1. Read the whole flow and grep callers before changing a shared function; fix
+   root causes at shared boundaries, not with symptom guards in callers.
+2. Reuse an existing helper, store, controller, native feature, or installed
+   dependency before writing an abstraction. No SvelteKit, new state library,
+   second renderer, or backend dependency without a demonstrated need.
+3. Smallest correct diff, fewest files; delete dead code.
+4. Never simplify away validation at trust boundaries, error handling,
    security, accessibility, resource cleanup, or explicit requirements.
-6. Leave one focused runnable check for non-trivial logic. Mark deliberate
-   shortcuts with `ponytail:` and state the measured/known ceiling and when to
-   replace them.
+5. Leave one focused runnable check for non-trivial logic. Mark deliberate
+   shortcuts with `ponytail:` naming the ceiling and when to replace them.
+
+## Versioning and releases
+
+One version, semver (`MAJOR.MINOR.PATCH`), kept identical in two places:
+`VERSION` in `ultra_paint/config.py` and `version` in `frontend/package.json`
+(also update `package-lock.json`, e.g. `npm version <x.y.z> --no-git-tag-version`
+in `frontend/`). Bump both in the same commit and tag it `vX.Y.Z`.
+
+Planned release build (not automated yet): a tag-triggered workflow runs
+`npm ci && npm run build` in `frontend/`, then zips the extension with the
+prebuilt `frontend/dist/` included and dev-only files (`frontend/src`,
+`node_modules`, `tests/`, `.github/`, `.git*`) excluded, so end users need no
+Node toolchain. `frontend/dist/` stays gitignored in the repo; it exists only in
+release artifacts. Keep new runtime files inside `scripts/`, `ultra_paint/`,
+`javascript/`, `style.css`, and `frontend/dist/` so packaging stays a simple
+include list.
 
 ## Validation
 
@@ -274,7 +287,7 @@ npm run build
 npm run test:e2e
 ```
 
-From the repository root:
+From the repository root (ruff and pytest are configured in `pyproject.toml`):
 
 ```bash
 pytest

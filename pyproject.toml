@@ -1,0 +1,10 @@
+# Tool config only; this is a Forge extension, not an installable package.
+[tool.ruff]
+line-length = 88
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

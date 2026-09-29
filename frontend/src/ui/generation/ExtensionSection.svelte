@@ -64,7 +64,7 @@
 {/snippet}
 
 {#each manifests as manifest (manifest.id)}
-  <div class="border-l-2 border-(--upaint-border)">
+  <div class="border-l-2 border-(--upaint-surface-raised)">
     {#if manifest.canEnable}
       <Accordion
         title={manifest.title}
