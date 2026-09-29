@@ -10,14 +10,17 @@ application:
 
 ## Source of truth
 
-Read `README.md` for setup and `PLAN.md` before substantive changes. `PLAN.md`
-is the living architecture/status document: use its current sections for
-decisions and status, and treat older entries as history. Update its current
-status or verification notes when a change materially changes behavior or test
-coverage.
+Read `README.md` for setup. This file (`AGENTS.md`) is the architecture and
+conventions reference; keep it current when a change materially changes
+behavior or structure.
 
-Do not treat `ai-docs/` refactor suggestions as accepted architecture unless a
-current plan entry adopts them.
+Track tasks, status, and handoffs with the `dibs` skill (`dibs:list`,
+`dibs:next`, `dibs:show`, `dibs:events`) instead of a plan document — it
+records dependencies, ownership leases, and an auditable history so
+concurrent agents don't collide.
+
+Do not treat `ai-docs/` refactor suggestions as accepted architecture unless
+adopted here.
 
 ## Repository layout
 
@@ -50,7 +53,7 @@ frontend/                         Vite SPA source and frontend tooling
   src/paint/                       brush, eraser, and stroke pipeline
   src/ui/                          feature UI components
   src/ui/generation/               generation UI, API clients, controller
-  src/ui/lib/                      reusable Svelte controls
+  src/ui/lib/                      reusable Svelte controls and the Icon set
   src/input/                       keyboard/action mapping
   src/util/                        colors, blend modes, resolution helpers
   src/app.css                      Tailwind import and global theme tokens
@@ -60,7 +63,6 @@ frontend/                         Vite SPA source and frontend tooling
 tests/                             focused Python pytest modules
 frontend/tests/                    Playwright fixtures and browser tests
 README.md                          user-facing setup and architecture overview
-PLAN.md                            living plan, status, and architecture reference
 ```
 
 ## Runtime flow
@@ -125,9 +127,22 @@ Preserve these backend rules:
 `App.svelte` owns the resizable three-pane layout:
 
 - left: `GenerationPanel.svelte` and generation controls;
-- center: `#upaint-root`, the Pixi canvas, toolbar, viewport controls, preview
-  bar, and paste menu;
+- center: the top bar (`PaintToolbar.svelte`: panel toggles, the active tool's
+  options, Save Image and the Project menu), the vertical `ToolRail.svelte`
+  (tool selection and brush colors), and `#upaint-root` with the Pixi canvas,
+  viewport controls, preview bar, and paste menu;
 - right: `LayerPanel.svelte`.
+
+Both side panels collapse from the top bar's toggles. Collapse state and panel
+widths persist in `uiLayoutStore`; a collapsed panel stays mounted (`hidden`)
+so `GenerationPanel` keeps its prompt/controller state and shortcuts.
+
+UI icons come only from `ui/lib/Icon.svelte` (one 16x16 `currentColor` set).
+Do not add unicode glyphs, emoji, image files, or ad hoc inline SVGs for
+controls. Labeling rule: tools and compact toggles are icon-only with both
+`title` (include the shortcut) and `aria-label`; commands are icon + label.
+Labels may hide via container queries when space is tight, but the accessible
+name stays.
 
 Ownership is deliberately separated:
 
@@ -241,6 +256,12 @@ From the repository root:
 ```bash
 pytest
 ```
+
+`npm run test:e2e` starts its own Vite server (port 5179) with the API proxy
+aimed at a dead origin, so a running Forge is never touched (autosave uploads
+and settings writes would otherwise hit the real backend). Stub every
+`/ultra_paint/api/*` or `/ultra_paint/data/*` route a test needs, and await
+`app.ready` before touching the renderer or scene tree.
 
 Report whether validation was static, browser/Playwright, or live Forge. The
 existing Playwright suite is useful but does not replace real Forge/GPU

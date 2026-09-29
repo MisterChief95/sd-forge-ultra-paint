@@ -16,8 +16,7 @@ paint, mask and ControlNet layers - wired directly into Forge's existing generat
 served by the extension's own FastAPI routes and mounted into the Gradio page via an
 `<iframe>`. Layer painting, undo/redo, an InvokeAI-style boundary box, mask layers,
 auto-scale-to-native-resolution, and real img2img/inpaint generation are all
-implemented and build-verified; see [`PLAN.md`](PLAN.md) for the authoritative,
-continuously-updated status and roadmap.
+implemented and build-verified.
 
 ## Features
 
@@ -34,10 +33,13 @@ continuously-updated status and roadmap.
   sampler/scheduler (pulled live from Forge), steps/CFG/denoise, a frontend FIFO queue,
   in-button progress with a live preview image, and current/remaining/all cancellation
   through Forge's interrupt mechanism.
+- **Workspace layout**: a vertical tool rail beside the canvas, a top bar that shows
+  the active tool's options plus Save Image and a Project menu, and generation/layer
+  side panels that collapse from the top bar (collapse state and widths persist).
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
-- **Portable projects**: save/open the complete editable document as a client-side
-  `.uproj` archive, including sparse tile pixels, masks, transforms, groups, and
+- **Portable projects**: save/open (top bar → Project) the complete editable document
+  as a client-side `.uproj` archive, including sparse tile pixels, masks, transforms, groups, and
   ControlNet layer settings.
 - **Crash/reload autosave**: quietly checkpoints that same editable document to a
   single backend slot and restores it before the canvas scene and undo history start.
@@ -78,7 +80,7 @@ Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary box
 Playwright e2e coverage) are complete. Phase 3 (masking/inpainting, auto-scale to
 native resolution) has substantially landed alongside generation-panel persistence,
 model/LoRA controls, the generation queue, and prompt-tag autocomplete (Phase 1 of
-that sub-feature; see `PLAN.md`). Ahead:
+that sub-feature). Ahead:
 
 - **Phase 4 — Multi-layer ControlNet**: assign any layer to a ControlNet unit slot.
 - **Phase 5 — Groups, transforms, selection, shape tools**: the first single-layer
@@ -89,9 +91,6 @@ that sub-feature; see `PLAN.md`). Ahead:
   first configured; generations are pinned to one image per Generate click; no run
   so far has exercised a real Forge server, so "build/typecheck-verified" work
   throughout the project still awaits live confirmation.
-
-`PLAN.md` is the living, continuously-updated source of truth for status, phase
-task breakdowns, and architecture decisions — read it before making changes.
 
 ## Installation
 
@@ -109,7 +108,6 @@ appears alongside txt2img/img2img.
 | `frontend/`           | Svelte 5 + PixiJS v8 + Vite SPA source, built to `frontend/dist/` (see below)                                  |
 | `tests/`              | Python tests (pytest) for the API routes and generation pipeline                                               |
 | `frontend/tests/e2e/` | Playwright end-to-end tests against a real browser                                                             |
-| `PLAN.md`             | Living plan/status document — the source of truth for what's implemented                                       |
 
 ### Scripts and routes
 
@@ -148,10 +146,8 @@ Python changes. Python tests live in `tests/` and run with `pytest`.
 
 ## Architecture
 
-See [`PLAN.md`](PLAN.md) for the full architecture reference, file layout, layer
-data model, public API surface, and phase-by-phase history — it's kept up to date
-as the authoritative status document and is the right place to start before making
-changes.
+See [`AGENTS.md`](AGENTS.md) for the architecture reference, file layout, and
+conventions — the right place to start before making changes.
 
 ## License
 
