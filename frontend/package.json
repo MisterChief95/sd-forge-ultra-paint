@@ -1,6 +1,6 @@
 {
   "name": "ultra-paint-frontend",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Svelte 5 + PixiJS v8 layer painting canvas frontend for the sd-forge-ultra-paint Forge WebUI extension. Built as a standalone SPA (Vite), served via the extension's own FastAPI route and mounted in an <iframe> (Phase 2.R).",
   "type": "module",

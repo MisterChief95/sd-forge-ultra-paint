@@ -49,6 +49,7 @@ import { TransformOverlay } from "../scene/TransformOverlay";
 import {
   isDocumentMutationLocked,
   isGraphicsContextLost,
+  isHandedOff,
   markGraphicsContextLost,
 } from "../state/documentInteractionLock.svelte";
 import { appSettingsStore } from "../state/appSettingsStore.svelte";
@@ -101,6 +102,7 @@ import {
 } from "../state/projectArchive";
 import { fetchControlModels } from "../ui/generation/controlnetApi";
 import { AutosaveController, fetchAutosavedDocument } from "./autosave";
+import { registerHandOffSaver } from "./popOut";
 
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
@@ -219,6 +221,8 @@ export class UltraPaintApp {
   private history: UndoHistory | null = null;
 
   private autosave: AutosaveController | null = null;
+
+  private unregisterHandOffSaver: (() => void) | null = null;
 
   private strokeInProgress = false;
 
@@ -427,7 +431,14 @@ export class UltraPaintApp {
     this.autosave = new AutosaveController(
       app.renderer,
       this.store,
-      () => !this.strokeInProgress && !isGraphicsContextLost() && !isRendererContextLost(app),
+      () =>
+        !this.strokeInProgress &&
+        !isGraphicsContextLost() &&
+        !isHandedOff() &&
+        !isRendererContextLost(app),
+    );
+    this.unregisterHandOffSaver = registerHandOffSaver(
+      async () => (await this.autosave?.saveNow()) ?? false,
     );
 
     const tileCapabilities = getTileRendererCapabilities(app.renderer);
@@ -2817,6 +2828,8 @@ export class UltraPaintApp {
 
     this.autosave?.destroy();
     this.autosave = null;
+    this.unregisterHandOffSaver?.();
+    this.unregisterHandOffSaver = null;
 
     this.unmountViewportControls();
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
+  import { isEmbedded, popOut } from "../app/popOut";
   import { saveGeneration } from "../input/actionMap";
   import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import { appSettingsStore } from "../state/appSettingsStore.svelte";
@@ -341,6 +342,20 @@
     aria-label="Choose an Ultra Paint project"
     onchange={openProject}
   />
+
+  {#if isEmbedded}
+    <Button
+      size="sm"
+      class="gap-1.5"
+      disabled={generationRuntimeStore.generating}
+      title="Open in a full-window tab"
+      aria-label="Open in a full-window tab"
+      onclick={() => void popOut()}
+    >
+      <Icon name="pop-out" />
+      <span class="hidden @3xl:inline">Pop Out</span>
+    </Button>
+  {/if}
 
   <Button
     size="icon"

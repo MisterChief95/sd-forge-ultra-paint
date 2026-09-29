@@ -23,10 +23,12 @@
   import type { Action } from "svelte/action";
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
+  import { bringBack, isEmbedded, listenForBringBack } from "./app/popOut";
   import { handleInputKeyDown } from "./input/actionMap";
   import {
     isDocumentMutationLocked,
     isGraphicsContextLost,
+    isHandedOff,
   } from "./state/documentInteractionLock.svelte";
   import { uiLayoutStore } from "./state/uiLayoutStore.svelte";
   import { toastStore } from "./state/toastStore.svelte";
@@ -85,6 +87,7 @@
   onMount(() => {
     ultraPaintApp = new UltraPaintApp("upaint-root");
     ultraPaintApp.pasteRequestHandler = handlePasteRequest;
+    return listenForBringBack();
   });
 
   onDestroy(() => {
@@ -93,6 +96,7 @@
   });
 
   function handleKeyDown(event: KeyboardEvent): void {
+    if (isHandedOff()) return;
     handleInputKeyDown(event, ultraPaintApp);
   }
 
@@ -156,7 +160,11 @@
 
 <svelte:window onkeydown={handleKeyDown} />
 
-<div class="relative flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
+<div
+  class="relative flex h-full w-full overflow-hidden"
+  inert={isHandedOff()}
+  style="background: var(--upaint-bg);"
+>
   <aside
     id="upaint-settings-panel"
     class="upaint-drawer shrink-0 overflow-y-auto left-0"
@@ -244,6 +252,36 @@
         restore your last autosave.
       </p>
       <Button variant="primary" autofocus onclick={() => window.location.reload()}>Reload</Button>
+    </div>
+  </div>
+{/if}
+
+{#if isHandedOff()}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style="background: rgb(0 0 0 / 60%);"
+  >
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="upaint-handed-off-title"
+      aria-describedby="upaint-handed-off-body"
+      class="flex max-w-sm flex-col gap-3 rounded-(--upaint-radius) border p-4"
+      style="border-color: var(--upaint-border); background: var(--upaint-surface); color: var(--upaint-text);"
+    >
+      {#if isEmbedded}
+        <h2 id="upaint-handed-off-title" class="text-base font-semibold">Open in another tab</h2>
+        <p id="upaint-handed-off-body" class="text-sm">
+          Ultra Paint is running in its own tab. Bring it back to keep editing here with the latest
+          changes.
+        </p>
+        <Button variant="primary" autofocus onclick={bringBack}>Bring Back Here</Button>
+      {:else}
+        <h2 id="upaint-handed-off-title" class="text-base font-semibold">Returned to Forge</h2>
+        <p id="upaint-handed-off-body" class="text-sm">
+          Editing continues in the Forge tab. You can close this tab.
+        </p>
+      {/if}
     </div>
   </div>
 {/if}

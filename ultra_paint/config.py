@@ -22,7 +22,7 @@ ELEM_ID_PREFIX: str = "upaint"
 DEFAULT_CANVAS_WIDTH: int = 1024
 DEFAULT_CANVAS_HEIGHT: int = 1024
 
-VERSION: str = "0.2.0"
+VERSION: str = "0.3.0"
 
 
 def eid(*parts: str) -> str:

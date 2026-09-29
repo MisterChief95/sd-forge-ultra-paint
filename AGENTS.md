@@ -158,6 +158,13 @@ sensitivity/minimum and stroke smoothing are per-device settings in
 `appSettingsStore` (localStorage), not document or brush state. Keep every
 action reachable without a keyboard or right-click.
 
+Inside Forge's iframe the top bar shows Pop Out (`app/popOut.ts`): the
+iframe saves its autosave and generation settings, freezes
+(`isHandedOff()`), and opens `/ultra_paint/app/` in a new tab. "Bring Back
+Here" makes that tab save, freeze, and close; the iframe then reloads from
+autosave (it also reloads if the tab is simply closed). Anything that must
+reach the server before a hand-off registers via `registerHandOffSaver`.
+
 Both side panels collapse from the top bar's toggles. Collapse state and panel
 widths persist in `uiLayoutStore`; a collapsed panel stays mounted (`hidden`)
 so `GenerationPanel` keeps its prompt/controller state and shortcuts.
