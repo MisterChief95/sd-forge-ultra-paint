@@ -25,6 +25,10 @@
     getActiveUltraPaintApp()?.resetZoom();
   }
 
+  function zoomBy(factor: number): void {
+    getActiveUltraPaintApp()?.zoomBy(factor);
+  }
+
   function fitToBoundaryBox(): void {
     getActiveUltraPaintApp()?.fitToBoundaryBox(8);
   }
@@ -60,6 +64,9 @@
   role="toolbar"
   aria-label="Viewport controls"
 >
+  <Button size="sm" aria-label="Zoom out" title="Zoom out" onclick={() => zoomBy(1 / 1.25)}>
+    <Icon name="minus" />
+  </Button>
   <Button
     size="sm"
     class="tabular-nums"
@@ -68,6 +75,9 @@
     onclick={resetZoom}
   >
     {Math.round(zoom * 100)}%
+  </Button>
+  <Button size="sm" aria-label="Zoom in" title="Zoom in" onclick={() => zoomBy(1.25)}>
+    <Icon name="plus" />
   </Button>
   <Button
     size="sm"

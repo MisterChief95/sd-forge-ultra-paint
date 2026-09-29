@@ -129,9 +129,18 @@ Preserve these backend rules:
 - left: `GenerationPanel.svelte` and generation controls;
 - center: the top bar (`PaintToolbar.svelte`: panel toggles, the active tool's
   options, Save Image and the Project menu), the vertical `ToolRail.svelte`
-  (tool selection and brush colors), and `#upaint-root` with the Pixi canvas,
+  (tool selection, brush colors, undo/redo), and `#upaint-root` with the Pixi canvas,
   viewport controls, preview bar, and paste menu;
 - right: `LayerPanel.svelte`.
+
+At widths of 1100px and below (portrait tablets) the side panels float over
+the canvas as drawers below the top bar instead of docking beside it. Touch
+input: one finger paints, two fingers pan and pinch-zoom (claimed in
+`UltraPaintApp.handleTouchGesture`, which cancels the first finger's stroke via
+a synthetic `pointercancel`), the Pan tool and viewport zoom buttons cover
+one-finger/pen navigation, and a long-press on a layer row opens its menu,
+because iPadOS never fires `contextmenu`. Keep every action reachable without a
+keyboard or right-click.
 
 Both side panels collapse from the top bar's toggles. Collapse state and panel
 widths persist in `uiLayoutStore`; a collapsed panel stays mounted (`hidden`)

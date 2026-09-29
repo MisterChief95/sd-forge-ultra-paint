@@ -41,7 +41,8 @@
   const sizes: Record<Size, string> = {
     sm: "px-2 py-1 text-[11px] leading-tight",
     md: "px-2.5 py-1.5 text-xs leading-tight",
-    icon: "h-7 w-7 p-0 text-xs",
+    // Touch/pen-only devices get a larger target; the top bar (h-11) still fits it.
+    icon: "h-7 w-7 p-0 text-xs pointer-coarse:h-9 pointer-coarse:w-9",
   };
   const active =
     "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-on-accent) hover:bg-(--upaint-accent-hover)";

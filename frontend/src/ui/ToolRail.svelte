@@ -1,6 +1,7 @@
 <script lang="ts">
   /**
-   * Vertical tool rail beside the canvas: tool selection and brush colors.
+   * Vertical tool rail beside the canvas: tool selection, brush colors, and
+   * undo/redo.
    * Per-tool settings live in the top bar (`PaintToolbar`), which switches its
    * options to match the active tool.
    */
@@ -48,7 +49,7 @@
 {/snippet}
 
 <div
-  class="flex w-9 shrink-0 select-none flex-col items-center gap-1 overflow-y-auto border py-1.5"
+  class="flex w-9 shrink-0 select-none flex-col pointer-coarse:w-11 items-center gap-1 overflow-y-auto border py-1.5"
   style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-lg); background: var(--upaint-surface);"
   role="toolbar"
   aria-orientation="vertical"
@@ -99,6 +100,7 @@
       ? LOCKED
       : transformDisabled && "Select one unlocked layer to transform",
   )}
+  {@render tool("pan", "pan", "Pan", "Pan the canvas (or hold Space / middle mouse)")}
   {@render tool(
     "boundary-box",
     "boundary-box",
@@ -127,4 +129,40 @@
       oninput={(event) => paintToolStore.setSecondaryColor(event.currentTarget.value)}
     />
   </div>
+  <Button
+    size="icon"
+    variant="ghost"
+    title="Swap primary and secondary colors (X)"
+    aria-label="Swap primary and secondary colors"
+    aria-keyshortcuts="X"
+    onclick={() => paintToolStore.swapColors()}
+  >
+    <Icon name="swap" size={14} />
+  </Button>
+
+  <span class="my-0.5 h-px w-5 bg-(--upaint-border)" aria-hidden="true"></span>
+
+  <!-- Keyboard-free devices (tablets) have no other way to undo/redo. -->
+  <Button
+    size="icon"
+    variant="ghost"
+    title="Undo (Ctrl+Z)"
+    aria-label="Undo"
+    aria-keyshortcuts="Control+Z"
+    disabled={isDocumentMutationLocked()}
+    onclick={() => getActiveUltraPaintApp()?.undo()}
+  >
+    <Icon name="undo" size={16} />
+  </Button>
+  <Button
+    size="icon"
+    variant="ghost"
+    title="Redo (Ctrl+Shift+Z)"
+    aria-label="Redo"
+    aria-keyshortcuts="Control+Shift+Z Control+Y"
+    disabled={isDocumentMutationLocked()}
+    onclick={() => getActiveUltraPaintApp()?.redo()}
+  >
+    <Icon name="redo" size={16} />
+  </Button>
 </div>

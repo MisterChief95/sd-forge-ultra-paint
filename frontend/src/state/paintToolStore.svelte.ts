@@ -7,7 +7,8 @@
 import type { BoundaryBox } from "./schema";
 
 /** Available paint-canvas tools. Only brush and eraser create stroke sessions. */
-export type PaintTool = "brush" | "eraser" | "lasso" | "eyedropper" | "transform" | "boundary-box";
+export type PaintTool =
+  "brush" | "eraser" | "lasso" | "eyedropper" | "transform" | "boundary-box" | "pan";
 
 export type LassoMode = "polygonal" | "freehand";
 

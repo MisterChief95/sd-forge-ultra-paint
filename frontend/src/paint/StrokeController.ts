@@ -294,6 +294,10 @@ export class StrokeController {
       this.canvas.style.cursor = "crosshair";
       return;
     }
+    if (this.tools.getState().activeTool === "pan") {
+      this.canvas.style.cursor = "grab";
+      return;
+    }
     const selectedId = this.store.getSelectedLayerId();
     const selected = selectedId ? this.store.getLayer(selectedId) : undefined;
     const isPaintTool =

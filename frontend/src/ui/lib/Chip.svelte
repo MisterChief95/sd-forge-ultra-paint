@@ -13,7 +13,8 @@
   const shown = $derived(label.length > maxLength ? `${label.slice(0, maxLength)}…` : label);
 </script>
 
-<!-- Hover/focus turns the chip red and lays a faint "x" over the label. -->
+<!-- Hover/focus turns the chip red and lays a faint "x" over the label. Touch
+     has no hover, so there the "x" sits after the label permanently. -->
 <button
   type="button"
   class="group relative inline-flex cursor-pointer items-center rounded-full border border-(--upaint-border) bg-(--upaint-surface) px-2 py-0.5 text-[11px] leading-tight text-(--upaint-text) outline-none transition-colors hover:border-(--upaint-danger) hover:bg-(--upaint-danger) focus-visible:border-(--upaint-danger) focus-visible:bg-(--upaint-danger)"
@@ -25,7 +26,7 @@
     >{shown}</span
   >
   <span
-    class="pointer-events-none absolute inset-0 flex items-center justify-center text-white opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70"
+    class="pointer-events-none absolute inset-0 flex items-center justify-center text-white opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70 pointer-coarse:static pointer-coarse:ml-1 pointer-coarse:text-(--upaint-text-muted) pointer-coarse:opacity-100"
     aria-hidden="true"
   >
     <Icon name="x" size={12} />

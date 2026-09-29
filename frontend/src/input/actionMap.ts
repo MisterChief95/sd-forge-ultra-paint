@@ -13,6 +13,8 @@ export type InputActionId =
   | "tool.transform"
   | "tool.boundary-box"
   | "tool.swap-colors"
+  | "brush.size-down"
+  | "brush.size-up"
   | "viewport.fit"
   | "viewport.reset-zoom"
   | "viewport.toggle-grid"
@@ -88,6 +90,14 @@ function selectedLayers(app: UltraPaintApp): Layer[] {
     .getSelectedLayerIds()
     .map((id) => store.getLayer(id))
     .filter((layer): layer is Layer => layer !== undefined);
+}
+
+function adjustBrushSize(app: UltraPaintApp, direction: 1 | -1): boolean {
+  const store = app.getToolStore();
+  if (store.activeTool !== "brush" && store.activeTool !== "eraser") return false;
+  const radius = store.brush.radius;
+  store.setBrushSettings({ radius: Math.round(radius + direction * Math.max(1, radius * 0.1)) });
+  return true;
 }
 
 export const INPUT_ACTIONS: readonly InputAction[] = [
@@ -277,6 +287,20 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
     shortcut: "R",
     matches: key("r"),
     run: (app) => (app.getToolStore().setActiveTool("boundary-box"), true),
+  },
+  {
+    id: "brush.size-down",
+    map: "canvas",
+    shortcut: "[",
+    matches: key("["),
+    run: (app) => adjustBrushSize(app, -1),
+  },
+  {
+    id: "brush.size-up",
+    map: "canvas",
+    shortcut: "]",
+    matches: key("]"),
+    run: (app) => adjustBrushSize(app, 1),
   },
   {
     id: "tool.swap-colors",

@@ -66,7 +66,7 @@
         {:else}
           <button
             type="button"
-            class={`flex w-full items-center rounded px-2 py-1.5 text-left hover:bg-(--upaint-surface-raised) disabled:cursor-not-allowed disabled:opacity-40 ${item.destructive ? "text-(--upaint-danger)" : ""}`}
+            class={`flex w-full items-center rounded px-2 py-1.5 text-left pointer-coarse:py-2.5 hover:bg-(--upaint-surface-raised) disabled:cursor-not-allowed disabled:opacity-40 ${item.destructive ? "text-(--upaint-danger)" : ""}`}
             disabled={item.disabled}
             role="menuitem"
             onclick={() => {

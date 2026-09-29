@@ -290,9 +290,30 @@
     const clippable = selected.some((candidate) => candidate.kind !== "group" && !candidate.locked);
     contextMenuX = event.clientX;
     contextMenuY = event.clientY;
+    // Touch can't use native drag-and-drop reordering, so offer it here.
+    const bucketRows = single
+      ? orderedRootLayers.filter((candidate) => shareAccordion(candidate, single))
+      : [];
+    const rowIndex = single ? bucketRows.indexOf(single) : -1;
+    const above = rowIndex > 0 ? bucketRows[rowIndex - 1] : undefined;
+    const below = rowIndex >= 0 ? bucketRows[rowIndex + 1] : undefined;
     const divider: ContextMenuItem = { divider: true };
     const items: ContextMenuItem[] = [
       ...(single ? [{ label: "Rename", action: () => void beginRename(single) }] : []),
+      ...(single && rowIndex >= 0
+        ? [
+            {
+              label: "Move up",
+              action: () => dropOnto(layerStore.document, single.id, above!.id, true),
+              disabled: !above,
+            },
+            {
+              label: "Move down",
+              action: () => dropOnto(layerStore.document, single.id, below!.id, false),
+              disabled: !below,
+            },
+          ]
+        : []),
       {
         label: allVisible ? "Hide selected" : "Show selected",
         action: () =>
@@ -554,7 +575,65 @@
    */
   function armRowDrag(event: PointerEvent): void {
     const row = event.currentTarget as HTMLElement;
-    row.draggable = !isInteractiveTarget(event.target);
+    // Touch long-press opens the layer menu instead; native drag would fight it.
+    row.draggable = event.pointerType !== "touch" && !isInteractiveTarget(event.target);
+  }
+
+  // Touch/pen long-press opens the layer menu: iPadOS never fires contextmenu.
+  const LONG_PRESS_MS = 500;
+  const LONG_PRESS_SLOP_PX = 10;
+  let longPress: { timer: number; pointerId: number; x: number; y: number } | null = null;
+
+  function startLongPress(event: PointerEvent, layer: Layer): void {
+    cancelLongPress();
+    // Buttons (the name fills most of the row) still long-press; the swallowed
+    // release click keeps them from also firing. Form fields keep their touch.
+    if (
+      event.pointerType === "mouse" ||
+      (event.target instanceof Element && event.target.closest("input, select, textarea"))
+    ) {
+      return;
+    }
+    longPress = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      timer: window.setTimeout(() => {
+        longPress = null;
+        swallowReleaseClick();
+        openLayerContextMenu(event, layer);
+      }, LONG_PRESS_MS),
+    };
+  }
+
+  function trackLongPress(event: PointerEvent): void {
+    if (
+      longPress?.pointerId === event.pointerId &&
+      Math.hypot(event.clientX - longPress.x, event.clientY - longPress.y) > LONG_PRESS_SLOP_PX
+    ) {
+      cancelLongPress();
+    }
+  }
+
+  function cancelLongPress(): void {
+    if (longPress) window.clearTimeout(longPress.timer);
+    longPress = null;
+  }
+
+  /**
+   * The menu opens under the still-pressed finger, so the release's click would
+   * land on its backdrop and close it again. Eat that one click.
+   */
+  function swallowReleaseClick(): void {
+    const swallow = (event: MouseEvent) => {
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    const release = () =>
+      window.setTimeout(() => window.removeEventListener("click", swallow, true));
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    window.addEventListener("pointerup", release, { once: true });
+    window.addEventListener("pointercancel", release, { once: true });
   }
 
   function disarmRowDrag(event: PointerEvent): void {
@@ -660,7 +739,7 @@
         ? `inset 0 ${dropBefore ? "2px" : "-2px"} 0 0 var(--upaint-accent)`
         : "none"}
     <div
-      class={`grid w-full cursor-default grid-cols-[12px_22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border-b px-2 py-1.5 ${selected ? "bg-(--upaint-accent-muted)" : "bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
+      class={`grid w-full cursor-default select-none [-webkit-touch-callout:none] grid-cols-[12px_22px_38px_minmax(0,1fr)_auto] grid-rows-[38px_auto] items-center gap-x-1.5 gap-y-1 border-b px-2 py-1.5 ${selected ? "bg-(--upaint-accent-muted)" : "bg-(--upaint-surface-raised)"} ${layer.visible ? "" : "opacity-60"} ${draggingId === layer.id ? "opacity-40" : ""}`}
       style={`border-color: var(--upaint-border); box-shadow: ${dropIndicator}; transition: background-color var(--upaint-transition), opacity var(--upaint-transition);`}
       role="button"
       aria-pressed={selected}
@@ -671,8 +750,10 @@
       onclick={(event) => selectRow(event, layer)}
       onkeydown={(event) => selectRowFromKeyboard(event, layer)}
       onpointerdowncapture={armRowDrag}
-      onpointerup={disarmRowDrag}
-      onpointercancel={disarmRowDrag}
+      onpointerdown={(event) => startLongPress(event, layer)}
+      onpointermove={trackLongPress}
+      onpointerup={(event) => (cancelLongPress(), disarmRowDrag(event))}
+      onpointercancel={(event) => (cancelLongPress(), disarmRowDrag(event))}
       oncontextmenu={(event) => openLayerContextMenu(event, layer)}
       ondragstart={(event) => handleDragStart(event, layer.id)}
       ondragend={clearDragState}

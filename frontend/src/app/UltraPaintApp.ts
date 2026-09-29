@@ -99,6 +99,13 @@ import { AutosaveController, fetchAutosavedDocument } from "./autosave";
 const HISTORY_LIMIT = 40;
 const HISTORY_MERGE_WINDOW_MS = 500;
 
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 8;
+const clampZoom = (scale: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
+
+type TouchPoint = { x: number; y: number };
+const TOUCH_GESTURE_EVENTS = ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const;
+
 type BrushAdjustmentMode = "size-hardness" | "opacity";
 
 interface ActiveBrushAdjustment {
@@ -106,6 +113,9 @@ interface ActiveBrushAdjustment {
   mode: BrushAdjustmentMode;
   startClientX: number;
   startClientY: number;
+  /** Accumulated pointer travel; the mouse is pointer-locked so clientX/Y stay put. */
+  dx: number;
+  dy: number;
   startRadius: number;
   startHardness: number;
   startOpacity: number;
@@ -215,7 +225,28 @@ export class UltraPaintApp {
 
   private panClientY = 0;
 
+  /** Element the touch-gesture capture listeners are bound to (the canvas host). */
+  private viewportRoot: HTMLElement | null = null;
+
+  /** Live touch contacts on the canvas, in renderer screen coordinates. */
+  private readonly touchPoints = new Map<number, TouchPoint>();
+
+  /**
+   * Two-finger pan/pinch in progress: the document point under the start
+   * midpoint and the start finger spread/zoom. Stays set until every finger
+   * lifts, so a leftover finger never starts painting.
+   */
+  private touchGesture: {
+    documentX: number;
+    documentY: number;
+    spread: number;
+    scale: number;
+  } | null = null;
+
   private brushAdjustment: ActiveBrushAdjustment | null = null;
+
+  /** Space held with the canvas focused: left-drag pans instead of painting. */
+  private spaceHeld = false;
 
   private brushAdjustmentHud: HTMLDivElement | null = null;
 
@@ -489,6 +520,12 @@ export class UltraPaintApp {
   private mountViewportControls(canvas: HTMLCanvasElement, root: HTMLElement): void {
     this.viewportCanvas = canvas;
     canvas.addEventListener("wheel", this.handleWheel, { passive: false });
+    // Capture on the host so two-finger gestures are claimed before the stroke,
+    // lasso, and Pixi listeners on the canvas itself ever see the second finger.
+    this.viewportRoot = root;
+    for (const type of TOUCH_GESTURE_EVENTS) {
+      root.addEventListener(type, this.handleTouchGesture, true);
+    }
     canvas.addEventListener("pointerdown", this.handlePointerDown);
     canvas.addEventListener("pointermove", this.handlePointerMove);
     canvas.addEventListener("pointerleave", this.handlePointerLeave);
@@ -556,6 +593,12 @@ export class UltraPaintApp {
     const canvas = this.viewportCanvas;
     if (!canvas) return;
     canvas.removeEventListener("wheel", this.handleWheel);
+    for (const type of TOUCH_GESTURE_EVENTS) {
+      this.viewportRoot?.removeEventListener(type, this.handleTouchGesture, true);
+    }
+    this.viewportRoot = null;
+    this.touchPoints.clear();
+    this.touchGesture = null;
     canvas.removeEventListener("pointerdown", this.handlePointerDown);
     canvas.removeEventListener("pointermove", this.handlePointerMove);
     canvas.removeEventListener("pointerleave", this.handlePointerLeave);
@@ -596,12 +639,92 @@ export class UltraPaintApp {
     let deltaY = event.deltaY;
     if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) deltaY *= 16;
     if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) deltaY *= rect.height;
-    const nextScale = Math.min(8, Math.max(0.1, previousScale * Math.exp(-deltaY * 0.0015)));
+    const nextScale = clampZoom(previousScale * Math.exp(-deltaY * 0.0015));
     const documentX = (cursorX - world.x) / previousScale;
     const documentY = (cursorY - world.y) / previousScale;
 
     world.scale.set(nextScale);
     world.position.set(cursorX - documentX * nextScale, cursorY - documentY * nextScale);
+    this.updateTiledVisibleRegions();
+  };
+
+  /**
+   * One finger paints; a second finger turns the touch into pan + pinch-zoom.
+   * The first finger's stroke (or lasso/transform drag) is cancelled through a
+   * synthetic `pointercancel`, which every canvas controller already handles.
+   */
+  private readonly handleTouchGesture = (event: PointerEvent): void => {
+    const app = this.app;
+    const world = this.world;
+    const canvas = this.viewportCanvas;
+    if (!app || !world || !canvas || event.pointerType !== "touch" || !event.isTrusted) return;
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const point = {
+      x: ((event.clientX - rect.left) * app.screen.width) / rect.width,
+      y: ((event.clientY - rect.top) * app.screen.height) / rect.height,
+    };
+
+    if (event.type === "pointerdown") {
+      if (event.target !== canvas) return;
+      // A primary pointer starts a fresh touch sequence: drop anything stale.
+      if (event.isPrimary) {
+        this.touchPoints.clear();
+        this.touchGesture = null;
+      }
+      this.touchPoints.set(event.pointerId, point);
+      if (this.touchGesture) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        return;
+      }
+      if (this.touchPoints.size < 2) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      for (const pointerId of this.touchPoints.keys()) {
+        if (pointerId !== event.pointerId) {
+          canvas.dispatchEvent(
+            new PointerEvent("pointercancel", { pointerId, pointerType: "touch", bubbles: true }),
+          );
+        }
+        // Controllers release capture on cancel; keep both fingers routed here
+        // so their moves and lifts still reach this handler off-canvas.
+        canvas.setPointerCapture(pointerId);
+      }
+      const [a, b] = [...this.touchPoints.values()] as [TouchPoint, TouchPoint];
+      const scale = world.scale.x;
+      this.touchGesture = {
+        documentX: ((a.x + b.x) / 2 - world.x) / scale,
+        documentY: ((a.y + b.y) / 2 - world.y) / scale,
+        spread: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        scale,
+      };
+      return;
+    }
+
+    if (!this.touchPoints.has(event.pointerId)) return;
+    if (event.type === "pointermove") {
+      this.touchPoints.set(event.pointerId, point);
+    } else {
+      this.touchPoints.delete(event.pointerId);
+    }
+    const gesture = this.touchGesture;
+    if (!gesture) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    if (event.type !== "pointermove") {
+      if (this.touchPoints.size === 0) this.touchGesture = null;
+      return;
+    }
+    const [a, b] = [...this.touchPoints.values()];
+    if (!a || !b) return; // ponytail: one finger left mid-gesture holds the view, re-pinch to resume.
+    const scale = clampZoom((gesture.scale * Math.hypot(b.x - a.x, b.y - a.y)) / gesture.spread);
+    world.scale.set(scale);
+    world.position.set(
+      (a.x + b.x) / 2 - gesture.documentX * scale,
+      (a.y + b.y) / 2 - gesture.documentY * scale,
+    );
     this.updateTiledVisibleRegions();
   };
 
@@ -616,7 +739,11 @@ export class UltraPaintApp {
       return;
     }
     if (event.button === 0 && this.beginBrushAdjustment(event)) return;
-    if (event.button !== 1) return;
+    // The Pan tool lets one finger or a pen pan too (a lone touch otherwise
+    // paints, and DevTools touch emulation has no second finger to pinch with).
+    const spacePan = event.button === 0 && (this.spaceHeld || this.toolStore.activeTool === "pan");
+    if (event.button !== 1 && !spacePan) return;
+    if (spacePan) event.stopImmediatePropagation();
     event.preventDefault();
     this.panPointerId = event.pointerId;
     this.panClientX = event.clientX;
@@ -634,7 +761,17 @@ export class UltraPaintApp {
     }
   }
 
+  private setSpaceHeld(held: boolean): void {
+    this.spaceHeld = held;
+    if (this.viewportCanvas) this.viewportCanvas.style.cursor = held ? "grab" : "";
+  }
+
   private readonly handleEyedropperKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === "Space" && document.activeElement === this.viewportCanvas) {
+      event.preventDefault();
+      this.setSpaceHeld(true);
+      return;
+    }
     if (event.key === "Control" || event.key === "Shift" || event.key === "Meta") {
       // Ctrl+Alt / Shift+Alt are the existing brush size/hardness and
       // opacity drag shortcuts (see beginBrushAdjustment). Bare Alt can
@@ -660,11 +797,13 @@ export class UltraPaintApp {
   };
 
   private readonly handleEyedropperKeyUp = (event: KeyboardEvent): void => {
+    if (event.code === "Space") this.setSpaceHeld(false);
     if (event.key !== "Alt") return;
     this.restorePreviousTool();
   };
 
   private readonly handleWindowBlur = (): void => {
+    this.setSpaceHeld(false);
     this.restorePreviousTool();
   };
 
@@ -740,6 +879,7 @@ export class UltraPaintApp {
       event.stopImmediatePropagation();
       event.preventDefault();
       this.brushAdjustment = null;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
       if (this.brushAdjustmentHud) this.brushAdjustmentHud.style.display = "none";
       if (canvas.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
@@ -802,6 +942,8 @@ export class UltraPaintApp {
       mode,
       startClientX: event.clientX,
       startClientY: event.clientY,
+      dx: 0,
+      dy: 0,
       startRadius: brush.radius,
       startHardness: brush.hardness,
       startOpacity: brush.opacity,
@@ -809,6 +951,14 @@ export class UltraPaintApp {
     event.stopImmediatePropagation();
     event.preventDefault();
     canvas.setPointerCapture(event.pointerId);
+    // Lock the mouse so it stays put while dragging; pen/touch have no cursor to hide.
+    if (event.pointerType === "mouse") {
+      try {
+        void Promise.resolve(canvas.requestPointerLock()).catch(() => {});
+      } catch {
+        // Unsupported: the cursor just moves as before.
+      }
+    }
     this.updateBrushAdjustment(event);
     return true;
   }
@@ -819,8 +969,10 @@ export class UltraPaintApp {
     const canvas = this.viewportCanvas;
     if (!active || !canvas) return;
 
-    const deltaX = event.clientX - active.startClientX;
-    const deltaY = event.clientY - active.startClientY;
+    active.dx += event.movementX;
+    active.dy += event.movementY;
+    const deltaX = active.dx;
+    const deltaY = active.dy;
     if (active.mode === "size-hardness") {
       this.toolStore.setBrushSettings({
         radius: Math.round(active.startRadius + deltaX),
@@ -839,8 +991,8 @@ export class UltraPaintApp {
         ? `Size ${Math.round(brush.radius)}px · Hardness ${Math.round(brush.hardness * 100)}%`
         : `Opacity ${Math.round(brush.opacity * 100)}%`;
     const rect = canvas.parentElement?.getBoundingClientRect() ?? canvas.getBoundingClientRect();
-    hud.style.left = `${event.clientX - rect.left + 12}px`;
-    hud.style.top = `${event.clientY - rect.top + 12}px`;
+    hud.style.left = `${active.startClientX - rect.left + 12}px`;
+    hud.style.top = `${active.startClientY - rect.top + 12}px`;
     hud.style.display = "block";
   }
 
@@ -1304,17 +1456,30 @@ export class UltraPaintApp {
    * Restore 100% zoom while preserving the document point at viewport center.
    */
   public resetZoom(): void {
+    this.zoomAroundCenter(1);
+  }
+
+  /** Multiply the zoom by `factor`, keeping the viewport center fixed. */
+  public zoomBy(factor: number): void {
+    this.zoomAroundCenter((this.world?.scale.x ?? 1) * factor);
+  }
+
+  private zoomAroundCenter(scale: number): void {
     const app = this.app;
     const world = this.world;
     if (!app || !world || app.screen.width <= 0 || app.screen.height <= 0) {
       return;
     }
 
+    const nextScale = clampZoom(scale);
     const previousScale = world.scale.x;
     const documentX = (app.screen.width / 2 - world.x) / previousScale;
     const documentY = (app.screen.height / 2 - world.y) / previousScale;
-    world.scale.set(1);
-    world.position.set(app.screen.width / 2 - documentX, app.screen.height / 2 - documentY);
+    world.scale.set(nextScale);
+    world.position.set(
+      app.screen.width / 2 - documentX * nextScale,
+      app.screen.height / 2 - documentY * nextScale,
+    );
     this.updateTiledVisibleRegions();
   }
 

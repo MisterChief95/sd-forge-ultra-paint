@@ -54,3 +54,26 @@ test("top bar options follow the active tool", async ({ page }) => {
   await page.getByRole("button", { name: "Eraser", exact: true }).click();
   await expect(page.getByRole("slider", { name: "Brush size" })).toBeVisible();
 });
+
+test("on a portrait tablet width the side panels overlay the canvas as drawers", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 810, height: 1080 });
+  await page.goto("./");
+  await page.evaluate(() => localStorage.removeItem("ultra-paint:ui-layout"));
+  await page.reload();
+
+  const settings = page.locator("#upaint-settings-panel");
+  const layers = page.locator("#upaint-root-panel");
+  await expect(settings).toBeVisible();
+  await expect(layers).toBeVisible();
+  // Open drawers don't steal width from the canvas, and resize handles are gone.
+  const canvasWidth = (await page.locator("#upaint-root canvas").boundingBox())!.width;
+  expect(canvasWidth).toBeGreaterThan(700);
+  await expect(page.getByRole("separator")).toBeHidden();
+  // Drawers sit below the top bar so its panel toggles stay reachable.
+  await page.getByRole("button", { name: "Hide generation settings" }).click();
+  await page.getByRole("button", { name: "Hide layers panel" }).click();
+  await expect(settings).toBeHidden();
+  await expect(layers).toBeHidden();
+});
