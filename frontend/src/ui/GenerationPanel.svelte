@@ -729,7 +729,7 @@
             </Accordion>
           {:else if id === "generation.extensions"}
             <Accordion title="Extensions" persistKey={id} {headerLeading}>
-              <div class="py-2 pr-0 pl-2">
+              <div class="pl-2">
                 <ExtensionSection
                   manifests={extensionManifests}
                   values={extensionValues}
