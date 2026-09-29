@@ -102,6 +102,8 @@ test("lasso replaces, adds, subtracts, rejects crossings, and undoes atomically"
   await addMask(page);
   await expect(lasso).toBeEnabled();
   await lasso.click();
+  // Freehand is the default mode; this first shape is click-by-click.
+  await page.getByRole("button", { name: "Polygon" }).click();
 
   const center = await canvasCenter(page);
   await polygon(page, [

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from "../lib/Button.svelte";
+  import Icon from "../lib/Icon.svelte";
   import NumberInput from "../lib/NumberInput.svelte";
   import Slider from "../lib/Slider.svelte";
   import { fetchLoras, type LoraCatalogItem } from "./generationApi";
@@ -104,17 +105,7 @@
                 selectedLoras.filter((item) => item.promptName !== lora.promptName),
               )}
           >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6" />
-            </svg>
+            <Icon name="x" />
           </Button>
 
           <label

@@ -4,6 +4,7 @@
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import Button from "./lib/Button.svelte";
+  import Icon from "./lib/Icon.svelte";
 
   let zoom = $state(1);
   let gridVisible = $state(true);
@@ -63,7 +64,7 @@
     size="sm"
     class="tabular-nums"
     aria-label={`Zoom: ${Math.round(zoom * 100)}% (reset to 100%)`}
-    title="Reset zoom to 100%"
+    title="Reset zoom to 100% (0)"
     onclick={resetZoom}
   >
     {Math.round(zoom * 100)}%
@@ -71,10 +72,10 @@
   <Button
     size="sm"
     aria-label="Fit boundary box to viewport"
-    title="Fit boundary box to viewport"
+    title="Fit boundary box to viewport (F)"
     onclick={fitToBoundaryBox}
   >
-    Fit
+    <Icon name="fit" />
   </Button>
   <Button
     size="sm"
@@ -83,16 +84,16 @@
     disabled={isDocumentMutationLocked()}
     onclick={fitBoundaryBoxToContent}
   >
-    Fit BB
+    <Icon name="fit-content" />
   </Button>
   <Button
     size="sm"
     pressed={gridVisible}
     aria-label={gridVisible ? "Hide pixel grid" : "Show pixel grid"}
-    title={gridVisible ? "Hide pixel grid" : "Show pixel grid"}
+    title={gridVisible ? "Hide pixel grid (G)" : "Show pixel grid (G)"}
     onclick={toggleGrid}
   >
-    Grid
+    <Icon name="grid" />
   </Button>
   <Button
     size="sm"
@@ -103,6 +104,6 @@
       : "Show tile borders (debug) -- outlines each tiled layer's GPU tiles in green"}
     onclick={toggleTileBorders}
   >
-    Tiles
+    <Icon name="tiles" />
   </Button>
 </div>

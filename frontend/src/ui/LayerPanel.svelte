@@ -10,6 +10,7 @@
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
   import Accordion from "./lib/Accordion.svelte";
   import Button from "./lib/Button.svelte";
+  import Icon from "./lib/Icon.svelte";
   import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
   import Select from "./lib/Select.svelte";
   import Slider from "./lib/Slider.svelte";
@@ -680,13 +681,11 @@
       ondrop={(event) => handleDrop(event, layer.id)}
     >
       <div
-        class="flex h-[34px] w-[12px] shrink-0 cursor-grab flex-col items-center justify-center gap-[3px]"
+        class="flex h-[34px] w-3 shrink-0 cursor-grab items-center justify-center text-(--upaint-text-muted)"
         title="Drag to reorder"
         aria-hidden="true"
       >
-        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
-        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
-        <span class="block h-[2px] w-[10px] rounded-full bg-(--upaint-text-muted)"></span>
+        <Icon name="grip" size={12} />
       </div>
 
       <input
@@ -711,7 +710,7 @@
           title="Group"
           aria-label="Group layer"
         >
-          ▦
+          <Icon name="folder" size={16} />
         </div>
       {:else if layer.kind === "mask"}
         <div class="relative h-[34px] w-[34px]">
@@ -730,7 +729,7 @@
               title="No preview"
               aria-hidden="true"
             >
-              ▣
+              <Icon name="image" size={16} />
             </div>
           {/if}
           <input
@@ -757,7 +756,7 @@
           title="No preview"
           aria-label="No layer preview"
         >
-          ▣
+          <Icon name="image" size={16} />
         </div>
       {/if}
 
@@ -791,17 +790,7 @@
           aria-label={`${layer.locked ? "Unlock" : "Lock"} "${layer.name}"`}
           onclick={() => toggleLocked(layer)}
         >
-          <svg
-            class="mx-auto h-3 w-3"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.3"
-            aria-hidden="true"
-          >
-            <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
-            <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
-          </svg>
+          <Icon name="lock" size={12} />
         </Button>
         <Button
           size="icon"
@@ -812,12 +801,7 @@
           aria-label={`${layer.preserveAlpha ? "Stop preserving" : "Preserve"} transparency on "${layer.name}"`}
           onclick={() => togglePreserveAlpha(layer)}
         >
-          <svg class="mx-auto h-3 w-3" viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="1" y="1" width="6" height="6" fill="currentColor" opacity="0.9" />
-            <rect x="9" y="1" width="6" height="6" fill="currentColor" opacity="0.35" />
-            <rect x="1" y="9" width="6" height="6" fill="currentColor" opacity="0.35" />
-            <rect x="9" y="9" width="6" height="6" fill="currentColor" opacity="0.9" />
-          </svg>
+          <Icon name="alpha" size={12} />
         </Button>
         {#if layer.kind === "control"}
           <Button
@@ -827,18 +811,17 @@
             aria-label={`Configure ${layer.name}`}
             onclick={() => (expandedControlId = expandedControlId === layer.id ? null : layer.id)}
           >
-            ⚙
+            <Icon name="sliders" size={12} />
           </Button>
         {/if}
         <Button
           size="icon"
           variant="danger"
-          class="text-base"
           title="Delete layer"
           aria-label={`Delete ${layer.name}`}
           onclick={() => layerStore.removeLayer(layer.id)}
         >
-          ×
+          <Icon name="trash" size={12} />
         </Button>
       </div>
 
@@ -862,6 +845,7 @@
     <Button
       variant="primary"
       size="sm"
+      class="gap-1"
       title={isPreviewing || isFiltering
         ? "Adding layers is disabled while previewing a generation"
         : "Add a layer"}
@@ -869,7 +853,8 @@
       disabled={isPreviewing || isFiltering}
       onclick={openAddMenu}
     >
-      +
+      <Icon name="plus" size={12} />
+      Add
     </Button>
     <input
       id="upaint-control-file-input"
@@ -930,35 +915,6 @@
     </div>
   </div>
 
-  {#snippet eyeIcon(hidden: boolean)}
-    {#if hidden}
-      <svg
-        class="mx-auto h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z" stroke-linejoin="round" />
-        <circle cx="8" cy="8" r="2" />
-        <path d="M2 2l12 12" stroke-linecap="round" />
-      </svg>
-    {:else}
-      <svg
-        class="mx-auto h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8Z" stroke-linejoin="round" />
-        <circle cx="8" cy="8" r="2" />
-      </svg>
-    {/if}
-  {/snippet}
-
   <div class="flex min-h-0 flex-1 flex-col overflow-y-auto" style="scrollbar-gutter: stable;">
     {#if maskLayers.length > 0}
       <Accordion
@@ -981,7 +937,7 @@
               maskLayers.filter((layer) => layer.visible).length < 2}
             onclick={mergeVisibleMasks}
           >
-            ⧉
+            <Icon name="merge" />
           </Button>
           <Button
             size="icon"
@@ -992,7 +948,7 @@
             aria-label={layerStore.masksHidden ? "Show masks on canvas" : "Hide masks from canvas"}
             onclick={toggleMasksHidden}
           >
-            {@render eyeIcon(layerStore.masksHidden)}
+            <Icon name={layerStore.masksHidden ? "eye-off" : "eye"} />
           </Button>
         {/snippet}
         {@render layerRows(maskLayers)}
@@ -1020,7 +976,7 @@
               : "Hide control layers from canvas"}
             onclick={toggleControlsHidden}
           >
-            {@render eyeIcon(layerStore.controlsHidden)}
+            <Icon name={layerStore.controlsHidden ? "eye-off" : "eye"} />
           </Button>
         {/snippet}
         {@render layerRows(controlLayers)}
@@ -1048,7 +1004,7 @@
               regularLayers.filter((layer) => layer.visible).length < 2}
             onclick={mergeVisibleLayers}
           >
-            ⧉
+            <Icon name="merge" />
           </Button>
           <Button
             size="icon"
@@ -1061,7 +1017,7 @@
               : "Hide layers from canvas"}
             onclick={toggleLayersHidden}
           >
-            {@render eyeIcon(layerStore.layersHidden)}
+            <Icon name={layerStore.layersHidden ? "eye-off" : "eye"} />
           </Button>
         {/snippet}
         {@render layerRows(regularLayers)}
@@ -1070,7 +1026,7 @@
 
     {#if regularLayers.length === 0 && maskLayers.length === 0 && controlLayers.length === 0}
       <div class="px-2 py-5 text-center text-(--upaint-text-muted)">
-        No layers yet -- use + to add one.
+        No layers yet. Use Add to create one.
       </div>
     {/if}
   </div>

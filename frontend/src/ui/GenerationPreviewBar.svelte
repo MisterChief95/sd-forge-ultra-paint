@@ -5,6 +5,7 @@
   import { toastStore } from "../state/toastStore.svelte";
   import { saveFlattenedImage } from "./generation/generationApi";
   import Button from "./lib/Button.svelte";
+  import Icon from "./lib/Icon.svelte";
 
   let applying = $state(false);
 
@@ -72,16 +73,7 @@
         disabled={!previewStore.selected || applying}
         onclick={apply}
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          aria-hidden="true"
-        >
-          <path d="M3 8.5l3.2 3.2L13 4.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <Icon name="check" />
       </Button>
 
       <Button
@@ -91,38 +83,7 @@
         title={previewStore.visible ? "Hide preview (A/B compare)" : "Show preview"}
         onclick={() => previewStore.toggleVisible()}
       >
-        {#if previewStore.visible}
-          <svg
-            class="h-3.5 w-3.5"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            aria-hidden="true"
-          >
-            <path
-              d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z"
-              stroke-linejoin="round"
-            />
-            <circle cx="8" cy="8" r="2" />
-          </svg>
-        {:else}
-          <svg
-            class="h-3.5 w-3.5"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            aria-hidden="true"
-          >
-            <path
-              d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z"
-              stroke-linejoin="round"
-            />
-            <circle cx="8" cy="8" r="2" />
-            <path d="M2 14L14 2" stroke-linecap="round" />
-          </svg>
-        {/if}
+        <Icon name={previewStore.visible ? "eye" : "eye-off"} />
       </Button>
 
       <Button
@@ -134,17 +95,7 @@
         disabled={!previewStore.selected || generationRuntimeStore.saving}
         onclick={save}
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <path d="M2.5 2.5h8.75l2.25 2.25V13.5h-11z" stroke-linejoin="round" />
-          <path d="M5 2.5v4h5.5v-4M5 13.5V9h6v4.5" stroke-linejoin="round" />
-        </svg>
+        <Icon name="save" />
       </Button>
 
       <Button
@@ -155,16 +106,7 @@
         disabled={!previewStore.selected}
         onclick={() => previewStore.selected && previewStore.discard(previewStore.selected.id)}
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          aria-hidden="true"
-        >
-          <path d="M3 3l10 10M13 3L3 13" stroke-linecap="round" />
-        </svg>
+        <Icon name="x" />
       </Button>
 
       <Button
@@ -174,20 +116,7 @@
         title="Discard all previews"
         onclick={() => previewStore.discardAll()}
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          aria-hidden="true"
-        >
-          <path
-            d="M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8.4a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.4"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <Icon name="trash" />
       </Button>
     </div>
   </div>

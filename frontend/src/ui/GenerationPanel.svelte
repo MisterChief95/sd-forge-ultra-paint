@@ -11,6 +11,7 @@
   import { calculateAutoResolution, type Resolution } from "../util/autoResolution";
   import Accordion from "./lib/Accordion.svelte";
   import Button from "./lib/Button.svelte";
+  import Icon from "./lib/Icon.svelte";
   import Select from "./lib/Select.svelte";
   import SliderNumberInput from "./lib/SliderNumberInput.svelte";
   import BoundaryBoxControls from "./generation/BoundaryBoxControls.svelte";
@@ -26,8 +27,15 @@
     persistGenerationSettings,
     type GenerationOptions,
   } from "./generation/generationApi";
+  import { fetchExtensionManifests, type ExtensionManifest } from "./generation/extensionsApi";
+  import ExtensionSection, {
+    deriveDefaultExtensionValues,
+    type ExtensionValues,
+  } from "./generation/ExtensionSection.svelte";
   import { buildLoraPrompt, type SelectedLora } from "./generation/lora";
   import { autoFormatPromptSpacing } from "./generation/promptFormat";
+  import { applyStyles } from "./generation/stylesApi";
+  import { stylesStore } from "../state/stylesStore.svelte";
 
   const SETTINGS_DEBOUNCE_MS = 1000;
   const DEFAULT_SECTION_ORDER = [
@@ -36,6 +44,7 @@
     "generation.loras",
     "generation.sampling",
     "generation.composition",
+    "generation.extensions",
     "generation.upscale",
   ] as const;
   type SectionId = (typeof DEFAULT_SECTION_ORDER)[number];
@@ -46,11 +55,13 @@
     "generation.loras": "LoRAs",
     "generation.sampling": "Sampling",
     "generation.composition": "Composition",
+    "generation.extensions": "Extensions",
     "generation.upscale": "Upscale",
   };
 
   let prompt = $state("");
   let negativePrompt = $state("");
+  let negativeEnabled = $state(true);
   let samplers = $state<string[]>([]);
   let schedulers = $state<string[]>([]);
   let models = $state<string[]>([]);
@@ -75,8 +86,11 @@
   let upscaleSamplerName = $state("");
   let upscaleScheduler = $state("");
   let selectedLoras = $state<SelectedLora[]>([]);
+  let extensionManifests = $state<ExtensionManifest[]>([]);
+  let extensionValues = $state<Record<string, ExtensionValues>>({});
   let persistenceReady = $state(false);
   let restoredPersistedSettings = false;
+  let restoredExtensionValues: Record<string, Record<string, unknown>> | null = null;
   let persistenceTimer: number | null = null;
   let pendingSettings: Record<string, unknown> | null = null;
   let saveInFlight = false;
@@ -116,6 +130,10 @@
   });
 
   const generationMode = $derived(layerStore.hasVisibleRasterContent ? "img2img" : "txt2img");
+
+  const visibleSectionOrder = $derived(
+    sectionOrder.filter((id) => id !== "generation.extensions" || extensionManifests.length > 0),
+  );
 
   $effect(() => {
     if (!persistenceReady) return;
@@ -177,13 +195,23 @@
     controller.destroy();
   });
 
+  /** Prompts as sent to Forge: selected styles applied, negative blank when off. */
+  function effectivePrompts(): { prompt: string; negativePrompt: string } {
+    const { selected, styles } = stylesStore;
+    return {
+      prompt: buildLoraPrompt(applyStyles(prompt, selected, styles, "prompt"), selectedLoras),
+      negativePrompt: negativeEnabled
+        ? applyStyles(negativePrompt, selected, styles, "negative_prompt")
+        : "",
+    };
+  }
+
   function generate(): void {
     prompt = autoFormatPromptSpacing(prompt);
     negativePrompt = autoFormatPromptSpacing(negativePrompt);
     void controller.generate({
       generationMode,
-      prompt: buildLoraPrompt(prompt, selectedLoras),
-      negativePrompt,
+      ...effectivePrompts(),
       steps,
       cfgScale,
       denoisingStrength,
@@ -209,6 +237,7 @@
       moduleNames: modelOptionsLoaded ? moduleNames : null,
       targetResolution: selectedTargetResolution,
       scaleMode: generationSettingsStore.scaleMode,
+      extensions: extensionValues,
     });
   }
 
@@ -298,8 +327,7 @@
     prompt = autoFormatPromptSpacing(prompt);
     negativePrompt = autoFormatPromptSpacing(negativePrompt);
     void controller.upscale({
-      prompt: buildLoraPrompt(prompt, selectedLoras),
-      negativePrompt,
+      ...effectivePrompts(),
       denoisingStrength: upscaleDenoisingStrength,
       steps: upscaleAdvancedEnabled ? upscaleSteps : steps,
       cfgScale: upscaleAdvancedEnabled ? upscaleCfgScale : cfgScale,
@@ -327,6 +355,15 @@
     }
     persistenceReady = true;
     await controller.loadOptions();
+    try {
+      extensionManifests = await fetchExtensionManifests();
+      const defaults = deriveDefaultExtensionValues(extensionManifests);
+      extensionValues = restoredExtensionValues
+        ? mergeExtensionValues(defaults, restoredExtensionValues)
+        : defaults;
+    } catch (error) {
+      console.warn("[ultra-paint] could not load extension manifests:", error);
+    }
   }
 
   function settingsSnapshot(): Record<string, unknown> {
@@ -334,6 +371,8 @@
       version: 1,
       prompt,
       negativePrompt,
+      negativeEnabled,
+      selectedStyles: [...stylesStore.selected],
       samplerName,
       scheduler,
       modelName,
@@ -350,6 +389,7 @@
       upscaleSamplerName,
       upscaleScheduler,
       selectedLoras,
+      extensions: extensionValues,
       generationSettings: generationSettingsStore.snapshot,
     };
   }
@@ -401,6 +441,12 @@
     restoredPersistedSettings = true;
     prompt = stringValue(stored.prompt, prompt);
     negativePrompt = stringValue(stored.negativePrompt, negativePrompt);
+    negativeEnabled = stored.negativeEnabled !== false;
+    if (Array.isArray(stored.selectedStyles)) {
+      stylesStore.selected = stored.selectedStyles.filter(
+        (name): name is string => typeof name === "string",
+      );
+    }
     samplerName = stringValue(stored.samplerName, samplerName);
     scheduler = stringValue(stored.scheduler, scheduler);
     modelName = stringValue(stored.modelName, modelName);
@@ -425,6 +471,7 @@
     upscaleSamplerName = stringValue(stored.upscaleSamplerName, upscaleSamplerName);
     upscaleScheduler = stringValue(stored.upscaleScheduler, upscaleScheduler);
     selectedLoras = selectedLoraArray(stored.selectedLoras);
+    restoredExtensionValues = extensionValuesRecord(stored.extensions);
     if (isRecord(stored.generationSettings)) {
       generationSettingsStore.restore(stored.generationSettings);
     }
@@ -432,6 +479,29 @@
 
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  function extensionValuesRecord(value: unknown): Record<string, Record<string, unknown>> | null {
+    if (!isRecord(value)) return null;
+    const result: Record<string, Record<string, unknown>> = {};
+    for (const [id, entry] of Object.entries(value)) {
+      if (isRecord(entry) && typeof entry.enabled === "boolean") {
+        result[id] = entry;
+      }
+    }
+    return result;
+  }
+
+  function mergeExtensionValues(
+    defaults: Record<string, ExtensionValues>,
+    restored: Record<string, Record<string, unknown>>,
+  ): Record<string, ExtensionValues> {
+    return Object.fromEntries(
+      Object.entries(defaults).map(([id, defaultValues]) => [
+        id,
+        restored[id] ? { ...defaultValues, ...restored[id] } : defaultValues,
+      ]),
+    );
   }
 
   function stringValue(value: unknown, fallback: string): string {
@@ -520,10 +590,10 @@
       Generation mode: {generationMode === "txt2img" ? "Text to image" : "Image to image"}
     </p>
 
-    <PromptFields bind:prompt bind:negativePrompt />
+    <PromptFields bind:prompt bind:negativePrompt bind:negativeEnabled />
 
     <div class="-mx-3 flex flex-col">
-      {#each sectionOrder as id (id)}
+      {#each visibleSectionOrder as id (id)}
         <div
           class={`relative ${draggingSectionId === id ? "opacity-40" : ""}`}
           style="transition: opacity var(--upaint-transition);"
@@ -538,7 +608,7 @@
           {#snippet headerLeading()}
             <button
               type="button"
-              class="flex h-6 w-5 cursor-grab flex-col items-center justify-center gap-[2px] border-0 bg-transparent p-0 text-(--upaint-text-muted) focus-visible:outline-2 focus-visible:outline-(--upaint-accent) active:cursor-grabbing"
+              class="flex h-6 w-5 cursor-grab items-center justify-center border-0 bg-transparent p-0 text-(--upaint-text-muted) focus-visible:outline-2 focus-visible:outline-(--upaint-accent) active:cursor-grabbing"
               draggable="true"
               aria-label={`Move ${SECTION_LABELS[id]} section`}
               aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
@@ -547,9 +617,7 @@
               ondragend={clearSectionDragState}
               onkeydown={(event) => handleSectionGripKeydown(event, id)}
             >
-              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
-              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
-              <span class="block h-[2px] w-3 rounded-full bg-current"></span>
+              <Icon name="grip" />
             </button>
           {/snippet}
 
@@ -640,6 +708,16 @@
                     generationSettingsStore.setCoherenceEdgeSize(value)}
                   onCoherenceAlgorithmChange={(value) =>
                     generationSettingsStore.setCoherenceAlgorithm(value)}
+                />
+              </div>
+            </Accordion>
+          {:else if id === "generation.extensions"}
+            <Accordion title="Extensions" persistKey={id} {headerLeading}>
+              <div class="p-2">
+                <ExtensionSection
+                  manifests={extensionManifests}
+                  values={extensionValues}
+                  onValuesChange={(next) => (extensionValues = next)}
                 />
               </div>
             </Accordion>

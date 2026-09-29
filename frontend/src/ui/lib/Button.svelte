@@ -32,7 +32,7 @@
     default:
       "border-(--upaint-border) bg-(--upaint-surface-raised) text-(--upaint-text) hover:border-(--upaint-accent)",
     primary:
-      "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text) hover:bg-(--upaint-accent-muted)",
+      "border-(--upaint-primary) bg-(--upaint-primary) text-(--upaint-on-primary) hover:border-(--upaint-primary-hover) hover:bg-(--upaint-primary-hover)",
     danger:
       "border-(--upaint-border) bg-(--upaint-surface-raised) text-(--upaint-danger) hover:border-(--upaint-danger)",
     ghost:
@@ -43,7 +43,8 @@
     md: "px-2.5 py-1.5 text-xs leading-tight",
     icon: "h-7 w-7 p-0 text-xs",
   };
-  const active = "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-text)";
+  const active =
+    "border-(--upaint-accent) bg-(--upaint-accent) text-(--upaint-on-accent) hover:bg-(--upaint-accent-hover)";
   const radii: Record<Radius, string> = {
     all: "var(--upaint-radius-sm)",
     left: "var(--upaint-radius-sm) 0 0 var(--upaint-radius-sm)",

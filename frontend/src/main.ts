@@ -20,6 +20,7 @@ import type { TileEditTransaction } from "./canvas/TiledRasterCanvas";
 import { blitTexture } from "./canvas/TileRasterOps";
 import { LayerNode } from "./scene/LayerNode";
 import { filterStore } from "./state/filterStore.svelte";
+import { generationRuntimeStore } from "./state/generationRuntimeStore.svelte";
 import { layerStore } from "./state/layerStore.svelte";
 import { paintToolStore } from "./state/paintToolStore.svelte";
 import { previewStore } from "./state/previewStore.svelte";
@@ -45,6 +46,7 @@ if (import.meta.env.DEV) {
     paintToolStore,
     filterStore,
     previewStore,
+    generationRuntimeStore,
     createTiledRasterCanvas(tileSize = 64) {
       const renderer = getActiveUltraPaintApp()?.app?.renderer;
       if (!renderer) throw new Error("Ultra Paint renderer is not ready");

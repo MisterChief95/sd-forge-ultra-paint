@@ -2,7 +2,17 @@ export interface UILayoutState {
   version: number;
   accordions: Record<string, boolean>;
   panelOrder: string[] | null;
+  sidePanels: Record<SidePanel, SidePanelState>;
 }
+
+export type SidePanel = "left" | "right";
+export interface SidePanelState {
+  collapsed: boolean;
+  width: number;
+}
+
+export const MIN_SIDE_PANEL_WIDTH = 320;
+export const MAX_SIDE_PANEL_WIDTH = 500;
 
 const STORAGE_KEY = "ultra-paint:ui-layout";
 const VERSION = 1;
@@ -28,6 +38,20 @@ export class UILayoutStore {
     this.persist();
   }
 
+  public sidePanel(panel: SidePanel): SidePanelState {
+    return this._state.sidePanels[panel];
+  }
+
+  public setSidePanelCollapsed(panel: SidePanel, collapsed: boolean): void {
+    this._state.sidePanels[panel].collapsed = collapsed;
+    this.persist();
+  }
+
+  public setSidePanelWidth(panel: SidePanel, width: number): void {
+    this._state.sidePanels[panel].width = clampSidePanelWidth(width);
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify($state.snapshot(this._state)));
@@ -45,15 +69,43 @@ function readStoredLayout(): UILayoutState {
         version: VERSION,
         accordions: { ...value.accordions },
         panelOrder: value.panelOrder ? [...value.panelOrder] : null,
+        sidePanels: {
+          left: readSidePanel(value.sidePanels?.left),
+          right: readSidePanel(value.sidePanels?.right),
+        },
       };
     }
   } catch {
     // Missing or unavailable storage uses defaults.
   }
-  return { version: VERSION, accordions: {}, panelOrder: null };
+  return {
+    version: VERSION,
+    accordions: {},
+    panelOrder: null,
+    sidePanels: { left: readSidePanel(undefined), right: readSidePanel(undefined) },
+  };
 }
 
-function isUILayoutState(value: unknown): value is UILayoutState {
+function clampSidePanelWidth(width: number): number {
+  return Math.min(MAX_SIDE_PANEL_WIDTH, Math.max(MIN_SIDE_PANEL_WIDTH, width));
+}
+
+// `sidePanels` postdates layout version 1, so older stored layouts omit it and
+// each field falls back independently instead of invalidating the whole layout.
+function readSidePanel(value: Partial<SidePanelState> | undefined): SidePanelState {
+  return {
+    collapsed: value?.collapsed === true,
+    width: clampSidePanelWidth(
+      typeof value?.width === "number" && Number.isFinite(value.width)
+        ? value.width
+        : MIN_SIDE_PANEL_WIDTH,
+    ),
+  };
+}
+
+function isUILayoutState(value: unknown): value is Omit<UILayoutState, "sidePanels"> & {
+  sidePanels?: Partial<Record<SidePanel, Partial<SidePanelState>>>;
+} {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   const accordions = candidate.accordions;

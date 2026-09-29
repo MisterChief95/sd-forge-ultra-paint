@@ -22,6 +22,7 @@ interface TestLayer {
 }
 
 interface UltraPaintTestHook {
+  generationRuntimeStore: { progress: { current_image?: string | null } | null };
   getActiveUltraPaintApp(): {
     ready: Promise<void>;
     flattenToDataURL(): string;
@@ -94,6 +95,16 @@ async function routeOptions(page: Page): Promise<PersistedSettingsFixture> {
   await page.route("**/ultra_paint/api/options", (route) =>
     route.fulfill({ json: optionsFixture }),
   );
+  // Optional integrations and the autosave slot start empty.
+  await page.route("**/ultra_paint/api/extensions", (route) => route.fulfill({ json: [] }));
+  await page.route("**/ultra_paint/api/controlnet/model_list", (route) =>
+    route.fulfill({ json: { model_list: [] } }),
+  );
+  await page.route("**/ultra_paint/api/autosave/current", (route) =>
+    route.fulfill({ status: 204, body: "" }),
+  );
+  await page.route("**/ultra_paint/data/tags.csv", (route) => route.fulfill({ body: "" }));
+  await page.route("**/ultra_paint/api/styles", (route) => route.fulfill({ json: [] }));
   await page.route("**/ultra_paint/api/settings", async (route) => {
     if (route.request().method() === "PUT") {
       persisted.value = route.request().postDataJSON() as Record<string, unknown>;
@@ -1468,7 +1479,6 @@ test("locked boundary resize preserves its captured ratio for inputs and corner 
   await expect(lock).toHaveAttribute("aria-pressed", "true");
   await page.getByLabel("Boundary box width").fill("320");
   await expect(page.getByLabel("Boundary box height")).toHaveValue("192");
-  await page.getByRole("button", { name: "Resize", exact: true }).click();
   await page.getByRole("button", { name: "Boundary Box", exact: true }).click();
 
   const canvas = page.locator("#upaint-root canvas");
@@ -1648,13 +1658,13 @@ test("generation panel settings survive a page reload", async ({ page }) => {
   await page.getByLabel("Scheduler").selectOption("Karras");
   await page.getByLabel("Steps").first().fill("42");
   await page.getByLabel("CFG scale").first().fill("9.5");
-  await page.getByRole("combobox", { name: "VAE / Text Encoder" }).click();
+  // Click empty space inside the field; chips carry their own remove buttons.
+  const modules = page.getByRole("combobox", { name: "VAE / Text Encoder" });
+  const modulesBox = (await modules.boundingBox())!;
+  await modules.click({ position: { x: modulesBox.width - 4, y: modulesBox.height / 2 } });
   await page.getByRole("option", { name: /fixture-clip\.safetensors/ }).click();
-  await page.evaluate(() => {
-    const hook = (window as TestWindow).__ultraPaintTest;
-    if (!hook) throw new Error("Ultra Paint test hook is unavailable");
-    hook.layerStore.setBoundaryBox({ x: 64, y: 80, width: 320, height: 192 });
-  });
+  // The boundary box is document state now (restored by autosave), not a
+  // generation setting, so it is not asserted here.
   await expect.poll(() => persisted.value.prompt).toBe("persistent prompt");
 
   await page.reload();
@@ -1671,13 +1681,19 @@ test("generation panel settings survive a page reload", async ({ page }) => {
   await expect(page.getByRole("combobox", { name: "VAE / Text Encoder" })).toContainText(
     "fixture-clip.safetensors",
   );
-  await expect
-    .poll(() =>
-      page.evaluate(() => ({
-        ...(window as TestWindow).__ultraPaintTest?.layerStore.document.boundaryBox,
-      })),
-    )
-    .toEqual({ x: 64, y: 80, width: 320, height: 192 });
+});
+
+test("a missing tag file does not stall prompt typing or settings saves", async ({ page }) => {
+  const persisted = await routeOptions(page);
+  await page.route("**/ultra_paint/data/tags.csv", (route) =>
+    route.fulfill({ status: 404, body: "" }),
+  );
+  await openApp(page);
+  await expect.poll(() => persisted.writes).toBe(1);
+
+  // Two+ characters trigger an autocomplete search, which tries to load tags.
+  await page.getByPlaceholder("Describe what to generate").fill("no tag file here");
+  await expect.poll(() => persisted.value.prompt).toBe("no tag file here");
 });
 
 test("generation settings writes are debounced", async ({ page }) => {
@@ -1859,13 +1875,15 @@ test("resolution modes update targets and control generate request fields", asyn
   const mode = page.getByLabel("Resolution scale mode");
   const generate = page.getByRole("button", { name: "Generate", exact: true });
   await mode.selectOption("auto");
-  await expect(page.getByLabel("Auto target size")).toHaveText(/Width:\s*896\s*Height:\s*1152/);
+  // The adjusted generation size is shown on the canvas boundary overlay.
+  await expect(page.getByText(`→ 896 × 1152`, { exact: true })).toBeVisible();
   await page.evaluate(() => {
     const hook = (window as TestWindow).__ultraPaintTest;
     if (!hook) throw new Error("Ultra Paint test hook is unavailable");
     hook.layerStore.setBoundaryBox({ x: 0, y: 0, width: 400, height: 200 });
   });
-  await expect(page.getByLabel("Auto target size")).toHaveText(/Width:\s*1408\s*Height:\s*768/);
+  // The adjusted generation size is shown on the canvas boundary overlay.
+  await expect(page.getByText(`→ 1408 × 768`, { exact: true })).toBeVisible();
   await generate.click();
   await expect.poll(() => requestBodies.length).toBe(1);
   expect(requestBodies[0]?.gen_params).toMatchObject({
@@ -1950,10 +1968,10 @@ test("generation progress fills the active button and Save lives in the toolbar"
   await page.getByRole("menuitem", { name: "Cancel Current" }).click();
   await expect(page.getByRole("button", { name: "Generate", exact: true })).toBeVisible();
 
-  const toolbar = page.getByRole("toolbar", { name: "Painting tools" });
-  const saveButton = toolbar.getByRole("button", { name: "Save canvas" });
+  const toolbar = page.getByRole("toolbar", { name: "Tool options and file actions" });
+  const saveButton = toolbar.getByRole("button", { name: "Save image to Forge output" });
   await expect(saveButton).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save canvas" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Save image to Forge output" })).toHaveCount(1);
   await saveButton.click();
   await expect.poll(() => savedImage).toMatch(/^data:image\/png;base64,/);
   await expect(
@@ -2004,17 +2022,22 @@ test("live preview ignores a foreign job and blocks painting while generating", 
 
   await page.getByRole("button", { name: "Generate", exact: true }).click();
 
-  const livePreview = page.getByRole("img", { name: "Live generation preview" });
+  // The live preview is drawn on the canvas overlay from this store value.
+  const liveImage = () =>
+    page.evaluate(
+      () =>
+        (window as TestWindow).__ultraPaintTest?.generationRuntimeStore.progress?.current_image ??
+        null,
+    );
   await expect.poll(() => pollCount).toBeGreaterThanOrEqual(1);
-  // The foreign job's image must never reach the live-preview <img>.
-  await expect(livePreview).not.toBeVisible();
+  // The foreign job's image must never reach the live preview.
+  expect(await liveImage()).toBeNull();
 
   const canvas = page.locator("#upaint-root canvas");
   await expect(canvas).toHaveCSS("cursor", "wait");
 
   releaseSecondPoll?.();
-  await expect(livePreview).toBeVisible();
-  await expect(livePreview).toHaveAttribute("src", oursImg);
+  await expect.poll(liveImage).toBe(oursImg);
 
   await paintCenteredStroke(page);
   const afterAttemptedPaint = await page.evaluate(() =>

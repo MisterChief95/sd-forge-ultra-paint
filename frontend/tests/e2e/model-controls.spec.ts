@@ -15,7 +15,9 @@ test("VAE / Text Encoder picker adds and removes selection chips", async ({ page
   const selection = page.getByRole("combobox", { name: "VAE / Text Encoder" });
   await expect(selection).toContainText("fixture-vae.safetensors");
 
-  await selection.click();
+  // Click empty space inside the field; chips carry their own remove buttons.
+  const box = (await selection.boundingBox())!;
+  await selection.click({ position: { x: box.width - 4, y: box.height / 2 } });
   const picker = page.getByRole("listbox", { name: "VAE / Text Encoder options" });
   await expect(picker).toBeVisible();
   await picker.getByRole("option", { name: "fixture-clip.safetensors Add" }).click();

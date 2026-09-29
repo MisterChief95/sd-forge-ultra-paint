@@ -1,5 +1,6 @@
 <script lang="ts">
   import Select from "../lib/Select.svelte";
+  import Icon from "../lib/Icon.svelte";
 
   interface Props {
     models: string[];
@@ -87,7 +88,7 @@
                 removeModule(module);
               }}
             >
-              ×
+              <Icon name="x" size={12} />
             </button>
           </span>
         {/each}

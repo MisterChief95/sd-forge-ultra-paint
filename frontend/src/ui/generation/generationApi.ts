@@ -203,6 +203,7 @@ export async function requestGeneration(
   maskImage: string | null,
   parameters: GenerationParameters,
   controlLayers: ControlLayerPayload[] = [],
+  extensions: Record<string, Record<string, unknown>> = {},
 ): Promise<GenerationResult> {
   const response = await fetch(GENERATE_URL, {
     method: "POST",
@@ -211,6 +212,7 @@ export async function requestGeneration(
       composite_image: compositeImage,
       generation_mode: parameters.generationMode,
       ...(maskImage === null ? {} : { mask_image: maskImage }),
+      extensions,
       control_layers: controlLayers.map((layer) => ({
         image: layer.image,
         model: layer.model,

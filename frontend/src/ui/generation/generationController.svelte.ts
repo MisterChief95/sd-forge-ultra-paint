@@ -57,6 +57,7 @@ const MAX_PROGRESS_POLLS = 3600;
 export interface GenerateInput extends Omit<GenerationParameters, "generationMode" | "seed"> {
   generationMode: Exclude<GenerationMode, "upscale">;
   scaleMode: ScaleMode;
+  extensions: Record<string, Record<string, unknown>>;
 }
 
 export interface UpscaleInput extends Omit<
@@ -71,6 +72,7 @@ type NotificationKind = "info" | "success" | "error";
 interface QueuedGenerationBase {
   compositeImage: string;
   controlLayers: ControlLayerPayload[];
+  extensions: Record<string, Record<string, unknown>>;
   updateRandomSeed: boolean;
 }
 
@@ -156,6 +158,7 @@ export function createGenerationController(
         seed: seedMode === "random" ? -1 : generationSettingsStore.seedValue,
       },
       controlLayers: collectControlLayers(app),
+      extensions: input.extensions,
       updateRandomSeed: seedMode === "random",
     });
 
@@ -195,6 +198,7 @@ export function createGenerationController(
       },
       // Future ControlNet passthrough can collectControlLayers(app) here.
       controlLayers: [],
+      extensions: {},
       updateRandomSeed: seedMode === "random",
     });
 
@@ -228,6 +232,7 @@ export function createGenerationController(
                 job.maskImage,
                 job.parameters,
                 job.controlLayers,
+                job.extensions,
               );
         if (runId === progressRunId) progressRunId += 1;
         if (activeCancelled) continue;

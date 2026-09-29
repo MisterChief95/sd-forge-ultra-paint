@@ -6,6 +6,7 @@
   import { paintToolStore } from "../../state/paintToolStore.svelte";
   import { clampDimension } from "../../util/dimensions";
   import Button from "../lib/Button.svelte";
+  import Icon from "../lib/Icon.svelte";
   import NumberInput from "../lib/NumberInput.svelte";
   import Select from "../lib/Select.svelte";
   import SliderNumberInput from "../lib/SliderNumberInput.svelte";
@@ -153,7 +154,7 @@
           aria-label="Lock boundary-box aspect ratio"
           onclick={toggleAspectLock}
         >
-          {paintToolStore.boundaryAspectRatio !== null ? "🔒" : "🔓"}
+          <Icon name={paintToolStore.boundaryAspectRatio !== null ? "lock" : "unlock"} />
         </Button>
         <Button
           size="icon"
@@ -162,7 +163,7 @@
           disabled={documentLocked}
           onclick={swapDimensions}
         >
-          ⇄
+          <Icon name="swap" />
         </Button>
       </div>
     </div>
