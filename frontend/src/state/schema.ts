@@ -37,7 +37,8 @@ export type BlendMode =
   | "max"
   | "color-burn"
   | "color-dodge"
-  | "hard-light";
+  | "hard-light"
+  | "color";
 
 /** Affine placement of a layer inside its parent's coordinate space. */
 export interface Transform {

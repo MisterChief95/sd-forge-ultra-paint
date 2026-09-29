@@ -53,6 +53,7 @@ export const BLEND_MODE_MAP: Record<BlendMode, BLEND_MODES> = {
   "color-burn": "color-burn",
   "color-dodge": "color-dodge",
   "hard-light": "hard-light",
+  color: "color",
 };
 
 /**
@@ -65,6 +66,7 @@ export const ADVANCED_BLEND_MODES: ReadonlySet<BlendMode> = new Set<BlendMode>([
   "color-burn",
   "color-dodge",
   "hard-light",
+  "color",
 ]);
 
 /** All blend modes, in a sensible order for a dropdown. */
@@ -77,6 +79,7 @@ export const BLEND_MODE_ORDER: readonly BlendMode[] = [
   "color-burn",
   "color-dodge",
   "hard-light",
+  "color",
   "min",
   "max",
   "erase",
