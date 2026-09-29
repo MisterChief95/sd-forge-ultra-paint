@@ -32,7 +32,7 @@
 
   // Borderless glyph buttons overlaid on a prompt box's top-right corner.
   const overlayButtonClass =
-    "cursor-pointer border-0 bg-transparent px-1 font-mono text-[11px] leading-none text-(--upaint-text-muted) outline-none hover:text-(--upaint-accent) focus-visible:text-(--upaint-accent)";
+    "cursor-pointer border-0 bg-transparent p-0 font-mono text-[11px] leading-none text-(--upaint-text-muted) outline-none hover:text-(--upaint-accent) focus-visible:text-(--upaint-accent)";
 
   const SEARCH_DEBOUNCE_MS = 150;
   const BLUR_CLOSE_DELAY_MS = 150;
@@ -299,7 +299,7 @@
       onkeydown={promptField.onKeydown}
       onblur={promptField.onBlur}></textarea>
     <!-- Icon column: sits left of the (8px) scrollbar, which stays at the far right. -->
-    <div class="absolute top-1 right-3 flex flex-col items-center gap-1">
+    <div class="absolute top-1 right-2 flex w-5 flex-col items-center gap-1">
       <button
         type="button"
         class={overlayButtonClass}
