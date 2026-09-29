@@ -126,6 +126,11 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(() =>
     Boolean((window as TestWindow).__ultraPaintTest?.getActiveUltraPaintApp()),
   );
+  // The renderer and scene tree only exist once async init settles; tests
+  // that build surfaces straight away race it under parallel load otherwise.
+  await page.evaluate(
+    () => (window as TestWindow).__ultraPaintTest!.getActiveUltraPaintApp()!.ready,
+  );
 });
 
 test("allocates signed tiles atomically without exposing the backing map", async ({ page }) => {
@@ -1369,8 +1374,9 @@ test("generated tiled rasters stay below their Mask and ControlNet sections", as
     };
     const hook = (window as TestWindow).__ultraPaintTest!;
     const app = hook.getActiveUltraPaintApp() as AppWithTree | null;
+    // The scene tree is created during async init, so wait for it first.
+    await app?.ready;
     if (!app?.tree) throw new Error("Ultra Paint scene tree is unavailable");
-    await app.ready;
 
     const rasterId = await app.addBlankLayer();
     const controlId = app.convertLayerToControl(rasterId);

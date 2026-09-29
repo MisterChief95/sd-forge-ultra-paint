@@ -76,6 +76,7 @@ import type {
 } from "../state/schema";
 import { toHexColor } from "../util/color";
 import { toPixiBlendMode } from "../util/blendModes";
+import { extractStraightCanvas } from "../canvas/extractStraightCanvas";
 import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rendererCapabilities";
 import type { TileAllocation, TileEditDelta } from "../canvas/TiledRasterCanvas";
 import type { PixelBounds, TileCoord } from "../canvas/TileGrid";
@@ -298,7 +299,7 @@ export class UltraPaintApp {
     this.world = new Container({ label: "ultra-paint:world" });
     this.viewportPositioned =
       root.clientWidth > 0 && root.clientHeight > 0 && this.centerDocument();
-    this.pixelGrid = new PixelGrid(this.tree.root, this.store);
+    this.pixelGrid = new PixelGrid(this.tree.root, app.screen);
     this.world.addChild(this.pixelGrid.container);
     this.world.addChild(this.tree.root);
 
@@ -927,7 +928,7 @@ export class UltraPaintApp {
       // frame crops the export to exactly the ingested pixels instead of
       // whatever coarse tile-aligned area the container's auto bounds would use.
       const frame = new Rectangle(bounds?.x ?? 0, bounds?.y ?? 0, width, height);
-      const canvas = app.renderer.extract.canvas({ target: root, resolution, frame });
+      const canvas = extractStraightCanvas(app.renderer, { target: root, resolution, frame });
       return (canvas as HTMLCanvasElement).toDataURL("image/png");
     } catch (error) {
       console.warn("[ultra-paint] thumbnail extraction failed:", error);
