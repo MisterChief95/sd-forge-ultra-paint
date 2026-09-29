@@ -896,22 +896,19 @@ test("fill, mask/control conversion, and clip-to-boundary-box all work on a tile
   expect(setup.controlDims).toEqual({ width: 1500, height: 1100 });
   expect(setup.controlTransform).toEqual(setup.sourceTransform);
 
-  // A per-tile luminance conversion of solid red/green/blue/yellow quadrants
-  // must land as the correct per-channel-weighted gray in each quadrant, at
-  // the right position -- catching a broken or misaligned per-tile loop.
+  // Layer -> mask uses the source alpha, not RGB luminance: every opaque
+  // quadrant (red/green/blue/yellow) must come out as full-coverage white.
   const quadrantPoints: Array<[number, number]> = [
     [300, 200],
     [1200, 200],
     [300, 900],
     [1200, 900],
   ];
-  const maskGray = (r: number, g: number, b: number) =>
-    Math.round(0.299 * r + 0.587 * g + 0.114 * b);
   expect(await samplePixels(page, setup.maskUrl, quadrantPoints)).toEqual([
-    [maskGray(255, 0, 0), maskGray(255, 0, 0), maskGray(255, 0, 0), 255],
-    [maskGray(0, 255, 0), maskGray(0, 255, 0), maskGray(0, 255, 0), 255],
-    [maskGray(0, 0, 255), maskGray(0, 0, 255), maskGray(0, 0, 255), 255],
-    [maskGray(255, 255, 0), maskGray(255, 255, 0), maskGray(255, 255, 0), 255],
+    [255, 255, 255, 255],
+    [255, 255, 255, 255],
+    [255, 255, 255, 255],
+    [255, 255, 255, 255],
   ]);
   // Control conversion is a bit-for-bit copy: the quadrant colors carry over exactly.
   expect(await samplePixels(page, setup.controlUrl, quadrantPoints)).toEqual([
