@@ -6,43 +6,56 @@
   import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
   import { toastStore } from "../state/toastStore.svelte";
-  import brushIcon from "./img/brush-tool-svgrepo-com.svg";
-  import eraserIcon from "./img/eraser-svgrepo-com.svg";
-  import fillIcon from "./img/fill-svgrepo-com.svg";
-  import lassoFreehandIcon from "./img/lasso-svgrepo-com.svg";
-  import lassoPolygonIcon from "./img/lasso-polygon-svgrepo-com.svg";
+  import { uiLayoutStore, type SidePanel } from "../state/uiLayoutStore.svelte";
   import Button from "./lib/Button.svelte";
   import CheckboxField from "./lib/CheckboxField.svelte";
+  import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
+  import Icon, { type IconName } from "./lib/Icon.svelte";
   import Slider from "./lib/Slider.svelte";
+  import SettingsModal from "./SettingsModal.svelte";
 
-  function handleColorInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    paintToolStore.setBrushSettings({ color: input.value });
-  }
-
-  function handleSecondaryColorInput(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    paintToolStore.setSecondaryColor(input.value);
-  }
+  /**
+   * Top bar: panel toggles at each end, the active tool's options, and file
+   * actions. Tool selection itself lives in `ToolRail`. Labels collapse to
+   * icons (keeping accessible names) when the bar is narrow.
+   */
+  const TOOL_NAMES = {
+    brush: "Brush",
+    eraser: "Eraser",
+    lasso: "Lasso",
+    eyedropper: "Eyedropper",
+    transform: "Transform",
+    "boundary-box": "Boundary Box",
+  } as const;
 
   let pressurePopoverOpen = $state(false);
   let projectBusy = $state(false);
+  let settingsOpen = $state(false);
   let projectInput: HTMLInputElement;
-  const fillLayer = $derived.by(() => {
-    const id = layerStore.selectedLayerId;
-    return id ? layerStore.getLayer(id) : undefined;
-  });
-  const fillDisabled = $derived(fillLayer?.kind !== "raster" || fillLayer.locked);
-  const lassoLayer = $derived.by(() => {
-    const id = layerStore.selectedLayerId;
-    return id ? layerStore.getLayer(id) : undefined;
-  });
-  const lassoDisabled = $derived(lassoLayer?.kind !== "mask" || lassoLayer.locked);
+  let projectMenuOpen = $state(false);
+  let projectMenuX = $state(0);
+  let projectMenuY = $state(0);
+  const projectMenuItems: ContextMenuItem[] = $derived([
+    { label: "Save Project", action: () => void saveProject(), disabled: projectBusy },
+    {
+      label: "Open Project…",
+      action: chooseProject,
+      disabled: projectBusy || isDocumentMutationLocked(),
+    },
+  ]);
+  const activeTool = $derived(paintToolStore.activeTool);
   const transformLayer = $derived.by(() => {
     if (layerStore.selectedLayerIds.length !== 1) return undefined;
     return layerStore.getLayer(layerStore.selectedLayerIds[0]!);
   });
   const transformDisabled = $derived(!transformLayer || transformLayer.locked);
+
+  function openProjectMenu(event: MouseEvent): void {
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    projectMenuX = bounds.right - 176; // right-align the min-w-44 menu
+    projectMenuY = bounds.bottom + 4;
+    projectMenuOpen = true;
+  }
 
   function positionPressurePopover(event: MouseEvent): void {
     const button = event.currentTarget;
@@ -114,316 +127,179 @@
 
 <svelte:window onpointerdown={dismissPressurePopover} />
 
+{#snippet panelToggle(panel: SidePanel, icon: IconName, name: string, controls: string)}
+  {@const open = !uiLayoutStore.sidePanel(panel).collapsed}
+  <Button
+    size="icon"
+    variant="ghost"
+    style="color: {open ? 'var(--upaint-accent)' : 'var(--upaint-text-muted)'};"
+    title={open ? `Hide ${name}` : `Show ${name}`}
+    aria-label={open ? `Hide ${name}` : `Show ${name}`}
+    aria-expanded={open}
+    aria-controls={controls}
+    onclick={() => uiLayoutStore.setSidePanelCollapsed(panel, open)}
+  >
+    <Icon name={icon} size={16} />
+  </Button>
+{/snippet}
+
+{#snippet brushSlider(
+  icon: IconName,
+  label: string,
+  value: number,
+  max: number,
+  unit: string,
+  onValueInput: (value: number) => void,
+)}
+  <label class="flex shrink-0 items-center gap-1.5 text-(--upaint-text-muted)" title={label}>
+    <Icon name={icon} />
+    <span class="hidden @4xl:inline">{label}</span>
+    <Slider
+      inputClass="m-0 h-3.5 w-12 cursor-pointer accent-(--upaint-accent) @5xl:w-20"
+      {value}
+      min={unit === "px" ? 1 : 0}
+      {max}
+      step={1}
+      ariaLabel={`Brush ${label.toLowerCase()}`}
+      {onValueInput}
+    />
+    <output class="w-8 text-right tabular-nums text-(--upaint-text)">{value}{unit}</output>
+  </label>
+{/snippet}
+
 <div
-  class="box-border flex h-[52px] w-full select-none items-center gap-2.5 overflow-x-auto overflow-y-hidden whitespace-nowrap border px-2 py-1.5 text-[11px] leading-tight"
+  class="@container box-border flex h-11 w-full select-none items-center gap-1.5 border px-1.5 text-[11px] leading-tight"
   style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-lg); background: var(--upaint-surface); color: var(--upaint-text); font-family: var(--upaint-font);"
   role="toolbar"
-  aria-label="Painting tools"
+  aria-label="Tool options and file actions"
 >
-  <div class="flex shrink-0 gap-1 border-r pr-2" style="border-color: var(--upaint-border);">
-    <Button
-      size="icon"
-      pressed={paintToolStore.activeTool === "brush"}
-      title="Brush"
-      aria-label="Brush"
-      onclick={() => paintToolStore.setActiveTool("brush")}
-    >
-      <img src={brushIcon} alt="" class="h-4 w-4 brightness-0 invert" />
-    </Button>
-    <Button
-      size="icon"
-      pressed={paintToolStore.activeTool === "eraser"}
-      title="Eraser"
-      aria-label="Eraser"
-      onclick={() => paintToolStore.setActiveTool("eraser")}
-    >
-      <img src={eraserIcon} alt="" class="h-4 w-4 brightness-0 invert" />
-    </Button>
-    <Button
-      size="icon"
-      title={isDocumentMutationLocked()
-        ? "Document edits are locked while previewing"
-        : fillDisabled
-          ? "Select an unlocked raster layer to fill"
-          : "Fill the selected layer"}
-      aria-label="Fill the selected layer"
-      disabled={isDocumentMutationLocked() || fillDisabled}
-      onclick={() => getActiveUltraPaintApp()?.fillSelectedLayer()}
-    >
-      <img src={fillIcon} alt="" class="h-4 w-4 brightness-0 invert" />
-    </Button>
-    <Button
-      size="icon"
-      pressed={paintToolStore.activeTool === "lasso"}
-      title={isDocumentMutationLocked()
-        ? "Document edits are locked while previewing"
-        : lassoDisabled
-          ? "Select an unlocked mask layer to use Lasso"
-          : "Lasso mask coverage"}
-      aria-label="Lasso mask coverage"
-      disabled={isDocumentMutationLocked() || lassoDisabled}
-      onclick={() => paintToolStore.setActiveTool("lasso")}
-    >
-      <img
-        src={paintToolStore.lassoMode === "polygonal" ? lassoPolygonIcon : lassoFreehandIcon}
-        alt=""
-        class="h-4 w-4 brightness-0 invert"
-      />
-    </Button>
-    {#if paintToolStore.activeTool === "lasso"}
-      <div class="flex shrink-0" aria-label="Lasso mode">
+  {@render panelToggle("left", "panel-left", "generation settings", "upaint-settings-panel")}
+
+  <span class="h-5 w-px shrink-0 bg-(--upaint-border)" aria-hidden="true"></span>
+  <span class="hidden shrink-0 text-xs font-semibold @2xl:inline">{TOOL_NAMES[activeTool]}</span>
+
+  <div
+    class="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
+    role="group"
+    aria-label={`${TOOL_NAMES[activeTool]} options`}
+  >
+    {#if activeTool === "brush" || activeTool === "eraser"}
+      {@render brushSlider(
+        "size",
+        "Size",
+        Math.round(paintToolStore.brush.radius),
+        256,
+        "px",
+        (value) => paintToolStore.setBrushSettings({ radius: value }),
+      )}
+      {@render brushSlider(
+        "hardness",
+        "Hardness",
+        Math.round(paintToolStore.brush.hardness * 100),
+        100,
+        "%",
+        (value) => paintToolStore.setBrushSettings({ hardness: value / 100 }),
+      )}
+      {@render brushSlider(
+        "alpha",
+        "Opacity",
+        Math.round(paintToolStore.brush.opacity * 100),
+        100,
+        "%",
+        (value) => paintToolStore.setBrushSettings({ opacity: value / 100 }),
+      )}
+      <div class="flex shrink-0">
+        <Button
+          size="icon"
+          radius="left"
+          pressed={paintToolStore.brush.pressureEnabled}
+          title={paintToolStore.brush.pressureEnabled
+            ? "Disable pen pressure"
+            : "Enable pen pressure"}
+          aria-label={paintToolStore.brush.pressureEnabled
+            ? "Disable pen pressure"
+            : "Enable pen pressure"}
+          onclick={() =>
+            paintToolStore.setBrushSettings({
+              pressureEnabled: !paintToolStore.brush.pressureEnabled,
+            })}
+        >
+          <Icon name="pressure" />
+        </Button>
+        <Button
+          size="icon"
+          radius="right"
+          pressed={pressurePopoverOpen}
+          title="Configure pen pressure"
+          aria-label="Configure pen pressure"
+          aria-haspopup="dialog"
+          popovertarget="upaint-pressure-popover"
+          onclick={positionPressurePopover}
+          style="width: 20px; padding: 0; border-left-width: 0;"
+        >
+          <Icon name="chevron-down" size={12} />
+        </Button>
+      </div>
+    {:else if activeTool === "lasso"}
+      <div class="flex shrink-0" role="group" aria-label="Lasso mode">
         <Button
           size="sm"
           radius="left"
+          class="gap-1.5"
           pressed={paintToolStore.lassoMode === "polygonal"}
           title="Click vertices; close near the first point or double-click"
           onclick={() => paintToolStore.setLassoMode("polygonal")}
         >
+          <Icon name="lasso-polygon" />
           Polygon
         </Button>
         <Button
           size="sm"
           radius="right"
+          class="gap-1.5"
           pressed={paintToolStore.lassoMode === "freehand"}
           title="Drag to draw a closed outline"
           style="border-left-width: 0;"
           onclick={() => paintToolStore.setLassoMode("freehand")}
         >
+          <Icon name="lasso" />
           Freehand
         </Button>
       </div>
+    {:else if activeTool === "transform"}
+      <Button
+        size="sm"
+        class="gap-1.5"
+        title="Mirror selected layer horizontally"
+        aria-label="Mirror selected layer horizontally"
+        disabled={isDocumentMutationLocked() || transformDisabled}
+        onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("horizontal")}
+      >
+        <Icon name="mirror-h" />
+        <span class="hidden @3xl:inline">Mirror horizontal</span>
+      </Button>
+      <Button
+        size="sm"
+        class="gap-1.5"
+        title="Mirror selected layer vertically"
+        aria-label="Mirror selected layer vertically"
+        disabled={isDocumentMutationLocked() || transformDisabled}
+        onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("vertical")}
+      >
+        <Icon name="mirror-v" />
+        <span class="hidden @3xl:inline">Mirror vertical</span>
+      </Button>
+    {:else if activeTool === "eyedropper"}
+      <span class="text-(--upaint-text-muted)">Click the canvas to pick the brush color.</span>
+    {:else if activeTool === "boundary-box"}
+      <span class="text-(--upaint-text-muted)">Drag to move the box; drag its edges to resize.</span
+      >
     {/if}
-    <Button
-      size="icon"
-      pressed={paintToolStore.activeTool === "eyedropper"}
-      title="Eyedropper (hold Alt to switch temporarily)"
-      aria-label="Eyedropper (hold Alt to switch temporarily)"
-      onclick={() => paintToolStore.setActiveTool("eyedropper")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M11.25 2.25a2 2 0 0 1 2.83 2.83l-1.3 1.3-2.83-2.83z" stroke-linejoin="round" />
-        <path
-          d="M10.98 5.4 4.2 12.18a1.5 1.5 0 0 1-.66.38l-2.04.6.6-2.04c.07-.25.2-.47.38-.66L9.26 3.68"
-          stroke-linejoin="round"
-        />
-        <path d="M8.4 5.9 10.1 7.6" />
-      </svg>
-    </Button>
-    <span class="mx-0.5 h-5 w-px bg-(--upaint-border)" aria-hidden="true"></span>
-    <Button
-      class="gap-1.5"
-      pressed={paintToolStore.activeTool === "transform"}
-      title="Move, rotate, or scale the selected layer (V)"
-      aria-label="Transform Layer"
-      disabled={isDocumentMutationLocked() || transformDisabled}
-      onclick={() => paintToolStore.setActiveTool("transform")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M2.5 5V2.5H5M11 2.5h2.5V5M13.5 11v2.5H11M5 13.5H2.5V11" />
-        <path d="M4.5 4.5h7v7h-7z" stroke-dasharray="1.5 1" />
-      </svg>
-      Transform
-    </Button>
-    <Button
-      size="icon"
-      title="Mirror selected layer horizontally"
-      aria-label="Mirror selected layer horizontally"
-      disabled={isDocumentMutationLocked() || transformDisabled}
-      onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("horizontal")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M8 1.5v13" stroke-dasharray="1.5 1.5" />
-        <path d="m6.5 4-4 2.5v3l4 2.5zM9.5 4l4 2.5v3l-4 2.5z" />
-      </svg>
-    </Button>
-    <Button
-      size="icon"
-      title="Mirror selected layer vertically"
-      aria-label="Mirror selected layer vertically"
-      disabled={isDocumentMutationLocked() || transformDisabled}
-      onclick={() => getActiveUltraPaintApp()?.mirrorSelectedLayer("vertical")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <path d="M1.5 8h13" stroke-dasharray="1.5 1.5" />
-        <path d="m4 6.5 2.5-4h3l2.5 4zM4 9.5l2.5 4h3l2.5-4z" />
-      </svg>
-    </Button>
-    <Button
-      class="gap-1.5"
-      pressed={paintToolStore.activeTool === "boundary-box"}
-      title="Move or resize the boundary box"
-      aria-label="Boundary Box"
-      onclick={() => paintToolStore.setActiveTool("boundary-box")}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        aria-hidden="true"
-      >
-        <rect x="2.25" y="2.25" width="11.5" height="11.5" />
-        <path d="M5 2.25v11.5M11 2.25v11.5M2.25 5h11.5M2.25 11h11.5" opacity="0.45" />
-      </svg>
-      Boundary Box
-    </Button>
-  </div>
-
-  <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
-  >
-    Size
-    <Slider
-      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
-      value={Math.round(paintToolStore.brush.radius)}
-      min={1}
-      max={256}
-      step={1}
-      ariaLabel="Brush size"
-      onValueInput={(value) => paintToolStore.setBrushSettings({ radius: value })}
-    />
-    <output class="text-right tabular-nums text-(--upaint-text)">
-      {Math.round(paintToolStore.brush.radius)}px
-    </output>
-  </label>
-
-  <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
-  >
-    Hardness
-    <Slider
-      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
-      value={Math.round(paintToolStore.brush.hardness * 100)}
-      min={0}
-      max={100}
-      step={1}
-      ariaLabel="Brush hardness"
-      onValueInput={(value) => paintToolStore.setBrushSettings({ hardness: value / 100 })}
-    />
-    <output class="text-right tabular-nums text-(--upaint-text)">
-      {Math.round(paintToolStore.brush.hardness * 100)}%
-    </output>
-  </label>
-
-  <label
-    class="grid shrink-0 grid-cols-[auto_82px_36px] items-center gap-1 text-(--upaint-text-muted)"
-  >
-    Opacity
-    <Slider
-      inputClass="m-0 h-3.5 w-[82px] cursor-pointer accent-(--upaint-accent)"
-      value={Math.round(paintToolStore.brush.opacity * 100)}
-      min={0}
-      max={100}
-      step={1}
-      ariaLabel="Brush opacity"
-      onValueInput={(value) => paintToolStore.setBrushSettings({ opacity: value / 100 })}
-    />
-    <output class="text-right tabular-nums text-(--upaint-text)">
-      {Math.round(paintToolStore.brush.opacity * 100)}%
-    </output>
-  </label>
-
-  <div class="relative h-7 w-[38px] shrink-0" title="Primary / secondary color (X swaps)">
-    <input
-      class="absolute left-0 top-0 h-6 w-6 cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); z-index: 1;"
-      type="color"
-      value={paintToolStore.brush.color}
-      aria-label="Primary brush color"
-      oninput={handleColorInput}
-    />
-    <input
-      class="absolute bottom-0 right-0 h-6 w-6 cursor-pointer border bg-(--upaint-surface-raised) p-0.5"
-      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm);"
-      type="color"
-      value={paintToolStore.secondaryColor}
-      aria-label="Secondary brush color"
-      oninput={handleSecondaryColorInput}
-    />
-  </div>
-
-  <div class="flex shrink-0">
-    <Button
-      size="icon"
-      radius="left"
-      pressed={paintToolStore.brush.pressureEnabled}
-      title={paintToolStore.brush.pressureEnabled ? "Disable pen pressure" : "Enable pen pressure"}
-      aria-label={paintToolStore.brush.pressureEnabled
-        ? "Disable pen pressure"
-        : "Enable pen pressure"}
-      onclick={() =>
-        paintToolStore.setBrushSettings({
-          pressureEnabled: !paintToolStore.brush.pressureEnabled,
-        })}
-    >
-      <svg
-        class="h-3.5 w-3.5"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.3"
-        aria-hidden="true"
-      >
-        <circle cx="8" cy="8" r="6.5" />
-        <circle cx="8" cy="8" r="3.5" />
-        <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
-      </svg>
-    </Button>
-    <Button
-      size="icon"
-      radius="right"
-      pressed={pressurePopoverOpen}
-      title="Configure pen pressure"
-      aria-label="Configure pen pressure"
-      aria-haspopup="dialog"
-      popovertarget="upaint-pressure-popover"
-      onclick={positionPressurePopover}
-      style="width: 20px; padding: 0; border-left-width: 0;"
-    >
-      <svg
-        class="h-3 w-3"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        aria-hidden="true"
-      >
-        <path d="m4 6 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-    </Button>
   </div>
 
   <Button
-    class="ml-auto gap-1.5"
+    size="sm"
+    class="gap-1.5"
     disabled={generationRuntimeStore.saving}
     title={generationRuntimeStore.saving
       ? "Saving image to Forge output"
@@ -433,50 +309,55 @@
       : "Save image to Forge output"}
     onclick={() => saveGeneration()}
   >
-    <svg
-      class="h-3.5 w-3.5"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      aria-hidden="true"
-    >
-      <path d="M2.5 2.5h8.75l2.25 2.25V13.5h-11z" stroke-linejoin="round" />
-      <path d="M5 2.5v4h5.5v-4M5 13.5V9h6v4.5" stroke-linejoin="round" />
-    </svg>
-    Save Image
+    <Icon name="save" />
+    <span class="hidden @3xl:inline">Save Image</span>
+  </Button>
+  <Button
+    size="sm"
+    class="gap-1.5"
+    disabled={projectBusy}
+    title="Save or open an editable Ultra Paint project"
+    aria-label="Project"
+    aria-haspopup="menu"
+    aria-expanded={projectMenuOpen}
+    onclick={openProjectMenu}
+  >
+    <Icon name="folder" />
+    <span class="hidden @3xl:inline">Project</span>
+    <Icon name="chevron-down" size={12} />
+  </Button>
+  <input
+    bind:this={projectInput}
+    class="sr-only"
+    type="file"
+    accept=".uproj,application/zip"
+    aria-label="Choose an Ultra Paint project"
+    onchange={openProject}
+  />
+
+  <Button
+    size="icon"
+    variant="ghost"
+    title="Settings"
+    aria-label="Settings"
+    aria-haspopup="dialog"
+    onclick={() => (settingsOpen = true)}
+  >
+    <Icon name="settings" size={16} />
   </Button>
 
-  <div
-    class="flex shrink-0 items-center gap-1 border-l pl-2"
-    style="border-color: var(--upaint-border);"
-  >
-    <Button
-      size="sm"
-      disabled={projectBusy}
-      title="Download the complete editable document"
-      onclick={saveProject}
-    >
-      Save Project
-    </Button>
-    <Button
-      size="sm"
-      disabled={projectBusy || isDocumentMutationLocked()}
-      title="Open an Ultra Paint project"
-      onclick={chooseProject}
-    >
-      Open Project
-    </Button>
-    <input
-      bind:this={projectInput}
-      class="sr-only"
-      type="file"
-      accept=".uproj,application/zip"
-      aria-label="Choose an Ultra Paint project"
-      onchange={openProject}
-    />
-  </div>
+  <span class="h-5 w-px shrink-0 bg-(--upaint-border)" aria-hidden="true"></span>
+  {@render panelToggle("right", "panel-right", "layers panel", "upaint-root-panel")}
 </div>
+
+<SettingsModal open={settingsOpen} onClose={() => (settingsOpen = false)} />
+
+<ContextMenu
+  bind:open={projectMenuOpen}
+  x={projectMenuX}
+  y={projectMenuY}
+  items={projectMenuItems}
+/>
 
 <div
   id="upaint-pressure-popover"

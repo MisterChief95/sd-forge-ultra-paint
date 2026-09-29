@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
 
   import { uiLayoutStore } from "../../state/uiLayoutStore.svelte";
+  import Icon from "./Icon.svelte";
 
   type Props = {
     open?: boolean;
@@ -9,6 +10,9 @@
     count?: number | null;
     id?: string;
     persistKey?: string;
+    canEnable?: boolean;
+    enabled?: boolean;
+    onEnabledChange?: (value: boolean) => void;
     children?: Snippet;
     headerLeading?: Snippet;
     headerActions?: Snippet;
@@ -20,6 +24,9 @@
     count = null,
     id = "",
     persistKey,
+    canEnable = false,
+    enabled = $bindable(false),
+    onEnabledChange,
     children,
     headerLeading,
     headerActions,
@@ -36,6 +43,11 @@
     open = !open;
     if (persistKey) uiLayoutStore.setAccordionOpen(persistKey, open);
   }
+
+  function handleEnabledChange(event: Event): void {
+    enabled = (event.currentTarget as HTMLInputElement).checked;
+    onEnabledChange?.(enabled);
+  }
 </script>
 
 <section
@@ -43,7 +55,10 @@
   class="w-full border-b bg-(--upaint-surface)"
   style="border-color: var(--upaint-border);"
 >
-  <div class="flex w-full items-center gap-1 px-2 py-1" data-accordion-header>
+  <div
+    class="flex w-full items-center gap-1 bg-(--upaint-surface-raised) px-2 py-1"
+    data-accordion-header
+  >
     {#if headerLeading}
       <div class="flex shrink-0 items-center">
         {@render headerLeading()}
@@ -56,7 +71,7 @@
       aria-controls={id}
       onclick={toggle}
     >
-      <span aria-hidden="true">{open ? "▼" : "▶"}</span>
+      <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
       <span>{title}</span>
       {#if count !== null}
         <span class="ml-auto font-normal text-[11px] text-(--upaint-text-muted)">
@@ -64,9 +79,24 @@
         </span>
       {/if}
     </button>
-    {#if headerActions}
+    {#if canEnable || headerActions}
       <div class="flex shrink-0 items-center gap-0.5">
-        {@render headerActions()}
+        {#if canEnable}
+          <label
+            class="flex cursor-pointer items-center gap-1 text-[11px] text-(--upaint-text-muted)"
+          >
+            <input
+              type="checkbox"
+              checked={enabled}
+              onchange={handleEnabledChange}
+              class="m-0 h-3.5 w-3.5 accent-(--upaint-accent) focus-visible:ring-2 focus-visible:ring-(--upaint-accent)"
+            />
+            Enabled
+          </label>
+        {/if}
+        {#if headerActions}
+          {@render headerActions()}
+        {/if}
       </div>
     {/if}
   </div>

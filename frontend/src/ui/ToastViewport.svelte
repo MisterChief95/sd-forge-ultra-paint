@@ -1,5 +1,6 @@
 <script lang="ts">
   import { toastStore, type ToastKind } from "../state/toastStore.svelte";
+  import Icon from "./lib/Icon.svelte";
 
   const labels: Record<ToastKind, string> = {
     info: "Information",
@@ -32,7 +33,7 @@
         aria-label={`Dismiss ${labels[toast.kind].toLowerCase()} notification`}
         onclick={() => toastStore.dismiss(toast.id)}
       >
-        ×
+        <Icon name="x" size={12} />
       </button>
     </div>
   {/each}

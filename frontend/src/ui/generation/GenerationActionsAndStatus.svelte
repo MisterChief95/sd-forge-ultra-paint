@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from "../lib/Button.svelte";
+  import Icon from "../lib/Icon.svelte";
 
   interface Props {
     generating: boolean;
@@ -44,7 +45,7 @@
   >
     {#if generating}
       <span
-        class="pointer-events-none absolute inset-y-0 left-0 bg-(--upaint-accent)"
+        class="pointer-events-none absolute inset-y-0 left-0 bg-(--upaint-accent-muted)"
         style:width={`${progressPercent}%`}
         style:transition="width var(--upaint-transition)"
         aria-hidden="true"
@@ -66,16 +67,7 @@
         title="Generation queue actions"
         onclick={() => (menuOpen = !menuOpen)}
       >
-        <svg
-          class="h-3.5 w-3.5"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <path d="m4 6 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <Icon name="chevron-down" />
       </Button>
 
       <div

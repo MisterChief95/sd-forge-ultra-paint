@@ -4,6 +4,7 @@
   import { layerStore } from "../state/layerStore.svelte";
   import { fetchControlModules, preprocessControlImage } from "./generation/controlnetApi";
   import Button from "./lib/Button.svelte";
+  import Icon from "./lib/Icon.svelte";
   import NumberInput from "./lib/NumberInput.svelte";
   import Select from "./lib/Select.svelte";
 
@@ -155,21 +156,28 @@
     {/if}
 
     <div class="flex items-center justify-end gap-1.5">
-      <Button variant="default" size="sm" onclick={() => filterStore.cancel()}>Cancel</Button>
+      <Button variant="default" size="sm" class="gap-1" onclick={() => filterStore.cancel()}>
+        <Icon name="x" size={12} />
+        Cancel
+      </Button>
       <Button
         variant="default"
         size="sm"
+        class="gap-1"
         disabled={filterStore.pending}
         onclick={() => void preview()}
       >
+        <Icon name="eye" size={12} />
         {filterStore.pending ? "Previewing..." : "Preview"}
       </Button>
       <Button
         variant="primary"
         size="sm"
+        class="gap-1"
         disabled={!filterStore.previewDataUrl || accepting}
         onclick={() => void accept()}
       >
+        <Icon name="check" size={12} />
         {accepting ? "Accepting..." : "Accept"}
       </Button>
     </div>

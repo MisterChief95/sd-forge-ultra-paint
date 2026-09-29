@@ -22,6 +22,12 @@
   const clampedX = $derived(Math.max(GAP, Math.min(x, window.innerWidth - measuredWidth - GAP)));
   const clampedY = $derived(Math.max(GAP, Math.min(y, window.innerHeight - measuredHeight - GAP)));
 
+  // Move focus into the menu so keyboard users land on the first action.
+  let menu: HTMLElement | undefined = $state();
+  $effect(() => {
+    menu?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+  });
+
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -45,6 +51,7 @@
     <div
       class="absolute min-w-44 overflow-hidden border bg-(--upaint-surface) p-1 text-xs text-(--upaint-text) shadow-lg"
       style={`left: ${clampedX}px; top: ${clampedY}px; border-color: var(--upaint-border); border-radius: var(--upaint-radius);`}
+      bind:this={menu}
       bind:clientWidth={measuredWidth}
       bind:clientHeight={measuredHeight}
       role="menu"

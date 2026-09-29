@@ -25,6 +25,7 @@
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
   import { isDocumentMutationLocked } from "./state/documentInteractionLock.svelte";
+  import { uiLayoutStore } from "./state/uiLayoutStore.svelte";
   import BoundaryInfoOverlay from "./ui/BoundaryInfoOverlay.svelte";
   import FilterBar from "./ui/FilterBar.svelte";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
@@ -33,6 +34,7 @@
   import PaintToolbar from "./ui/PaintToolbar.svelte";
   import PasteMenu, { type PasteLayerKind } from "./ui/PasteMenu.svelte";
   import ToastViewport from "./ui/ToastViewport.svelte";
+  import ToolRail from "./ui/ToolRail.svelte";
   import ViewportControls from "./ui/ViewportControls.svelte";
 
   let ultraPaintApp: UltraPaintApp | null = null;
@@ -63,16 +65,14 @@
       .catch((error) => console.error("[ultra-paint] could not paste image:", error));
   }
 
-  const MIN_PANEL_WIDTH = 320; // min-w-80
-  const MAX_PANEL_WIDTH = 500; // max-w-125
-  let leftPanelWidth = $state(MIN_PANEL_WIDTH);
-  let rightPanelWidth = $state(MIN_PANEL_WIDTH);
-  let leftDragStartWidth = MIN_PANEL_WIDTH;
-  let rightDragStartWidth = MIN_PANEL_WIDTH;
-
-  function clampPanelWidth(width: number): number {
-    return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width));
-  }
+  // Collapse/width state lives in uiLayoutStore so it persists and so the
+  // toolbar's panel toggles can drive it. Collapsed panels stay mounted
+  // (`hidden`) because GenerationPanel owns prompt/controller state and
+  // registers the generate shortcut.
+  const leftPanel = $derived(uiLayoutStore.sidePanel("left"));
+  const rightPanel = $derived(uiLayoutStore.sidePanel("right"));
+  let leftDragStartWidth = 0;
+  let rightDragStartWidth = 0;
 
   onMount(() => {
     ultraPaintApp = new UltraPaintApp("upaint-root");
@@ -145,48 +145,65 @@
 <div class="flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
   <aside
     id="upaint-settings-panel"
-    class="pr-1 shrink-0 overflow-y-auto"
-    style="width: {leftPanelWidth}px; border-right: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    class="shrink-0 overflow-y-auto"
+    style="width: {leftPanel.width}px; border-right: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    aria-label="Generation settings"
+    hidden={leftPanel.collapsed}
   >
     <GenerationPanel />
   </aside>
 
-  <div
-    role="separator"
-    aria-roledescription="vertical-sep"
-    class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
-    use:onDrag={{ orientation: "vertical" }}
-    onsepDragStart={() => (leftDragStartWidth = leftPanelWidth)}
-    onsepDrag={(e) => (leftPanelWidth = clampPanelWidth(leftDragStartWidth + e.detail))}
-  ></div>
+  {#if !leftPanel.collapsed}
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize generation settings"
+      class="w-1 h-full shrink-0 cursor-col-resize hover:bg-(--upaint-accent)"
+      use:onDrag={{ orientation: "vertical" }}
+      onsepDragStart={() => (leftDragStartWidth = leftPanel.width)}
+      onsepDrag={(e) => uiLayoutStore.setSidePanelWidth("left", leftDragStartWidth + e.detail)}
+    ></div>
+  {/if}
 
-  <div class="flex min-w-0 flex-1 pl-1 pr-1 flex-col">
+  <div class="flex min-w-0 flex-1 flex-col gap-1 p-1">
     <div id="upaint-root-toolbar" class="shrink-0">
       <PaintToolbar />
     </div>
-    <div class="relative min-h-0 flex-1">
-      <div id="upaint-root" class="h-full w-full"></div>
-      <BoundaryInfoOverlay />
-      <ViewportControls />
-      <GenerationPreviewBar />
-      <FilterBar />
-      <PasteMenu open={pasteFile !== null} onChoose={handlePasteChoice} onCancel={closePasteMenu} />
+    <div class="flex min-h-0 flex-1 gap-1">
+      <ToolRail />
+      <div class="relative min-w-0 flex-1">
+        <div id="upaint-root" class="h-full w-full"></div>
+        <BoundaryInfoOverlay />
+        <ViewportControls />
+        <GenerationPreviewBar />
+        <FilterBar />
+        <PasteMenu
+          open={pasteFile !== null}
+          onChoose={handlePasteChoice}
+          onCancel={closePasteMenu}
+        />
+      </div>
     </div>
   </div>
 
-  <div
-    role="separator"
-    aria-roledescription="vertical-sep"
-    class="w-1 h-full shrink-0 cursor-col-resize hover:bg-blue-400"
-    use:onDrag={{ orientation: "vertical" }}
-    onsepDragStart={() => (rightDragStartWidth = rightPanelWidth)}
-    onsepDrag={(e) => (rightPanelWidth = clampPanelWidth(rightDragStartWidth - e.detail))}
-  ></div>
+  {#if !rightPanel.collapsed}
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize layers panel"
+      class="w-1 h-full shrink-0 cursor-col-resize hover:bg-(--upaint-accent)"
+      use:onDrag={{ orientation: "vertical" }}
+      onsepDragStart={() => (rightDragStartWidth = rightPanel.width)}
+      onsepDrag={(e) => uiLayoutStore.setSidePanelWidth("right", rightDragStartWidth - e.detail)}
+    ></div>
+  {/if}
 
   <aside
     id="upaint-root-panel"
-    class="pl-1 shrink-0 overflow-y-auto"
-    style="width: {rightPanelWidth}px; border-left: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    class="shrink-0 overflow-y-auto"
+    style="width: {rightPanel.width}px; border-left: 1px solid var(--upaint-border); background: var(--upaint-surface);"
+    aria-label="Layers"
+    hidden={rightPanel.collapsed}
   >
     <LayerPanel />
   </aside>

@@ -13,6 +13,9 @@ import type { Layer, LayerId, Transform } from "../state/schema";
 import type { LayerNode } from "./LayerNode";
 import type { LayerTree } from "./LayerTree";
 
+// Neutral overlay stroke, matching the UI's --upaint-accent token.
+const OVERLAY_COLOR = 0xd4d4d4;
+
 type DragMode = "move" | "scale-nw" | "scale-ne" | "scale-se" | "scale-sw" | "rotate";
 type ScaleMode = Exclude<DragMode, "move" | "rotate">;
 type MirrorAxis = "horizontal" | "vertical";
@@ -313,7 +316,7 @@ export class TransformOverlay {
         corners.flatMap((point) => [point.x, point.y]),
         true,
       )
-      .stroke({ width: 1 / scale, color: 0x5b8def, alpha: 1 });
+      .stroke({ width: 1 / scale, color: OVERLAY_COLOR, alpha: 1 });
 
     const center = new Point(
       corners.reduce((sum, point) => sum + point.x, 0) / 4,
@@ -331,7 +334,7 @@ export class TransformOverlay {
       .clear()
       .moveTo(top.x, top.y)
       .lineTo(rotatePoint.x, rotatePoint.y)
-      .stroke({ width: 1 / scale, color: 0x5b8def, alpha: 1 });
+      .stroke({ width: 1 / scale, color: OVERLAY_COLOR, alpha: 1 });
 
     const handlePoints = [corners[0]!, corners[1]!, corners[2]!, corners[3]!];
     for (let index = 0; index < this.scaleHandles.length; index += 1) {
@@ -347,7 +350,7 @@ export class TransformOverlay {
     handle.visual.clear();
     if (round) handle.visual.circle(0, 0, size / 2);
     else handle.visual.rect(-size / 2, -size / 2, size, size);
-    handle.visual.fill({ color: 0x5b8def, alpha: 1 });
+    handle.visual.fill({ color: OVERLAY_COLOR, alpha: 1 });
   }
 
   private refreshZoom(): void {

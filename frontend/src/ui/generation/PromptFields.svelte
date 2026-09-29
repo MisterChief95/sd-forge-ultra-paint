@@ -1,6 +1,11 @@
 <script lang="ts">
   import { fromAction } from "svelte/attachments";
 
+  import { appSettingsStore } from "../../state/appSettingsStore.svelte";
+  import { stylesStore } from "../../state/stylesStore.svelte";
+  import Chip from "../lib/Chip.svelte";
+  import StylesMenu from "./StylesMenu.svelte";
+  import StylesModal from "./StylesModal.svelte";
   import TagAutocompleteDropdown from "./TagAutocompleteDropdown.svelte";
   import { adjustPromptWeight, sanitizeInsertedTag, WEIGHT_STEP } from "./promptFormat";
   import {
@@ -14,9 +19,20 @@
   interface Props {
     prompt: string;
     negativePrompt: string;
+    negativeEnabled: boolean;
   }
 
-  let { prompt = $bindable(), negativePrompt = $bindable() }: Props = $props();
+  let {
+    prompt = $bindable(),
+    negativePrompt = $bindable(),
+    negativeEnabled = $bindable(),
+  }: Props = $props();
+
+  let stylesOpen = $state(false);
+
+  // Borderless glyph buttons overlaid on a prompt box's top-right corner.
+  const overlayButtonClass =
+    "cursor-pointer border-0 bg-transparent px-1 font-mono text-[11px] leading-none text-(--upaint-text-muted) outline-none hover:text-(--upaint-accent) focus-visible:text-(--upaint-accent)";
 
   const SEARCH_DEBOUNCE_MS = 150;
   const BLUR_CLOSE_DELAY_MS = 150;
@@ -127,7 +143,7 @@
       wordStart = start;
       wordEnd = end;
 
-      if (word.length < MIN_QUERY_LENGTH) {
+      if (!appSettingsStore.tagAutocomplete || word.length < MIN_QUERY_LENGTH) {
         close();
         return;
       }
@@ -140,14 +156,24 @@
       if (!tagsLoaded()) {
         loading = true;
         open = true;
-        void ensureTagsLoaded().then(() => runSearch(textarea));
+        // Only re-search if tags actually loaded: a missing/failed tag file
+        // leaves them unloaded, and re-entering runSearch would spin forever on
+        // the already-settled load promise, starving every timer on the page.
+        void ensureTagsLoaded().then(() => {
+          if (tagsLoaded()) {
+            runSearch(textarea);
+          } else {
+            loading = false;
+            close();
+          }
+        });
         return;
       }
 
       loading = false;
       results = searchTags(word);
       selectedIndex = results.length > 0 ? 0 : -1;
-      open = true;
+      open = results.length > 0;
     }
 
     function onInput(event: Event): void {
@@ -250,17 +276,51 @@
   const negativePromptField = createFieldState();
 </script>
 
-<label class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
-  Prompt
-  <textarea
-    {@attach fromAction(disableSpellcheck)}
-    bind:value={prompt}
-    class="upaint-prompt-textarea min-h-24 resize-y border bg-(--upaint-surface-raised) p-2 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
+{#if stylesOpen}
+  <StylesModal open onClose={() => (stylesOpen = false)} {prompt} {negativePrompt} />
+{/if}
+
+<div class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
+  <span id="upaint-prompt-label">Prompt</span>
+  <!-- The box owns the border so the icon column and style chips live inside it
+       without text ever flowing under them. -->
+  <div
+    class="relative flex flex-col border bg-(--upaint-surface-raised) focus-within:border-(--upaint-accent)"
     style="border-color: var(--upaint-border); border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition);"
-    placeholder="Describe what to generate"
-    oninput={promptField.onInput}
-    onkeydown={promptField.onKeydown}
-    onblur={promptField.onBlur}></textarea>
+  >
+    <textarea
+      {@attach fromAction(disableSpellcheck)}
+      bind:value={prompt}
+      aria-labelledby="upaint-prompt-label"
+      class="upaint-prompt-textarea min-h-24 resize-y border-0 bg-transparent p-2 text-xs text-(--upaint-text) outline-none"
+      style="padding-right: 1.75rem;"
+      placeholder="Describe what to generate"
+      oninput={promptField.onInput}
+      onkeydown={promptField.onKeydown}
+      onblur={promptField.onBlur}></textarea>
+    <!-- Icon column: sits left of the (8px) scrollbar, which stays at the far right. -->
+    <div class="absolute top-1 right-3 flex flex-col items-center gap-1">
+      <button
+        type="button"
+        class={overlayButtonClass}
+        title={negativeEnabled ? "Turn negative prompt off" : "Turn negative prompt on"}
+        aria-label="Use negative prompt"
+        aria-pressed={negativeEnabled}
+        style:color={negativeEnabled ? "var(--upaint-accent)" : undefined}
+        onclick={() => (negativeEnabled = !negativeEnabled)}>(-)</button
+      >
+      <StylesMenu class={overlayButtonClass} onEdit={() => (stylesOpen = true)} />
+    </div>
+    {#if stylesStore.selected.length > 0}
+      <div class="flex flex-wrap gap-1 px-2 pt-1 pb-2" role="list" aria-label="Applied styles">
+        {#each stylesStore.selected as name (name)}
+          <span role="listitem"
+            ><Chip label={name} onRemove={() => stylesStore.deselect(name)} /></span
+          >
+        {/each}
+      </div>
+    {/if}
+  </div>
   {#if promptField.open}
     <TagAutocompleteDropdown
       items={promptField.results}
@@ -274,30 +334,32 @@
       }}
     />
   {/if}
-</label>
+</div>
 
-<label class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
-  Negative prompt
-  <textarea
-    {@attach fromAction(disableSpellcheck)}
-    bind:value={negativePrompt}
-    class="upaint-prompt-textarea min-h-20 resize-y border bg-(--upaint-surface-raised) p-2 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
-    style="border-color: var(--upaint-border); border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition);"
-    placeholder="What to avoid"
-    oninput={negativePromptField.onInput}
-    onkeydown={negativePromptField.onKeydown}
-    onblur={negativePromptField.onBlur}></textarea>
-  {#if negativePromptField.open}
-    <TagAutocompleteDropdown
-      items={negativePromptField.results}
-      selectedIndex={negativePromptField.selectedIndex}
-      loading={negativePromptField.loading}
-      top={negativePromptField.dropdownTop}
-      left={negativePromptField.dropdownLeft}
-      onSelect={(entry) => {
-        const textarea = document.activeElement as HTMLTextAreaElement;
-        negativePromptField.onSelect(textarea, entry);
-      }}
-    />
-  {/if}
-</label>
+{#if negativeEnabled}
+  <label class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
+    Negative prompt
+    <textarea
+      {@attach fromAction(disableSpellcheck)}
+      bind:value={negativePrompt}
+      class="upaint-prompt-textarea min-h-20 resize-y border bg-(--upaint-surface-raised) p-2 text-xs text-(--upaint-text) outline-none focus:border-(--upaint-accent)"
+      style="border-color: var(--upaint-border); border-radius: var(--upaint-radius); transition: border-color var(--upaint-transition);"
+      placeholder="What to avoid"
+      oninput={negativePromptField.onInput}
+      onkeydown={negativePromptField.onKeydown}
+      onblur={negativePromptField.onBlur}></textarea>
+    {#if negativePromptField.open}
+      <TagAutocompleteDropdown
+        items={negativePromptField.results}
+        selectedIndex={negativePromptField.selectedIndex}
+        loading={negativePromptField.loading}
+        top={negativePromptField.dropdownTop}
+        left={negativePromptField.dropdownLeft}
+        onSelect={(entry) => {
+          const textarea = document.activeElement as HTMLTextAreaElement;
+          negativePromptField.onSelect(textarea, entry);
+        }}
+      />
+    {/if}
+  </label>
+{/if}

@@ -8,14 +8,23 @@
  * don't hardcode hex values.
  */
 :root {
-  --upaint-bg: #16181d;
-  --upaint-surface: #1e2128;
-  --upaint-surface-raised: #262a33;
-  --upaint-border: #2c3038;
-  --upaint-text: #e4e6eb;
-  --upaint-text-muted: #9aa0ab;
-  --upaint-accent: #5b8def;
-  --upaint-accent-muted: #3a5a99;
+  /* Cool slate surfaces, darkest to lightest. */
+  --upaint-bg: #14161a;
+  --upaint-surface: #1d2026;
+  --upaint-surface-raised: #292d35;
+  --upaint-border: #373c46;
+  --upaint-text: #e6e8ec;
+  --upaint-text-muted: #9ba2ae;
+  /* Interactive accent: pressed tools/toggles, focus rings, sliders, checks. */
+  --upaint-accent: #3cc8b4;
+  --upaint-accent-hover: #62d8c6;
+  --upaint-on-accent: #0e1614;
+  /* Selection tint (selected rows, generate progress) under light text. */
+  --upaint-accent-muted: color-mix(in srgb, var(--upaint-accent) 24%, var(--upaint-surface));
+  /* Primary action (Generate, Add): the one warm color in the UI. */
+  --upaint-primary: #f2b43c;
+  --upaint-primary-hover: #f7c768;
+  --upaint-on-primary: #1c1505;
   --upaint-danger: #e05252;
 
   --upaint-radius-sm: 4px;
@@ -42,7 +51,7 @@ body {
 /* Scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--upaint-accent) 45%, transparent) transparent;
+  scrollbar-color: var(--upaint-border) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -59,17 +68,16 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--upaint-accent) 45%, transparent);
+  background: var(--upaint-border);
   border-radius: var(--upaint-radius);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--upaint-accent) 70%, transparent);
+  background: var(--upaint-text-muted);
 }
 
 /* Prompt textarea resize handle */
 .upaint-prompt-textarea {
-  padding-right: 1rem;
   padding-bottom: 1rem;
 }
 

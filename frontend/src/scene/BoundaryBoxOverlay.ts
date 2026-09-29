@@ -10,6 +10,9 @@ import type { PaintToolStore, PaintToolUnsubscribe } from "../state/paintToolSto
 import type { BoundaryBox } from "../state/schema";
 import { previewStore } from "../state/previewStore.svelte";
 
+// Neutral overlay stroke, matching the UI's --upaint-accent token.
+const OVERLAY_COLOR = 0xd4d4d4;
+
 type DragMode = "move" | "nw" | "ne" | "se" | "sw";
 type ResizeMode = Exclude<DragMode, "move">;
 
@@ -253,7 +256,7 @@ export class BoundaryBoxOverlay {
     this.dashedLine(box.x + box.width, box.y, box.x + box.width, box.y + box.height, dash);
     this.dashedLine(box.x + box.width, box.y + box.height, box.x, box.y + box.height, dash);
     this.dashedLine(box.x, box.y + box.height, box.x, box.y, dash);
-    this.border.stroke({ width: 1 / scale, color: 0x5b8def, alpha: 0.95 });
+    this.border.stroke({ width: 1 / scale, color: OVERLAY_COLOR, alpha: 0.95 });
 
     this.bodyHitArea.x = box.x;
     this.bodyHitArea.y = box.y;
@@ -275,7 +278,7 @@ export class BoundaryBoxOverlay {
       handle.visual
         .clear()
         .rect(-visualSize / 2, -visualSize / 2, visualSize, visualSize)
-        .fill({ color: 0x5b8def, alpha: 1 });
+        .fill({ color: OVERLAY_COLOR, alpha: 1 });
     }
   }
 

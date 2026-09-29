@@ -66,7 +66,7 @@ test("Hide Layers remains display-only for Save and Generate exports", async ({ 
   await page.getByRole("button", { name: "Hide layers from canvas" }).click();
   await expect(page.getByRole("button", { name: "Show layers on canvas" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Save canvas" }).click();
+  await page.getByRole("button", { name: "Save image to Forge output" }).click();
   await expect.poll(() => savedImage).not.toBeNull();
   expect(await page.evaluate(hasPaintedPixels, savedImage)).toBe(true);
 
