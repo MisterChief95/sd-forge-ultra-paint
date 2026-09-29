@@ -1096,7 +1096,7 @@
         data-layer-section="layers"
       >
         {#snippet headerActions()}
-          {@render addButton("layer", () => void handleAddBlankLayer())}
+          {@render addButton("blank", () => void handleAddBlankLayer())}
           <Button
             size="icon"
             title={isPreviewing || isFiltering
