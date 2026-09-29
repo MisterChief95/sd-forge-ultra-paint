@@ -105,7 +105,7 @@ export class AutosaveController {
 
   private dirtySince: number | null = null;
 
-  private inFlight = false;
+  private inFlight: Promise<void> | null = null;
 
   private destroyed = false;
 
@@ -163,24 +163,43 @@ export class AutosaveController {
     }, delay);
   }
 
-  private async flush(): Promise<void> {
-    if (this.destroyed) return;
-    if (this.inFlight) return;
+  /** Save the current revision now; resolves true once the server has it. */
+  public async saveNow(): Promise<boolean> {
+    await this.inFlight;
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = null;
+    await this.flush();
+    return !this.destroyed && this.store.projectRevision === this.lastSavedRevision;
+  }
+
+  private flush(): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    if (this.inFlight) return this.inFlight;
     if (!this.canSave()) {
       this.timer = window.setTimeout(() => {
         this.timer = null;
         void this.flush();
       }, ACTIVE_STROKE_RETRY_MS);
-      return;
+      return Promise.resolve();
     }
 
     const revision = this.store.projectRevision;
     if (revision === this.lastSavedRevision) {
       this.dirtySince = null;
-      return;
+      return Promise.resolve();
     }
     this.dirtySince = null;
-    this.inFlight = true;
+    this.inFlight = this.upload(revision).finally(() => {
+      this.inFlight = null;
+      if (!this.destroyed && this.store.projectRevision !== this.lastSavedRevision) {
+        this.dirtySince ??= Date.now();
+        this.schedule();
+      }
+    });
+    return this.inFlight;
+  }
+
+  private async upload(revision: number): Promise<void> {
     try {
       const uploaded = await uploadAutosave(
         this.renderer,
@@ -203,12 +222,6 @@ export class AutosaveController {
         if (this.consecutiveFailures === FAILURES_BEFORE_WARNING) {
           toastStore.error("Autosave is failing. Save your project to keep recent changes.");
         }
-      }
-    } finally {
-      this.inFlight = false;
-      if (!this.destroyed && this.store.projectRevision !== this.lastSavedRevision) {
-        this.dirtySince ??= Date.now();
-        this.schedule();
       }
     }
   }

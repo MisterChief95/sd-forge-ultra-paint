@@ -13,7 +13,19 @@ export function markGraphicsContextLost(): void {
   graphicsContextLost = true;
 }
 
+// Set once another tab takes over the document (see app/popOut.ts); this copy
+// stays frozen, and stops saving, until it reloads.
+let handedOff = $state(false);
+
+export function isHandedOff(): boolean {
+  return handedOff;
+}
+
+export function markHandedOff(): void {
+  handedOff = true;
+}
+
 /** Document pixels and structure stay frozen until an active preview is resolved. */
 export function isDocumentMutationLocked(): boolean {
-  return graphicsContextLost || previewStore.selected !== null || filterStore.active;
+  return graphicsContextLost || handedOff || previewStore.selected !== null || filterStore.active;
 }

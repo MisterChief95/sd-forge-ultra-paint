@@ -2,6 +2,8 @@
   import { onDestroy, onMount } from "svelte";
   import { flip } from "svelte/animate";
 
+  import { registerHandOffSaver } from "../app/popOut";
+  import { isHandedOff } from "../state/documentInteractionLock.svelte";
   import { generationSettingsStore } from "../state/generationSettingsStore.svelte";
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
@@ -192,9 +194,18 @@
       cancelRemaining: () => controller.cancelRemaining(),
       cancelAll: () => void controller.cancelAll(),
     });
+    const unregisterHandOffSaver = registerHandOffSaver(async () => {
+      if (!persistenceReady) return true;
+      if (persistenceTimer !== null) window.clearTimeout(persistenceTimer);
+      persistenceTimer = null;
+      pendingSettings = null;
+      await persistGenerationSettings(settingsSnapshot());
+      return true;
+    });
     return () => {
       reducedMotionQuery.removeEventListener("change", updateReducedMotion);
       unregisterActions();
+      unregisterHandOffSaver();
     };
   });
 
@@ -438,7 +449,8 @@
   }
 
   function flushSettingsOnPageHide(): void {
-    if (!persistenceReady) return;
+    // A handed-off copy's settings are stale; the tab that took over owns them.
+    if (!persistenceReady || isHandedOff()) return;
     if (persistenceTimer !== null) {
       window.clearTimeout(persistenceTimer);
       persistenceTimer = null;
