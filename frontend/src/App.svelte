@@ -102,39 +102,45 @@
     onsepDragEnd?: (e: CustomEvent<string>) => void;
   }
 
+  // Pointer events (not mouse) so pen and touch can resize panels too; pointer
+  // capture keeps the drag alive when the finger leaves the 4px separator.
   export const onDrag: Action<HTMLElement, DragParams, DragAttributes> = (node, params) => {
     let dragStart: number | null = null;
 
     // Type-safe ternary to pick the correct property name
     const attr = params.orientation === "vertical" ? "screenX" : "screenY";
 
-    const mouseDownAction = (e: MouseEvent) => {
+    const pointerDownAction = (e: PointerEvent) => {
       e.preventDefault();
+      node.setPointerCapture(e.pointerId);
       node.dispatchEvent(new CustomEvent("sepDragStart", { detail: "hello" }));
       dragStart = e[attr];
     };
 
-    const mouseMoveAction = (e: MouseEvent) => {
+    const pointerMoveAction = (e: PointerEvent) => {
       if (dragStart !== null) {
         const delta = e[attr] - dragStart;
         node.dispatchEvent(new CustomEvent("sepDrag", { detail: delta }));
       }
     };
 
-    const mouseUpAction = () => {
+    const pointerUpAction = () => {
+      if (dragStart === null) return;
       dragStart = null;
       node.dispatchEvent(new CustomEvent("sepDragEnd", { detail: "hello" }));
     };
 
-    node.addEventListener("mousedown", mouseDownAction);
-    document.addEventListener("mousemove", mouseMoveAction);
-    document.addEventListener("mouseup", mouseUpAction);
+    node.addEventListener("pointerdown", pointerDownAction);
+    node.addEventListener("pointermove", pointerMoveAction);
+    node.addEventListener("pointerup", pointerUpAction);
+    node.addEventListener("pointercancel", pointerUpAction);
 
     return {
       destroy() {
-        node.removeEventListener("mousedown", mouseDownAction);
-        document.removeEventListener("mousemove", mouseMoveAction);
-        document.removeEventListener("mouseup", mouseUpAction);
+        node.removeEventListener("pointerdown", pointerDownAction);
+        node.removeEventListener("pointermove", pointerMoveAction);
+        node.removeEventListener("pointerup", pointerUpAction);
+        node.removeEventListener("pointercancel", pointerUpAction);
       },
     };
   };
@@ -142,10 +148,10 @@
 
 <svelte:window onkeydown={handleKeyDown} />
 
-<div class="flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
+<div class="relative flex h-full w-full overflow-hidden" style="background: var(--upaint-bg);">
   <aside
     id="upaint-settings-panel"
-    class="shrink-0 overflow-y-auto"
+    class="upaint-drawer shrink-0 overflow-y-auto left-0"
     style="width: {leftPanel.width}px; border-right: 1px solid var(--upaint-border); background: var(--upaint-surface);"
     aria-label="Generation settings"
     hidden={leftPanel.collapsed}
@@ -158,7 +164,7 @@
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize generation settings"
-      class="w-1 h-full shrink-0 cursor-col-resize hover:bg-(--upaint-accent)"
+      class="upaint-separator h-full w-1 shrink-0 cursor-col-resize touch-none hover:bg-(--upaint-accent) pointer-coarse:w-3"
       use:onDrag={{ orientation: "vertical" }}
       onsepDragStart={() => (leftDragStartWidth = leftPanel.width)}
       onsepDrag={(e) => uiLayoutStore.setSidePanelWidth("left", leftDragStartWidth + e.detail)}
@@ -191,7 +197,7 @@
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize layers panel"
-      class="w-1 h-full shrink-0 cursor-col-resize hover:bg-(--upaint-accent)"
+      class="upaint-separator h-full w-1 shrink-0 cursor-col-resize touch-none hover:bg-(--upaint-accent) pointer-coarse:w-3"
       use:onDrag={{ orientation: "vertical" }}
       onsepDragStart={() => (rightDragStartWidth = rightPanel.width)}
       onsepDrag={(e) => uiLayoutStore.setSidePanelWidth("right", rightDragStartWidth - e.detail)}
@@ -200,7 +206,7 @@
 
   <aside
     id="upaint-root-panel"
-    class="shrink-0 overflow-y-auto"
+    class="upaint-drawer shrink-0 overflow-y-auto right-0"
     style="width: {rightPanel.width}px; border-left: 1px solid var(--upaint-border); background: var(--upaint-surface);"
     aria-label="Layers"
     hidden={rightPanel.collapsed}
@@ -210,3 +216,28 @@
 </div>
 
 <ToastViewport />
+
+<style>
+  /*
+   * Compact widths (portrait tablets, narrow windows): two docked 320px+ panels
+   * would leave the canvas a sliver, so panels float over the canvas as drawers
+   * below the top bar (p-1 + h-11 toolbar + gap-1 = 3.25rem) instead of
+   * reflowing it. Separators hide because drawer width is capped by the
+   * viewport rather than dragged. 1100px keeps a 1024px portrait iPad Pro
+   * compact and a 1180px landscape iPad docked.
+   */
+  @media (max-width: 1100px) {
+    .upaint-drawer {
+      position: absolute;
+      z-index: 30;
+      top: 3.25rem;
+      bottom: 0;
+      max-width: calc(100% - 3rem);
+      box-shadow: 0 8px 32px rgb(0 0 0 / 50%);
+    }
+
+    .upaint-separator {
+      display: none;
+    }
+  }
+</style>

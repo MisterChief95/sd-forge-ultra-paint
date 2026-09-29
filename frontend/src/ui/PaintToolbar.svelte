@@ -26,6 +26,7 @@
     eyedropper: "Eyedropper",
     transform: "Transform",
     "boundary-box": "Boundary Box",
+    pan: "Pan",
   } as const;
 
   let pressurePopoverOpen = $state(false);
@@ -291,6 +292,10 @@
       </Button>
     {:else if activeTool === "eyedropper"}
       <span class="text-(--upaint-text-muted)">Click the canvas to pick the brush color.</span>
+    {:else if activeTool === "pan"}
+      <span class="text-(--upaint-text-muted)"
+        >Drag to pan. Pinch or use the zoom buttons to zoom.</span
+      >
     {:else if activeTool === "boundary-box"}
       <span class="text-(--upaint-text-muted)">Drag to move the box; drag its edges to resize.</span
       >
