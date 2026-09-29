@@ -590,13 +590,21 @@ export class LayerStore {
     return id;
   }
 
-  /** First hue in MASK_HUES no existing mask uses, so deleting a mask frees its slot. */
+  /**
+   * First unused color: the curated MASK_HUES, then golden-angle hues (each lands far from
+   * the previous ones), so deleting a mask frees its slot and colors never repeat in practice.
+   */
   private nextMaskColor(): string {
     const used = new Set(
       this._document.layers.flatMap((layer) => (layer.kind === "mask" ? [layer.color] : [])),
     );
-    const colors = MASK_HUES.map(maskHueToHex);
-    return colors.find((color) => !used.has(color)) ?? colors[used.size % colors.length]!;
+    for (let i = 0; i < 360; i++) {
+      const hue =
+        i < MASK_HUES.length ? MASK_HUES[i]! : ((i - MASK_HUES.length) * 137.508 + 15) % 360;
+      const color = maskHueToHex(hue);
+      if (!used.has(color)) return color;
+    }
+    return DEFAULT_MASK_COLOR;
   }
 
   /** Create a paintable mask layer backed by sparse tiles. */
