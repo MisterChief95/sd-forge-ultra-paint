@@ -189,6 +189,8 @@ from modules.processing import (
 from modules.shared import opts
 
 from ultra_paint.controlnet_units import apply_controlnet_units
+from ultra_paint.extension_args import apply_extension_args
+from ultra_paint.extension_manifest import list_extension_manifests
 from ultra_paint.mask_ring import (
     debug_reset,
     debug_save,
@@ -412,6 +414,7 @@ def build_img2img_processing(
     gen_params: dict,
     mask_image: Image.Image | None = None,
     control_layers: list[dict] | None = None,
+    extension_values: dict[str, dict] | None = None,
 ) -> StableDiffusionProcessingImg2Img:
     """Assemble the processing object for one Ultra Paint generation.
 
@@ -602,6 +605,7 @@ def build_img2img_processing(
             break
 
     apply_controlnet_units(p, control_layers or [])
+    apply_extension_args(p, list_extension_manifests(), extension_values or {})
     return p
 
 
@@ -609,6 +613,7 @@ def build_txt2img_processing(
     composite_image: Image.Image,
     gen_params: dict,
     control_layers: list[dict] | None = None,
+    extension_values: dict[str, dict] | None = None,
 ) -> StableDiffusionProcessingTxt2Img:
     """Assemble a txt2img processing object sized to the boundary box."""
     if composite_image is None:
@@ -653,6 +658,7 @@ def build_txt2img_processing(
     p.scripts = modules.scripts.scripts_txt2img
     p.script_args = _default_script_args(p.scripts)
     apply_controlnet_units(p, control_layers or [])
+    apply_extension_args(p, list_extension_manifests(), extension_values or {})
     return p
 
 
@@ -665,11 +671,15 @@ def run_generation(
     mask_image: Image.Image | None = None,
     generation_mode: str = "img2img",
     control_layers: list[dict] | None = None,
+    extension_values: dict[str, dict] | None = None,
 ) -> Processed:
     """Run one txt2img or img2img pass over the boundary box. GPU-thread only.
 
     `control_layers` stays a separate top-level argument rather than becoming
-    part of `gen_params`; see the module docstring.
+    part of `gen_params`; see the module docstring. `extension_values` is the
+    same kind of separate top-level argument: per-third-party-extension UI
+    values keyed by manifest id, spliced into the matching alwayson script's
+    args by `apply_extension_args` (see `ultra_paint/extension_args.py`).
     """
     validate_generation_options(gen_params)
 
@@ -720,10 +730,12 @@ def run_generation(
             )
 
     p = (
-        build_txt2img_processing(composite_image, gen_params, control_layers)
+        build_txt2img_processing(
+            composite_image, gen_params, control_layers, extension_values
+        )
         if is_txt2img
         else build_img2img_processing(
-            composite_image, gen_params, mask_image, control_layers
+            composite_image, gen_params, mask_image, control_layers, extension_values
         )
     )
 

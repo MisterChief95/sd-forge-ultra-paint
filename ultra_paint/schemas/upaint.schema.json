@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Ultra Paint extension manifest",
+  "description": "Declares the Gradio `ui()` inputs of one Forge alwayson_scripts extension so Ultra Paint's Generation panel can render and drive them without extension-specific code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "scriptTitle", "canEnable", "inputs"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable key for this extension, e.g. the extension's folder name. Used as the top-level key in the generate request's `extensions` payload."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name shown as the Accordion section title in the Generation panel."
+    },
+    "scriptTitle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must exactly match this extension's `scripts.Script.title()` return value -- used to find the registered `alwayson_scripts` entry and its `args_from`/`args_to` slot range, the same lookup `ultra_paint/controlnet_units.py` uses for `script.title() == \"ControlNet\"`."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional helper text shown under the section title."
+    },
+    "canEnable": {
+      "type": "boolean",
+      "description": "When true, the script's ui() returns an enabled bool as its first (slot 0) argument, driven by a checkbox in the Accordion header instead of an entry in `inputs`. When false, every ui() argument is described by `inputs` and there is no separate enabled slot."
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Ordered to exactly match the script's ui() return tuple, after the optional leading enabled bool (see canEnable). Each entry becomes one script_args slot.",
+      "items": { "$ref": "#/$defs/input" }
+    }
+  },
+  "$defs": {
+    "inputCommon": {
+      "type": "object",
+      "required": ["key", "label", "type", "default"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique key within this manifest's inputs; used as the field name in the generate request's per-extension value object."
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "info": {
+          "type": "string",
+          "description": "Optional helper text, mirrors Gradio's `info=`."
+        }
+      }
+    },
+    "input": {
+      "oneOf": [
+        { "$ref": "#/$defs/numberInput" },
+        { "$ref": "#/$defs/textInput" },
+        { "$ref": "#/$defs/booleanInput" },
+        { "$ref": "#/$defs/selectInput" }
+      ]
+    },
+    "numberInput": {
+      "allOf": [
+        { "$ref": "#/$defs/inputCommon" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "default"],
+          "properties": {
+            "key": true,
+            "label": true,
+            "info": true,
+            "type": { "const": "number" },
+            "default": { "type": "number" },
+            "min": { "type": "number" },
+            "max": { "type": "number" },
+            "step": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      ]
+    },
+    "textInput": {
+      "allOf": [
+        { "$ref": "#/$defs/inputCommon" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "default"],
+          "properties": {
+            "key": true,
+            "label": true,
+            "info": true,
+            "type": { "const": "text" },
+            "default": { "type": "string" },
+            "maxLength": { "type": "integer", "minimum": 1 },
+            "placeholder": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "booleanInput": {
+      "allOf": [
+        { "$ref": "#/$defs/inputCommon" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "default"],
+          "properties": {
+            "key": true,
+            "label": true,
+            "info": true,
+            "type": { "const": "boolean" },
+            "default": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "selectInput": {
+      "allOf": [
+        { "$ref": "#/$defs/inputCommon" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "default", "options"],
+          "properties": {
+            "key": true,
+            "label": true,
+            "info": true,
+            "type": { "const": "select" },
+            "default": { "type": "string" },
+            "options": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "value"],
+                "properties": {
+                  "label": { "type": "string", "minLength": 1 },
+                  "value": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
