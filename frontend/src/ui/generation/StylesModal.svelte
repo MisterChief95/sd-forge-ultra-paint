@@ -13,7 +13,7 @@
     negativePrompt: string;
   }
 
-  let { open, onClose, prompt = $bindable(), negativePrompt = $bindable() }: Props = $props();
+  let { open, onClose, prompt, negativePrompt }: Props = $props();
 
   const PROMPT_PLACEHOLDER = "Prompt (use {prompt} to wrap the current prompt)";
   const EMPTY: PromptStyle = { name: "", prompt: "", negative_prompt: "" };
@@ -22,14 +22,8 @@
   let draft = $state<PromptStyle>({ ...EMPTY });
   const current = $derived(stylesStore.styles.find((style) => style.name === selected));
 
-  // Each open starts from a clean slate.
-  $effect(() => {
-    if (open) {
-      stylesStore.load();
-      selected = "";
-      draft = { ...EMPTY };
-    }
-  });
+  // PromptFields mounts this fresh on each open, so state starts clean.
+  stylesStore.load();
 
   function select(name: string): void {
     selected = name;

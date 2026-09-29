@@ -8,15 +8,20 @@ class StylesStore {
   /** Names of the styles applied (in order) to the prompts at generate time. */
   public selected = $state<string[]>([]);
 
-  private loaded = false;
+  private loading = false;
 
-  /** Styles are optional: without a Forge style database the list stays empty. */
+  /** Styles are optional: without a Forge style database the list stays empty (retried on next call). */
   public load(): void {
-    if (this.loaded) return;
-    this.loaded = true;
+    if (this.loading) return;
+    this.loading = true;
     fetchStyles()
-      .then((styles) => (this.styles = styles))
-      .catch(() => undefined);
+      .then((styles) => {
+        this.styles = styles;
+        // Drop restored selections whose style no longer exists.
+        this.selected = this.selected.filter((name) => styles.some((s) => s.name === name));
+      })
+      .catch(() => undefined)
+      .finally(() => (this.loading = false));
   }
 
   public toggle(name: string): void {

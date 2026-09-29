@@ -276,10 +276,12 @@
   const negativePromptField = createFieldState();
 </script>
 
-<StylesModal open={stylesOpen} onClose={() => (stylesOpen = false)} {prompt} {negativePrompt} />
+{#if stylesOpen}
+  <StylesModal open onClose={() => (stylesOpen = false)} {prompt} {negativePrompt} />
+{/if}
 
-<label class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
-  Prompt
+<div class="relative flex flex-col gap-1 text-(--upaint-text-muted)">
+  <span id="upaint-prompt-label">Prompt</span>
   <!-- The box owns the border so the icon column and style chips live inside it
        without text ever flowing under them. -->
   <div
@@ -289,6 +291,7 @@
     <textarea
       {@attach fromAction(disableSpellcheck)}
       bind:value={prompt}
+      aria-labelledby="upaint-prompt-label"
       class="upaint-prompt-textarea min-h-24 resize-y border-0 bg-transparent p-2 text-xs text-(--upaint-text) outline-none"
       style="padding-right: 1.75rem;"
       placeholder="Describe what to generate"
@@ -301,7 +304,7 @@
         type="button"
         class={overlayButtonClass}
         title={negativeEnabled ? "Turn negative prompt off" : "Turn negative prompt on"}
-        aria-label="Negative prompt"
+        aria-label="Use negative prompt"
         aria-pressed={negativeEnabled}
         style:color={negativeEnabled ? "var(--upaint-accent)" : undefined}
         onclick={() => (negativeEnabled = !negativeEnabled)}>(-)</button
@@ -331,7 +334,7 @@
       }}
     />
   {/if}
-</label>
+</div>
 
 {#if negativeEnabled}
   <label class="relative flex flex-col gap-1 text-(--upaint-text-muted)">

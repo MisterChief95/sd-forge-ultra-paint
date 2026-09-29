@@ -353,7 +353,6 @@
     } catch {
       // Persistence must not prevent the Generation panel from loading.
     }
-    persistenceReady = true;
     await controller.loadOptions();
     try {
       extensionManifests = await fetchExtensionManifests();
@@ -363,7 +362,11 @@
         : defaults;
     } catch (error) {
       console.warn("[ultra-paint] could not load extension manifests:", error);
+      // Keep stored values in the snapshot so a failed fetch can't wipe them.
+      extensionValues = (restoredExtensionValues ?? {}) as Record<string, ExtensionValues>;
     }
+    // Only now is the snapshot complete enough to save.
+    persistenceReady = true;
   }
 
   function settingsSnapshot(): Record<string, unknown> {

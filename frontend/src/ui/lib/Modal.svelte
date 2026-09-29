@@ -59,13 +59,18 @@
       first.focus();
     }
   }
+  let pressedBackdrop = false;
 </script>
 
 {#if open}
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
     role="presentation"
-    onclick={onClose}
+    onmousedown={(event) => (pressedBackdrop = event.target === event.currentTarget)}
+    onclick={(event) => {
+      // Ignore drags that started inside the dialog and ended on the backdrop.
+      if (pressedBackdrop && event.target === event.currentTarget) onClose();
+    }}
   >
     <div
       bind:this={dialogEl}
