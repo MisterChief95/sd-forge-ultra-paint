@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
 
+  import { isHostVisible, onHostVisibilityChange } from "../app/hostVisibility";
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import Button from "./lib/Button.svelte";
@@ -49,12 +50,24 @@
     app.setTileDebugBorders(!app.isTileDebugBordersVisible());
   }
 
+  function stopPolling(): void {
+    if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    animationFrame = null;
+  }
+
+  let unsubscribeHostVisibility: (() => void) | null = null;
+
   onMount(() => {
-    updateCameraState();
+    if (isHostVisible()) updateCameraState();
+    unsubscribeHostVisibility = onHostVisibilityChange((visible) => {
+      stopPolling();
+      if (visible) updateCameraState();
+    });
   });
 
   onDestroy(() => {
-    if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    unsubscribeHostVisibility?.();
+    stopPolling();
   });
 </script>
 

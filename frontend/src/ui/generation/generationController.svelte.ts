@@ -1,3 +1,4 @@
+import { isHostVisible } from "../../app/hostVisibility";
 import { getActiveUltraPaintApp, type UltraPaintApp } from "../../app/UltraPaintApp";
 import { generationRuntimeStore } from "../../state/generationRuntimeStore.svelte";
 import {
@@ -358,6 +359,12 @@ export function createGenerationController(
   /** Polls until the request settles (which bumps `progressRunId`), however long it runs. */
   async function pollProgress(runId: number): Promise<void> {
     while (!destroyed && runId === progressRunId) {
+      // Each poll costs a server-side preview decode; nobody sees it while
+      // Forge shows another tab. The request itself settles independently.
+      if (!isHostVisible()) {
+        await wait(POLL_INTERVAL_MS);
+        continue;
+      }
       try {
         const next = await fetchGenerationProgress();
         // `/progress` reports Forge's *global* `shared.state`, shared with every
