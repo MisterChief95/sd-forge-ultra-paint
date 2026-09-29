@@ -1456,8 +1456,8 @@ export class UltraPaintApp {
 
   /**
    * Copy an existing raster or control layer's pixels into a new mask layer via an
-   * alpha (luminance-as-coverage) conversion, same as {@link addMaskLayerFromFile}.
-   * The source layer is left untouched.
+   * alpha conversion (the layer's alpha channel becomes the mask coverage;
+   * unlike {@link addMaskLayerFromFile}, RGB is ignored). The source layer is left untouched.
    */
   public convertLayerToMask(id: LayerId): LayerId {
     if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
@@ -1476,7 +1476,7 @@ export class UltraPaintApp {
     // origins as the source, so the layer's transform needs no compensation.
     const converted = copyTiledSurfaceTileByTile(app.renderer, tiledSource, (tile) => {
       const { pixels, width, height } = app.renderer.extract.pixels({ target: tile.target });
-      return Texture.from(luminanceCoverageCanvas(pixels, width, height), true);
+      return Texture.from(luminanceCoverageCanvas(pixels, width, height, true), true);
     });
     let adopted = false;
     try {
@@ -2644,11 +2644,15 @@ function boundsEqual(left: PixelBounds, right: PixelBounds): boolean {
   );
 }
 
-/** White RGB, alpha = luminance*alpha -- turns an opaque image into mask coverage. */
+/**
+ * White RGB, alpha = luminance*alpha -- turns an opaque image into mask coverage.
+ * With `alphaOnly`, coverage is just the source alpha (layer -> mask copies).
+ */
 function luminanceCoverageCanvas(
   pixels: Uint8ClampedArray | Uint8Array,
   width: number,
   height: number,
+  alphaOnly = false,
 ): HTMLCanvasElement {
   const coverage = new Uint8ClampedArray(pixels.length);
   for (let i = 0; i < pixels.length; i += 4) {
@@ -2660,7 +2664,7 @@ function luminanceCoverageCanvas(
     coverage[i] = 255;
     coverage[i + 1] = 255;
     coverage[i + 2] = 255;
-    coverage[i + 3] = Math.round((luminance * a) / 255);
+    coverage[i + 3] = alphaOnly ? a : Math.round((luminance * a) / 255);
   }
 
   const canvas = document.createElement("canvas");
