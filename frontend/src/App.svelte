@@ -24,8 +24,12 @@
 
   import { UltraPaintApp } from "./app/UltraPaintApp";
   import { handleInputKeyDown } from "./input/actionMap";
-  import { isDocumentMutationLocked } from "./state/documentInteractionLock.svelte";
+  import {
+    isDocumentMutationLocked,
+    isGraphicsContextLost,
+  } from "./state/documentInteractionLock.svelte";
   import { uiLayoutStore } from "./state/uiLayoutStore.svelte";
+  import { toastStore } from "./state/toastStore.svelte";
   import BoundaryInfoOverlay from "./ui/BoundaryInfoOverlay.svelte";
   import FilterBar from "./ui/FilterBar.svelte";
   import GenerationPanel from "./ui/GenerationPanel.svelte";
@@ -36,6 +40,7 @@
   import ToastViewport from "./ui/ToastViewport.svelte";
   import ToolRail from "./ui/ToolRail.svelte";
   import ViewportControls from "./ui/ViewportControls.svelte";
+  import Button from "./ui/lib/Button.svelte";
 
   let ultraPaintApp: UltraPaintApp | null = null;
   let pasteFile: File | null = $state(null);
@@ -62,7 +67,10 @@
           : app.addImageFromFile(file);
     void add
       .then((id) => app.getStore().setSelectedLayerId(id))
-      .catch((error) => console.error("[ultra-paint] could not paste image:", error));
+      .catch((error) => {
+        console.error("[ultra-paint] could not paste image:", error);
+        toastStore.error("Could not paste the image.");
+      });
   }
 
   // Collapse/width state lives in uiLayoutStore so it persists and so the
@@ -216,6 +224,29 @@
 </div>
 
 <ToastViewport />
+
+{#if isGraphicsContextLost()}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style="background: rgb(0 0 0 / 60%);"
+  >
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="upaint-context-lost-title"
+      aria-describedby="upaint-context-lost-body"
+      class="flex max-w-sm flex-col gap-3 rounded-(--upaint-radius) border p-4"
+      style="border-color: var(--upaint-border); background: var(--upaint-surface); color: var(--upaint-text);"
+    >
+      <h2 id="upaint-context-lost-title" class="text-base font-semibold">Canvas lost</h2>
+      <p id="upaint-context-lost-body" class="text-sm">
+        The browser reset the graphics context, so the canvas can no longer be edited. Reload to
+        restore your last autosave.
+      </p>
+      <Button variant="primary" autofocus onclick={() => window.location.reload()}>Reload</Button>
+    </div>
+  </div>
+{/if}
 
 <style>
   /*

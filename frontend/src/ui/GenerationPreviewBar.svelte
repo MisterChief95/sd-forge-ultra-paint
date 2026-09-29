@@ -21,6 +21,7 @@
       previewStore.discardAll();
     } catch (error) {
       console.error("[ultra-paint] could not apply generation preview:", error);
+      toastStore.error("Could not apply the generated image.");
     } finally {
       applying = false;
     }

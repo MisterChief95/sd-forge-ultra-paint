@@ -2,6 +2,7 @@ import type { UltraPaintApp } from "../app/UltraPaintApp";
 import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
 import type { PaintTool } from "../state/paintToolStore.svelte";
 import type { Layer } from "../state/schema";
+import { toastStore } from "../state/toastStore.svelte";
 
 export type InputActionMapId = "global" | "canvas" | PaintTool;
 
@@ -150,7 +151,10 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
       void app
         .addBlankMaskLayer()
         .then((id) => app.getStore().setSelectedLayerId(id))
-        .catch((error) => console.error("[ultra-paint] could not add a mask layer:", error));
+        .catch((error) => {
+          console.error("[ultra-paint] could not add a mask layer:", error);
+          toastStore.error("Could not add a mask layer.");
+        });
       return true;
     },
     mutatesDocument: true,
@@ -170,6 +174,7 @@ export const INPUT_ACTIONS: readonly InputAction[] = [
         return true;
       } catch (error) {
         console.error("[ultra-paint] merge shortcut failed", error);
+        toastStore.error("Could not merge the selected layers.");
         return false;
       }
     },
@@ -334,6 +339,7 @@ export function handleInputKeyDown(event: KeyboardEvent, app: UltraPaintApp | nu
       if (!action.run(app)) continue;
     } catch (error) {
       console.error(`[ultra-paint] input action "${action.id}" failed`, error);
+      toastStore.error("That shortcut failed.");
       continue;
     }
     event.preventDefault();
