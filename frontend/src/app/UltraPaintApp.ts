@@ -102,6 +102,7 @@ import {
 } from "../state/projectArchive";
 import { fetchControlModels } from "../ui/generation/controlnetApi";
 import { AutosaveController, fetchAutosavedDocument } from "./autosave";
+import { isHostVisible, onHostVisibilityChange } from "./hostVisibility";
 import { registerHandOffSaver } from "./popOut";
 
 const HISTORY_LIMIT = 40;
@@ -231,6 +232,7 @@ export class UltraPaintApp {
   private viewportCanvas: HTMLCanvasElement | null = null;
 
   private viewportResizeObserver: ResizeObserver | null = null;
+  private unsubscribeHostVisibility: (() => void) | null = null;
 
   private viewportPositioned = false;
 
@@ -354,6 +356,9 @@ export class UltraPaintApp {
       void app.renderer.gpu.device.lost.then(this.handleGraphicsContextLost);
     }
 
+    this.unsubscribeHostVisibility = onHostVisibilityChange(this.handleHostVisibility);
+    this.handleHostVisibility(isHostVisible());
+
     app.canvas.style.display = "block";
     root.replaceChildren(app.canvas);
 
@@ -457,6 +462,12 @@ export class UltraPaintApp {
    * back. Freeze editing and stop autosave so blank readbacks never replace
    * the last good checkpoint; App.svelte offers a reload to restore it.
    */
+  /** Idle the ticker while Forge shows another tab. */
+  private readonly handleHostVisibility = (visible: boolean): void => {
+    if (visible) this.app?.start();
+    else this.app?.stop();
+  };
+
   private readonly handleGraphicsContextLost = (): void => {
     if (this.destroyed || isGraphicsContextLost()) return;
     console.error("[ultra-paint] graphics context lost; editing is disabled until reload");
@@ -2838,6 +2849,8 @@ export class UltraPaintApp {
 
     this.world = null;
 
+    this.unsubscribeHostVisibility?.();
+    this.unsubscribeHostVisibility = null;
     this.app?.canvas.removeEventListener("webglcontextlost", this.handleGraphicsContextLost);
     this.app?.destroy({ removeView: true, releaseGlobalResources: true }, { children: true });
     this.app = null;

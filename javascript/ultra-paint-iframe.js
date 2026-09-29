@@ -44,7 +44,11 @@ Promise.resolve().then(async () => {
 
   onUiTabChange(() => {
     const current = get_uiCurrentTabContent()
-    if (!current || !current.id || !current.id.includes('ultra_paint')) return
+    const visible = !!current?.id?.includes('ultra_paint')
+    // A hidden same-origin iframe still gets rAF, so tell the app to stop
+    // rendering while another Forge tab is showing.
+    iframe.contentWindow?.postMessage({ type: 'ultra-paint:visible', visible }, window.location.origin)
+    if (!visible) return
     try {
       if (topOffset === null) {
         topOffset = wrap.getBoundingClientRect().top
