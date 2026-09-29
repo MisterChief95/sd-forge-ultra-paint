@@ -10,6 +10,7 @@ import { MaskHatchFilter } from "../scene/MaskHatchFilter";
 import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
 import { filterStore } from "../state/filterStore.svelte";
 import type { LayerStore, Unsubscribe } from "../state/layerStore.svelte";
+import { toastStore } from "../state/toastStore.svelte";
 import type {
   LassoMode,
   PaintToolStore,
@@ -295,6 +296,7 @@ export class LassoController {
       this.commit(active, points);
     } catch (error) {
       console.error("[ultra-paint] lasso commit failed", error);
+      toastStore.error("Could not apply the lasso selection.");
     }
   }
 

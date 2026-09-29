@@ -46,7 +46,12 @@ import { FilterPreviewOverlay } from "../scene/FilterPreviewOverlay";
 import { GenerationPreviewOverlay } from "../scene/GenerationPreviewOverlay";
 import { MagnifierOverlay } from "../scene/MagnifierOverlay";
 import { TransformOverlay } from "../scene/TransformOverlay";
-import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
+import {
+  isDocumentMutationLocked,
+  isGraphicsContextLost,
+  markGraphicsContextLost,
+} from "../state/documentInteractionLock.svelte";
+import { toastStore } from "../state/toastStore.svelte";
 import { PixelGrid } from "../scene/PixelGrid";
 import { BrushEngine } from "../paint/BrushEngine";
 import { EraserEngine } from "../paint/EraserEngine";
@@ -314,6 +319,10 @@ export class UltraPaintApp {
     }
 
     this.app = app;
+    app.canvas.addEventListener("webglcontextlost", this.handleGraphicsContextLost);
+    if ("gpu" in app.renderer) {
+      void app.renderer.gpu.device.lost.then(this.handleGraphicsContextLost);
+    }
 
     app.canvas.style.display = "block";
     root.replaceChildren(app.canvas);
@@ -389,7 +398,11 @@ export class UltraPaintApp {
       this.toolStore,
       this.beginStroke,
     );
-    this.autosave = new AutosaveController(app.renderer, this.store, () => !this.strokeInProgress);
+    this.autosave = new AutosaveController(
+      app.renderer,
+      this.store,
+      () => !this.strokeInProgress && !isGraphicsContextLost() && !isRendererContextLost(app),
+    );
 
     const tileCapabilities = getTileRendererCapabilities(app.renderer);
 
@@ -400,6 +413,20 @@ export class UltraPaintApp {
         `planned tile ${tileCapabilities.selectedTileSize ?? "unsupported"})`,
     );
   }
+
+  /**
+   * Every layer tile lives in a GPU texture, so a lost context (commonly a
+   * backgrounded mobile tab) blanks the document even if the context comes
+   * back. Freeze editing and stop autosave so blank readbacks never replace
+   * the last good checkpoint; App.svelte offers a reload to restore it.
+   */
+  private readonly handleGraphicsContextLost = (): void => {
+    if (this.destroyed || isGraphicsContextLost()) return;
+    console.error("[ultra-paint] graphics context lost; editing is disabled until reload");
+    markGraphicsContextLost();
+    this.autosave?.destroy();
+    this.autosave = null;
+  };
 
   private async restoreAutosave(renderer: Renderer): Promise<void> {
     try {
@@ -918,7 +945,10 @@ export class UltraPaintApp {
     }
     void this.addImageFromFile(file)
       .then((id) => this.store.setSelectedLayerId(id))
-      .catch((error) => console.error("[ultra-paint] could not paste image:", error));
+      .catch((error) => {
+        console.error("[ultra-paint] could not paste image:", error);
+        toastStore.error("Could not paste the image.");
+      });
   };
 
   private beginBrushAdjustment(event: PointerEvent): boolean {
@@ -1003,6 +1033,7 @@ export class UltraPaintApp {
       this.history?.undo();
     } catch (error) {
       console.error("[ultra-paint] undo failed", error);
+      toastStore.error("Undo failed.");
     }
   }
 
@@ -1013,6 +1044,7 @@ export class UltraPaintApp {
       this.history?.redo();
     } catch (error) {
       console.error("[ultra-paint] redo failed", error);
+      toastStore.error("Redo failed.");
     }
   }
 
@@ -1533,7 +1565,7 @@ export class UltraPaintApp {
     file: File | Blob,
     source: ImageRef["source"] = "upload",
   ): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
     const texture = await decodeToTexture(file);
     const name = file instanceof File ? file.name : undefined;
@@ -1549,7 +1581,7 @@ export class UltraPaintApp {
    * top-level control (ControlNet) layer. Resolves with the new layer's id.
    */
   public async addControlLayerFromFile(file: File | Blob): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
     const texture = await decodeToTexture(file);
     const name = file instanceof File ? file.name : undefined;
@@ -1562,7 +1594,7 @@ export class UltraPaintApp {
    * mask layer. Resolves with the new layer's id.
    */
   public async addMaskLayerFromFile(file: File | Blob): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
     const app = this.app;
     if (!app) {
@@ -1592,7 +1624,7 @@ export class UltraPaintApp {
    * current document dimensions, for hand-drawing a control scribble.
    */
   public async addBlankControlLayer(name?: string): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
 
     const doc = this.store.getDocument();
@@ -1613,7 +1645,7 @@ export class UltraPaintApp {
 
   /** Create a transparent boundary-box-sized mask with no resident tiles. */
   public async addBlankMaskLayer(name?: string): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
     const box = this.store.getDocument().boundaryBox;
     return this.store.addMaskLayerTiled(this.createBlankTiledSurface(box.width, box.height), name);
@@ -1625,7 +1657,7 @@ export class UltraPaintApp {
    * unlike {@link addMaskLayerFromFile}, RGB is ignored). The source layer is left untouched.
    */
   public convertLayerToMask(id: LayerId): LayerId {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     const app = this.app;
     const layer = this.store.getLayer(id);
     if (!app || !layer || (layer.kind !== "raster" && layer.kind !== "control")) {
@@ -1662,7 +1694,7 @@ export class UltraPaintApp {
    * applied later by the ControlNet panel. The source layer is left untouched.
    */
   public convertLayerToControl(id: LayerId): LayerId {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     const app = this.app;
     const layer = this.store.getLayer(id);
     if (!app || !layer || layer.kind !== "raster") {
@@ -1693,7 +1725,7 @@ export class UltraPaintApp {
 
   /** Create an independent copy of any layer type. Group copies are empty because groups are not yet nestable in the UI. */
   public duplicateLayer(id: LayerId): LayerId {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     const layer = this.store.getLayer(id);
     if (!layer) throw new Error("[ultra-paint] layer no longer exists");
 
@@ -1979,7 +2011,7 @@ export class UltraPaintApp {
    * dimensions. Resolves with the new layer's id.
    */
   public async addBlankLayer(name?: string): Promise<LayerId> {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     await this.ready;
 
     const doc = this.store.getDocument();
@@ -2002,7 +2034,7 @@ export class UltraPaintApp {
 
   /** Rasterize selected top-level regular layers into a new document-space layer. */
   public mergeLayersToNewLayer(ids: readonly LayerId[]): LayerId {
-    if (isDocumentMutationLocked()) throw new Error("Document is locked while previewing");
+    if (isDocumentMutationLocked()) throw new Error("Document is locked");
     const doc = this.store.getDocument();
     const selected = [...new Set(ids)].filter((id) => {
       const layer = this.store.getLayer(id);
@@ -2663,6 +2695,7 @@ export class UltraPaintApp {
 
     this.world = null;
 
+    this.app?.canvas.removeEventListener("webglcontextlost", this.handleGraphicsContextLost);
     this.app?.destroy({ removeView: true, releaseGlobalResources: true }, { children: true });
     this.app = null;
   }
@@ -2733,6 +2766,11 @@ export class UltraPaintApp {
       sourceTexture.destroy(true);
     }
   }
+}
+
+/** Synchronous check that catches a loss before its DOM event is dispatched. */
+function isRendererContextLost(app: Application): boolean {
+  return "gl" in app.renderer && app.renderer.gl.isContextLost();
 }
 
 /**

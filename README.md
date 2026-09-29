@@ -43,6 +43,8 @@ implemented and build-verified.
   ControlNet layer settings.
 - **Crash/reload autosave**: quietly checkpoints that same editable document to a
   single backend slot and restores it before the canvas scene and undo history start.
+  It saves immediately when the tab is hidden, warns after repeated upload failures, and stops
+  (freezing the canvas behind a reload prompt) if the browser loses the GPU context.
 - **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
   with zoom-tiered spacing.
 - **Layer transforms**: move, center-rotate, corner-scale (free or Shift-constrained),

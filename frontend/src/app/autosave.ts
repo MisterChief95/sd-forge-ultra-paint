@@ -7,11 +7,17 @@ import {
   validateProjectManifest,
   type DecodedPortableProject,
 } from "../state/projectCodec";
+import { toastStore } from "../state/toastStore.svelte";
 
 const AUTOSAVE_URL = "/ultra_paint/api/autosave";
 const QUIET_INTERVAL_MS = 25_000;
 const MAX_INTERVAL_MS = 120_000;
 const ACTIVE_STROKE_RETRY_MS = 500;
+// Browsers allow ~6 concurrent HTTP/1.1 requests per origin.
+const RESTORE_FETCH_CONCURRENCY = 6;
+// One failure is often a transient blip that the next attempt clears; a
+// streak means the user's work is genuinely not being saved.
+const FAILURES_BEFORE_WARNING = 2;
 
 interface CurrentAutosave {
   checkpointId: string;
@@ -37,11 +43,20 @@ export async function fetchAutosavedDocument(
   }
   const manifest = validateProjectManifest(await manifestResponse.json());
   const assets = new Map<string, Uint8Array>();
-  for (const asset of manifest.pixelAssets) {
-    const response = await fetch(`${checkpointUrl}/${asset.path}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`autosave pixel request failed (${response.status})`);
-    assets.set(asset.path, new Uint8Array(await response.arrayBuffer()));
-  }
+  const pending = [...manifest.pixelAssets];
+  const worker = async (): Promise<void> => {
+    for (let asset = pending.shift(); asset; asset = pending.shift()) {
+      try {
+        const response = await fetch(`${checkpointUrl}/${asset.path}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`autosave pixel request failed (${response.status})`);
+        assets.set(asset.path, new Uint8Array(await response.arrayBuffer()));
+      } catch (error) {
+        pending.length = 0; // stop the other workers; the restore already failed
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: RESTORE_FETCH_CONCURRENCY }, worker));
   return await decodePortableDocument(
     renderer,
     manifest,
@@ -94,6 +109,8 @@ export class AutosaveController {
 
   private destroyed = false;
 
+  private consecutiveFailures = 0;
+
   public constructor(
     private readonly renderer: Renderer,
     private readonly store: LayerStore,
@@ -101,12 +118,16 @@ export class AutosaveController {
   ) {
     this.lastSavedRevision = store.projectRevision;
     this.unsubscribe = store.subscribeProjectRevisions(this.handleMutation);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    window.addEventListener("pagehide", this.flushNow);
   }
 
   public destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
     this.unsubscribe();
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    window.removeEventListener("pagehide", this.flushNow);
     this.abortController.abort();
     if (this.timer !== null) window.clearTimeout(this.timer);
     this.timer = null;
@@ -116,6 +137,19 @@ export class AutosaveController {
     if (this.destroyed || this.store.projectRevision === this.lastSavedRevision) return;
     this.dirtySince ??= Date.now();
     this.schedule();
+  };
+
+  // A hidden tab may be discarded (or lose its GPU context) without further
+  // notice, so save immediately instead of waiting out the quiet interval.
+  private readonly handleVisibilityChange = (): void => {
+    if (document.visibilityState === "hidden") this.flushNow();
+  };
+
+  private readonly flushNow = (): void => {
+    if (this.destroyed || this.dirtySince === null) return;
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = null;
+    void this.flush();
   };
 
   private schedule(): void {
@@ -155,9 +189,21 @@ export class AutosaveController {
         this.canSave,
         this.abortController.signal,
       );
-      if (uploaded) this.lastSavedRevision = revision;
+      if (uploaded) {
+        this.lastSavedRevision = revision;
+        if (this.consecutiveFailures >= FAILURES_BEFORE_WARNING) {
+          toastStore.success("Autosave recovered.");
+        }
+        this.consecutiveFailures = 0;
+      }
     } catch (error) {
-      if (!this.destroyed) console.warn("[ultra-paint] autosave failed:", error);
+      if (!this.destroyed) {
+        console.warn("[ultra-paint] autosave failed:", error);
+        this.consecutiveFailures += 1;
+        if (this.consecutiveFailures === FAILURES_BEFORE_WARNING) {
+          toastStore.error("Autosave is failing. Save your project to keep recent changes.");
+        }
+      }
     } finally {
       this.inFlight = false;
       if (!this.destroyed && this.store.projectRevision !== this.lastSavedRevision) {

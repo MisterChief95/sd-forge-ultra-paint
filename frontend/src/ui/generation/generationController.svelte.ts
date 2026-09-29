@@ -50,9 +50,6 @@ function collectControlLayers(app: UltraPaintApp): ControlLayerPayload[] {
 // GenerationSettingsStore field + UI slider if users want to trade decode
 // overhead for catching more frames.
 const POLL_INTERVAL_MS = 250;
-// Poll *count*, not a duration -- scaled to preserve the original ~15min
-// cutoff (was 1200 * 750ms) now that POLL_INTERVAL_MS is smaller.
-const MAX_PROGRESS_POLLS = 3600;
 
 export interface GenerateInput extends Omit<GenerationParameters, "generationMode" | "seed"> {
   generationMode: Exclude<GenerationMode, "upscale">;
@@ -358,9 +355,9 @@ export function createGenerationController(
     generationRuntimeStore.resetBatch();
   }
 
+  /** Polls until the request settles (which bumps `progressRunId`), however long it runs. */
   async function pollProgress(runId: number): Promise<void> {
-    for (let poll = 0; poll < MAX_PROGRESS_POLLS; poll += 1) {
-      if (destroyed || runId !== progressRunId) return;
+    while (!destroyed && runId === progressRunId) {
       try {
         const next = await fetchGenerationProgress();
         // `/progress` reports Forge's *global* `shared.state`, shared with every
@@ -379,10 +376,6 @@ export function createGenerationController(
         }
       }
       await wait(POLL_INTERVAL_MS);
-    }
-
-    if (!destroyed && runId === progressRunId) {
-      console.warn("[ultra-paint] progress polling reached its safety cutoff");
     }
   }
 

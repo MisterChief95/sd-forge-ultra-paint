@@ -6,6 +6,7 @@
   import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { previewStore } from "../state/previewStore.svelte";
+  import { toastStore } from "../state/toastStore.svelte";
   import type { Document, Layer, LayerId, MaskLayer } from "../state/schema";
   import { BLEND_MODE_ORDER, isBlendMode } from "../util/blendModes";
   import Accordion from "./lib/Accordion.svelte";
@@ -142,6 +143,7 @@
         layerStore.setSelectedLayerId(id);
       } catch (error) {
         console.error(`[ultra-paint] could not add "${file.name}":`, error);
+        toastStore.error(`Could not add "${file.name}".`);
       }
     }
   }
@@ -157,6 +159,7 @@
       layerStore.setSelectedLayerId(id);
     } catch (error) {
       console.error("[ultra-paint] could not add a blank layer:", error);
+      toastStore.error("Could not add a layer.");
     }
   }
 
@@ -173,6 +176,7 @@
       expandedControlId = id;
     } catch (error) {
       console.error("[ultra-paint] could not add a control layer:", error);
+      toastStore.error("Could not add a control layer.");
     }
   }
 
@@ -188,6 +192,7 @@
       masksOpen = true;
     } catch (error) {
       console.error("[ultra-paint] could not add a mask layer:", error);
+      toastStore.error("Could not add a mask layer.");
     }
   }
 
@@ -209,6 +214,7 @@
         expandedControlId = id;
       } catch (error) {
         console.error(`[ultra-paint] could not add control layer "${file.name}":`, error);
+        toastStore.error(`Could not add control layer "${file.name}".`);
       }
     }
   }

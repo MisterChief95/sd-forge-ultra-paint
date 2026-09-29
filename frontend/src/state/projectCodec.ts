@@ -9,6 +9,7 @@ import { TileGrid } from "../canvas/TileGrid";
 import type { LayerStore } from "./layerStore.svelte";
 import type { ControlLayer, Document, ImageRef, Layer, LayerId, Transform } from "./schema";
 import { isBlendMode } from "../util/blendModes";
+import { MAX_DIMENSION } from "../util/dimensions";
 
 export const PROJECT_FORMAT = "ultra-paint-project";
 export const PROJECT_FORMAT_VERSION = 1;
@@ -253,6 +254,9 @@ function validateDocument(value: unknown): Document {
     throw new Error("Project document is invalid.");
   }
   const boundaryBox = validateBounds(value.boundaryBox, "Document boundary box");
+  if (boundaryBox.width > MAX_DIMENSION || boundaryBox.height > MAX_DIMENSION) {
+    throw new Error(`Document boundary box exceeds ${MAX_DIMENSION}px.`);
+  }
   if (!Array.isArray(value.layers) || !Array.isArray(value.layerOrder)) {
     throw new Error("Project layer lists are invalid.");
   }
