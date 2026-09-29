@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from modules import call_queue, shared
 from modules_forge import main_thread
 
+from ultra_paint.gen_params import GenParams
 from ultra_paint.generation import run_generation, validate_generation_options
 
 __all__ = [
@@ -66,7 +67,7 @@ class ControlLayerRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     composite_image: str
-    gen_params: dict = {}
+    gen_params: GenParams = GenParams()
     generation_mode: Literal["img2img", "txt2img", "upscale"] = "img2img"
     # Optional data:image/...;base64,... URL from the frontend's
     # Compositor.flattenMask() (Phase 3) -- omitted/None when no mask layer
@@ -119,8 +120,11 @@ def generate(request: GenerateRequest) -> GenerateResponse:
     it does no GPU work itself, only decoding and handing off to Forge's
     single worker thread via `main_thread.run_and_wait_result`.
     """
+    # Only the fields the client sent, so downstream `_get` defaults and
+    # `_apply_model_selection`'s "absent = keep current" stay unchanged.
+    gen_params = request.gen_params.model_dump(exclude_unset=True)
     try:
-        validate_generation_options(request.gen_params)
+        validate_generation_options(gen_params)
         composite_image = _decode_data_url(request.composite_image)
         mask_image = (
             _decode_data_url(request.mask_image) if request.mask_image else None
@@ -152,7 +156,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
             processed = main_thread.run_and_wait_result(
                 run_generation,
                 composite_image,
-                request.gen_params,
+                gen_params,
                 mask_image,
                 request.generation_mode,
                 control_layers=control_layers,

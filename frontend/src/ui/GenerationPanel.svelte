@@ -25,6 +25,7 @@
   import {
     fetchPersistedGenerationSettings,
     persistGenerationSettings,
+    type BackendFeatures,
     type GenerationOptions,
   } from "./generation/generationApi";
   import { fetchExtensionManifests, type ExtensionManifest } from "./generation/extensionsApi";
@@ -73,6 +74,8 @@
   let modelOptionsLoaded = $state(false);
   let resolutionStep = $state<number | null>(null);
   let isVideoModel = $state(false);
+  // Assume everything is available until `/options` says otherwise.
+  let features = $state<BackendFeatures>({ controlnet: true, softInpainting: true, loras: true });
   let steps = $state(20);
   let cfgScale = $state(7);
   let denoisingStrength = $state(0.75);
@@ -132,7 +135,11 @@
   const generationMode = $derived(layerStore.hasVisibleRasterContent ? "img2img" : "txt2img");
 
   const visibleSectionOrder = $derived(
-    sectionOrder.filter((id) => id !== "generation.extensions" || extensionManifests.length > 0),
+    sectionOrder.filter(
+      (id) =>
+        (id !== "generation.extensions" || extensionManifests.length > 0) &&
+        (id !== "generation.loras" || features.loras),
+    ),
   );
 
   $effect(() => {
@@ -164,6 +171,7 @@
       resolutionStep = value.resolutionStep;
       generationRuntimeStore.setResolutionStep(value.resolutionStep);
       isVideoModel = value.isVideoModel;
+      features = value.features;
     },
   });
 
@@ -199,7 +207,10 @@
   function effectivePrompts(): { prompt: string; negativePrompt: string } {
     const { selected, styles } = stylesStore;
     return {
-      prompt: buildLoraPrompt(applyStyles(prompt, selected, styles, "prompt"), selectedLoras),
+      prompt: buildLoraPrompt(
+        applyStyles(prompt, selected, styles, "prompt"),
+        features.loras ? selectedLoras : [],
+      ),
       negativePrompt: negativeEnabled
         ? applyStyles(negativePrompt, selected, styles, "negative_prompt")
         : "",
@@ -686,6 +697,8 @@
             <Accordion title="Composition" persistKey={id} {headerLeading}>
               <div class="p-2">
                 <InpaintControls
+                  softInpaintingAvailable={features.softInpainting}
+                  controlNetAvailable={features.controlnet}
                   maskBlur={generationSettingsStore.maskBlur}
                   inpaintPadding={generationSettingsStore.inpaintPadding}
                   inpaintArea={generationSettingsStore.inpaintArea}

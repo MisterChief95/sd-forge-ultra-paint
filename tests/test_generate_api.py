@@ -239,3 +239,23 @@ def test_control_layer_value_shape_passes_through_unchanged(fake_forge_modules):
         "resize_mode": "crop",
         "enabled": False,
     }
+
+
+def test_gen_params_forwards_only_sent_fields_and_rejects_unknown_keys(
+    fake_forge_modules,
+):
+    from pydantic import ValidationError
+
+    generate_api, calls, _generation_calls = fake_forge_modules
+    request = generate_api.GenerateRequest(
+        composite_image=_data_url(generate_api),
+        # `steps: null` means "default" and is dropped; `sampler_name: null`
+        # is a real value (Forge's own fallback) and is kept.
+        gen_params={"prompt": "cat", "steps": None, "sampler_name": None},
+    )
+
+    generate_api.generate(request)
+
+    assert calls[0][0][2] == {"prompt": "cat", "sampler_name": None}
+    with pytest.raises(ValidationError):
+        generate_api.GenerateRequest(composite_image="x", gen_params={"stepz": 20})

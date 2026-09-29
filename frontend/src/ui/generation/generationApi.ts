@@ -8,7 +8,16 @@ const INTERRUPT_URL = "/ultra_paint/api/interrupt";
 
 export type GenerationMode = "txt2img" | "img2img" | "upscale";
 
+/** Optional backend capabilities; UI for a missing one is hidden. */
+export interface BackendFeatures {
+  controlnet: boolean;
+  softInpainting: boolean;
+  loras: boolean;
+}
+
 export interface GenerationOptions {
+  backend: string;
+  features: BackendFeatures;
   samplers: string[];
   schedulers: string[];
   models: string[];
@@ -92,6 +101,8 @@ export interface ProgressResponse {
 }
 
 interface RawGenerationOptions {
+  backend: unknown;
+  features: { controlnet?: unknown; soft_inpainting?: unknown; loras?: unknown } | null;
   samplers: unknown;
   schedulers: unknown;
   models: unknown;
@@ -152,7 +163,15 @@ export async function fetchGenerationOptions(): Promise<GenerationOptions> {
   }
 
   const body = (await response.json()) as Partial<RawGenerationOptions>;
+  // Anything the backend doesn't explicitly disable stays available.
+  const features = body.features ?? {};
   return {
+    backend: typeof body.backend === "string" ? body.backend : "forge",
+    features: {
+      controlnet: features.controlnet !== false,
+      softInpainting: features.soft_inpainting !== false,
+      loras: features.loras !== false,
+    },
     samplers: stringArray(body.samplers),
     schedulers: stringArray(body.schedulers),
     models: stringArray(body.models),
