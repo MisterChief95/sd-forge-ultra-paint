@@ -1,6 +1,7 @@
 import { Rectangle, Sprite, Texture } from "pixi.js";
 import type { Renderer } from "pixi.js";
 
+import { extractStraightCanvas } from "../canvas/extractStraightCanvas";
 import { getTileRendererCapabilities } from "../canvas/rendererCapabilities";
 import { TiledRasterCanvas } from "../canvas/TiledRasterCanvas";
 import type { TileVisit } from "../canvas/TiledRasterCanvas";
@@ -73,7 +74,7 @@ export async function encodePortableDocument(
     surface.visitAll((tile) => tiles.push(tile));
     for (const tile of tiles) {
       const path = `pixels/${String(sequence).padStart(6, "0")}.png`;
-      const canvas = renderer.extract.canvas({
+      const canvas = extractStraightCanvas(renderer, {
         target: tile.target,
         frame: new Rectangle(0, 0, surface.tileSize, surface.tileSize),
         resolution: 1,

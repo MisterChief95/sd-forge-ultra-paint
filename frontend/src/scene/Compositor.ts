@@ -33,6 +33,7 @@
 
 import { ColorMatrixFilter, Container, Matrix, Rectangle, RenderTexture, Sprite } from "pixi.js";
 import type { Application } from "pixi.js";
+import { extractStraightCanvas } from "../canvas/extractStraightCanvas";
 import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "../canvas/rendererCapabilities";
 import type { LayerStore } from "../state/layerStore.svelte";
 import type { BoundaryBox } from "../state/schema";
@@ -250,7 +251,7 @@ export class Compositor {
             clear: true,
             clearColor,
           });
-          const canvas = app.renderer.extract.canvas({
+          const canvas = extractStraightCanvas(app.renderer, {
             target: chunk,
             frame: new Rectangle(0, 0, width, height),
             resolution: 1,

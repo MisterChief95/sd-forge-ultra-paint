@@ -1,6 +1,7 @@
 import { Container, Matrix, Rectangle, RenderTexture, Sprite, Texture } from "pixi.js";
 import type { Renderer } from "pixi.js";
 
+import { extractStraightCanvas } from "./extractStraightCanvas";
 import { getTileRendererCapabilities, PREFERRED_TILE_SIZE } from "./rendererCapabilities";
 import type { TileEditTransaction, TileVisit } from "./TiledRasterCanvas";
 import { TiledRasterCanvas } from "./TiledRasterCanvas";
@@ -148,7 +149,7 @@ export function flattenToCanvas(
             clear: true,
             clearColor: [0, 0, 0, 0],
           });
-          const chunkCanvas = renderer.extract.canvas({
+          const chunkCanvas = extractStraightCanvas(renderer, {
             target: chunk,
             frame: new Rectangle(0, 0, chunkWidth, chunkHeight),
             resolution: 1,
