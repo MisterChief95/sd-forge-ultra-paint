@@ -1,5 +1,7 @@
 {
   "_comment": "Accepted E2E gap: route interception does not cover the real FastAPI handlers' base64 decoding or error paths; add a stub server if this gap becomes consequential.",
+  "backend": "forge",
+  "features": { "controlnet": true, "soft_inpainting": true, "loras": true },
   "samplers": ["Euler a", "DPM++ 2M"],
   "schedulers": ["Automatic", "Karras"],
   "models": ["fixture-model.safetensors"],

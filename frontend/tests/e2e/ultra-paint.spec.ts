@@ -1920,6 +1920,24 @@ test("video-model options show an inline generation warning", async ({ page }) =
   );
 });
 
+test("backend features hide LoRA, Soft Inpainting, and Inpaint ControlNet UI", async ({ page }) => {
+  await page.route("**/ultra_paint/api/options", (route) =>
+    route.fulfill({
+      json: {
+        ...optionsFixture,
+        features: { controlnet: false, soft_inpainting: false, loras: false },
+      },
+    }),
+  );
+  await openApp(page);
+  await page.getByRole("button", { name: /^Composition/ }).click();
+
+  await expect(page.getByLabel("Mask blur").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^LoRAs/ })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: "Soft inpainting" })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: "Inpaint ControlNet" })).toHaveCount(0);
+});
+
 test("generation progress fills the active button and Save lives in the toolbar", async ({
   page,
 }) => {

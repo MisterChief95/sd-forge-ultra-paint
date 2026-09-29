@@ -108,6 +108,13 @@ data URLs, takes Forge's queue lock, brackets work with
 `modules_forge.main_thread.run_and_wait_result`. `generation.py` constructs
 Forge txt2img/img2img processing objects and calls `process_images`.
 
+`ultra_paint/gen_params.py`'s `GenParams` is the typed, Forge-free wire
+contract for `gen_params` (unknown keys are rejected; `null` means default).
+It is also the source of `generation.GEN_PARAM_DEFAULTS`, so add new generation
+settings there first. `GET /options` reports `backend` plus `features`
+(`controlnet`, `soft_inpainting`, `loras`); the frontend hides UI for a feature
+reported `false` and treats a missing flag as available.
+
 Preserve these backend rules:
 
 - Keep `shared.state` progress and interrupt cleanup paired, including error

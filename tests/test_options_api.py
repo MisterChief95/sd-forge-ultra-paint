@@ -69,9 +69,13 @@ def fake_forge_modules(monkeypatch):
         _Upscaler("ESRGAN_4x"),
     ]
 
+    fake_scripts_module = types.ModuleType("modules.scripts")
+    fake_scripts_module.scripts_img2img = None
+
     fake_modules.sd_samplers = fake_sd_samplers_module
     fake_modules.sd_schedulers = fake_sd_schedulers_module
     fake_modules.shared = fake_shared_module
+    fake_modules.scripts = fake_scripts_module
 
     fake_modules_forge = types.ModuleType("modules_forge")
     fake_main_entry_module = types.ModuleType("modules_forge.main_entry")
@@ -86,6 +90,7 @@ def fake_forge_modules(monkeypatch):
         "modules.sd_samplers": fake_sd_samplers_module,
         "modules.sd_schedulers": fake_sd_schedulers_module,
         "modules.shared": fake_shared_module,
+        "modules.scripts": fake_scripts_module,
         "modules_forge": fake_modules_forge,
         "modules_forge.main_entry": fake_main_entry_module,
     }
@@ -101,6 +106,28 @@ def fake_forge_modules(monkeypatch):
     yield options_api_module, fake_shared_module
 
     monkeypatch.delitem(sys.modules, "ultra_paint.options_api", raising=False)
+
+
+def test_features_reflect_registered_scripts(fake_forge_modules, monkeypatch):
+    options_api, _fake_shared = fake_forge_modules
+    monkeypatch.setattr(options_api.importlib.util, "find_spec", lambda _name: None)
+
+    # Before Forge builds its UI there are no scripts: everything is off.
+    assert options_api.get_generation_options().features.model_dump() == {
+        "controlnet": False,
+        "soft_inpainting": False,
+        "loras": False,
+    }
+
+    script = types.SimpleNamespace(title=lambda: "Soft Inpainting")
+    sys.modules["modules.scripts"].scripts_img2img = types.SimpleNamespace(
+        alwayson_scripts=[script]
+    )
+    options = options_api.get_generation_options()
+
+    assert options.backend == "forge"
+    assert options.features.soft_inpainting is True
+    assert options.features.controlnet is False
 
 
 def test_samplers_and_schedulers_pass_through(fake_forge_modules):

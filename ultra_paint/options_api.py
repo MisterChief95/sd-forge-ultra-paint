@@ -21,6 +21,7 @@ finding out from a failed request. `resolution_step` is a fixed constant, not
 read from Forge's `res_step` setting -- see `resolution_step.py`'s docstring.
 """
 
+import importlib.util
 import os
 
 from pydantic import BaseModel
@@ -35,7 +36,17 @@ __all__ = ["OPTIONS_ROUTE", "GenerationOptions", "get_generation_options"]
 OPTIONS_ROUTE = "/ultra_paint/api/options"
 
 
+class BackendFeatures(BaseModel):
+    """Optional capabilities the UI hides when the backend lacks them."""
+
+    controlnet: bool
+    soft_inpainting: bool
+    loras: bool
+
+
 class GenerationOptions(BaseModel):
+    backend: str = "forge"
+    features: BackendFeatures
     samplers: list[str]
     schedulers: list[str]
     models: list[str]
@@ -48,6 +59,24 @@ class GenerationOptions(BaseModel):
     resolution_step: int
 
 
+def _features() -> BackendFeatures:
+    from modules import scripts
+
+    # `scripts_img2img` is None until Forge builds its UI; `getattr` on None
+    # then falls back to "no scripts".
+    titles = {
+        script.title()
+        for script in getattr(scripts.scripts_img2img, "alwayson_scripts", ())
+    }
+    return BackendFeatures(
+        controlnet="ControlNet" in titles,
+        soft_inpainting="Soft Inpainting" in titles,
+        # Forge's built-in LoRA extension exposes a top-level `networks`
+        # module once loaded (see `lora_api.py`).
+        loras=importlib.util.find_spec("networks") is not None,
+    )
+
+
 def get_generation_options() -> GenerationOptions:
     # Keep the Ultra Paint picker aligned with Forge's own checkpoint manager.
     # `refresh_models()` also rebuilds `module_list`, which contains both VAE
@@ -56,6 +85,7 @@ def get_generation_options() -> GenerationOptions:
 
     models, modules = main_entry.refresh_models()
     return GenerationOptions(
+        features=_features(),
         samplers=[x.name for x in sd_samplers.visible_samplers()],
         schedulers=[x.label for x in sd_schedulers.schedulers],
         models=[str(model) for model in models],

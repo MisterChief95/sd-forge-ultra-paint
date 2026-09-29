@@ -191,6 +191,7 @@ from modules.shared import opts
 from ultra_paint.controlnet_units import apply_controlnet_units
 from ultra_paint.extension_args import apply_extension_args
 from ultra_paint.extension_manifest import list_extension_manifests
+from ultra_paint.gen_params import GenParams
 from ultra_paint.mask_ring import (
     debug_reset,
     debug_save,
@@ -208,43 +209,8 @@ __all__ = [
 ]
 
 
-GEN_PARAM_DEFAULTS: dict = {
-    "prompt": "",
-    "negative_prompt": "",
-    "styles": [],
-    "steps": 20,
-    "cfg_scale": 7.0,
-    "distilled_cfg_scale": 3.5,
-    "denoising_strength": 0.75,
-    "sampler_name": None,
-    "scheduler": None,
-    "seed": -1,
-    "subseed": -1,
-    "subseed_strength": 0.0,
-    "resize_mode": 0,
-    "override_settings": {},
-    "inpainting_fill": 1,
-    "inpaint_full_res": False,
-    "inpaint_full_res_padding": 32,
-    "mask_blur": 4,
-    "inpainting_mask_invert": 0,
-    "soft_inpainting_enabled": False,
-    "inpaint_controlnet_enabled": False,
-    "inpaint_controlnet_model": "",
-    "inpaint_controlnet_weight": 1.0,
-    "coherence_pass_enabled": False,
-    "coherence_edge_size": 32,
-    "coherence_algorithm": "gradient",
-    "soft_inpainting_power": 1,
-    "soft_inpainting_scale": 0.5,
-    "soft_inpainting_detail_preservation": 4,
-    "soft_inpainting_mask_influence": 0,
-    "soft_inpainting_difference_threshold": 0.5,
-    "soft_inpainting_difference_contrast": 2,
-    "target_width": None,
-    "target_height": None,
-    "upscaler_name": None,
-}
+# Single source of truth for defaults is the wire model; see `gen_params.py`.
+GEN_PARAM_DEFAULTS: dict = GenParams().model_dump()
 
 
 def _get(gen_params: dict, key: str):

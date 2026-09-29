@@ -2,6 +2,8 @@
   import type { CoherenceAlgorithm, InpaintArea } from "../../state/generationSettingsStore.svelte";
 
   interface Props {
+    softInpaintingAvailable?: boolean;
+    controlNetAvailable?: boolean;
     maskBlur: number;
     inpaintPadding: number;
     inpaintArea: InpaintArea;
@@ -28,6 +30,8 @@
   import { fetchControlModels } from "./controlnetApi";
 
   let {
+    softInpaintingAvailable = true,
+    controlNetAvailable = true,
     maskBlur,
     inpaintPadding,
     inpaintArea,
@@ -123,7 +127,7 @@
     </label>
   {/if}
 
-  {#if inpaintArea !== "coherence"}
+  {#if softInpaintingAvailable && inpaintArea !== "coherence"}
     <CheckboxField
       label="Soft inpainting"
       checked={softInpaintingEnabled}
@@ -131,13 +135,15 @@
     />
   {/if}
 
-  <CheckboxField
-    label="Inpaint ControlNet"
-    checked={inpaintControlNetEnabled}
-    onchange={(event) => onInpaintControlNetEnabledChange(event.currentTarget.checked)}
-  />
+  {#if controlNetAvailable}
+    <CheckboxField
+      label="Inpaint ControlNet"
+      checked={inpaintControlNetEnabled}
+      onchange={(event) => onInpaintControlNetEnabledChange(event.currentTarget.checked)}
+    />
+  {/if}
 
-  {#if inpaintControlNetEnabled}
+  {#if controlNetAvailable && inpaintControlNetEnabled}
     <label class="flex flex-col gap-1 text-(--upaint-text-muted)">
       Inpaint ControlNet model
       <Select
