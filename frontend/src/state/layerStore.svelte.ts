@@ -117,6 +117,20 @@ function identityTransform(): Transform {
 }
 
 const DEFAULT_MASK_COLOR = "#ff4d4d";
+/** Hue order for new masks: red, blue, green, yellow, magenta, cyan, orange, violet. */
+const MASK_HUES = [0, 240, 120, 60, 300, 180, 30, 270];
+
+/** HSL(hue, 100%, 65%) -> hex; hue 0 gives DEFAULT_MASK_COLOR. */
+function maskHueToHex(hue: number): string {
+  const channel = (n: number): string => {
+    const k = (n + hue / 30) % 12;
+    const value = 0.65 - 0.35 * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(value * 255)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
 
 function normaliseHexColor(color: string, fallback: string): string {
   return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
@@ -576,11 +590,20 @@ export class LayerStore {
     return id;
   }
 
+  /** First hue in MASK_HUES no existing mask uses, so deleting a mask frees its slot. */
+  private nextMaskColor(): string {
+    const used = new Set(
+      this._document.layers.flatMap((layer) => (layer.kind === "mask" ? [layer.color] : [])),
+    );
+    const colors = MASK_HUES.map(maskHueToHex);
+    return colors.find((color) => !used.has(color)) ?? colors[used.size % colors.length]!;
+  }
+
   /** Create a paintable mask layer backed by sparse tiles. */
   public addMaskLayerTiled(
     surface: TiledRasterCanvas,
     name?: string,
-    color = DEFAULT_MASK_COLOR,
+    color = this.nextMaskColor(),
   ): LayerId {
     const box = this._document.boundaryBox;
     const bounds = surface.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
