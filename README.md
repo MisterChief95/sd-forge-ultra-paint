@@ -36,6 +36,9 @@ implemented and build-verified.
 - **Workspace layout**: a vertical tool rail beside the canvas, a top bar that shows
   the active tool's options plus Save Image and a Project menu, and generation/layer
   side panels that collapse from the top bar (collapse state and widths persist).
+- **Pen and touch**: pen eraser end, barrel-button color pick, adjustable pressure
+  sensitivity/minimum and stroke smoothing, palm rejection, pinch-zoom, and
+  two/three-finger tap undo/redo (Settings chooses whether one finger paints or pans).
 - **Undo/redo**: bounded history covering pixel edits and layer/document state
   changes.
 - **Portable projects**: save/open (top bar → Project) the complete editable document

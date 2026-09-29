@@ -2,6 +2,7 @@
   import { getActiveUltraPaintApp } from "../app/UltraPaintApp";
   import { saveGeneration } from "../input/actionMap";
   import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
+  import { appSettingsStore } from "../state/appSettingsStore.svelte";
   import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
   import { layerStore } from "../state/layerStore.svelte";
   import { paintToolStore } from "../state/paintToolStore.svelte";
@@ -12,6 +13,7 @@
   import ContextMenu, { type ContextMenuItem } from "./lib/ContextMenu.svelte";
   import Icon, { type IconName } from "./lib/Icon.svelte";
   import Slider from "./lib/Slider.svelte";
+  import SliderNumberInput from "./lib/SliderNumberInput.svelte";
   import SettingsModal from "./SettingsModal.svelte";
 
   /**
@@ -231,8 +233,8 @@
           size="icon"
           radius="right"
           pressed={pressurePopoverOpen}
-          title="Configure pen pressure"
-          aria-label="Configure pen pressure"
+          title="Configure pen pressure and smoothing"
+          aria-label="Configure pen pressure and smoothing"
           aria-haspopup="dialog"
           popovertarget="upaint-pressure-popover"
           onclick={positionPressurePopover}
@@ -368,8 +370,8 @@
   id="upaint-pressure-popover"
   popover="auto"
   role="dialog"
-  aria-label="Pen pressure settings"
-  class="fixed inset-auto z-50 m-0 w-max flex-col gap-1.5 border p-2 text-[11px] text-(--upaint-text)"
+  aria-label="Pen pressure and smoothing settings"
+  class="fixed inset-auto z-50 m-0 w-52 flex-col gap-1.5 border p-2 text-[11px] text-(--upaint-text)"
   style="border-color: var(--upaint-border); border-radius: var(--upaint-radius-sm); background: var(--upaint-surface);"
   ontoggle={(event) => (pressurePopoverOpen = event.newState === "open")}
 >
@@ -384,6 +386,34 @@
     checked={paintToolStore.brush.opacityPressure}
     onchange={(event) =>
       paintToolStore.setBrushSettings({ opacityPressure: event.currentTarget.checked })}
+  />
+  <SliderNumberInput
+    label="Sensitivity (firm to light)"
+    ariaLabel="Pen pressure sensitivity"
+    value={appSettingsStore.pressureSensitivity}
+    min={-100}
+    max={100}
+    sliderStep={5}
+    numberStep={1}
+    onValueInput={(value) => appSettingsStore.setPressureSensitivity(value)}
+  />
+  <SliderNumberInput
+    label="Minimum pressure %"
+    ariaLabel="Minimum pen pressure percent"
+    value={Math.round(appSettingsStore.pressureMin * 100)}
+    min={0}
+    max={90}
+    sliderStep={1}
+    onValueInput={(value) => appSettingsStore.setPressureMin(value / 100)}
+  />
+  <SliderNumberInput
+    label="Smoothing %"
+    ariaLabel="Stroke smoothing percent"
+    value={Math.round(appSettingsStore.smoothing * 100)}
+    min={0}
+    max={90}
+    sliderStep={1}
+    onValueInput={(value) => appSettingsStore.setSmoothing(value / 100)}
   />
 </div>
 
