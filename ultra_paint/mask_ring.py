@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image, ImageChops
 
 _DEBUG_DIR = os.path.join(os.path.dirname(__file__), "..", "debug_dump")
-_DEBUG_MASKS = os.environ.get("ULTRA_PAINT_DEBUG_MASKS", "1") != "0"
+_DEBUG_MASKS = os.environ.get("ULTRA_PAINT_DEBUG_MASKS") == "1"
 
 
 def debug_reset() -> None:
@@ -25,8 +25,8 @@ def debug_reset() -> None:
 
 def debug_save(image: Image.Image, name: str) -> None:
     """Dump a numbered mask/image stage to debug_dump/ for visual inspection
-    of the coherence pass's mask pipeline. Set ULTRA_PAINT_DEBUG_MASKS=0 to
-    disable."""
+    of the coherence pass's mask pipeline. Off by default; set
+    ULTRA_PAINT_DEBUG_MASKS=1 to enable."""
     if not _DEBUG_MASKS:
         return
     os.makedirs(_DEBUG_DIR, exist_ok=True)
