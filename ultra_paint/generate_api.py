@@ -73,6 +73,11 @@ class GenerateRequest(BaseModel):
     # has been painted, matching Phase 1/2 behavior exactly (no inpainting).
     mask_image: str | None = None
     control_layers: list[ControlLayerRequest] = []
+    # Per-third-party-extension UI values, keyed by upaint.json manifest id,
+    # e.g. {"sd-forge-nag": {"enabled": True, "scale": 5.0, ...}}. Shape is
+    # validated against the discovered manifest by `apply_extension_args`
+    # (ultra_paint/extension_args.py), not by a dedicated request model.
+    extensions: dict[str, dict] = {}
 
 
 class GenerateResponse(BaseModel):
@@ -151,6 +156,7 @@ def generate(request: GenerateRequest) -> GenerateResponse:
                 mask_image,
                 request.generation_mode,
                 control_layers=control_layers,
+                extension_values=request.extensions,
             )
         finally:
             shared.state.end()

@@ -127,6 +127,29 @@ def test_omitted_control_layers_forwards_empty_list(fake_forge_modules):
     assert calls[0][1]["control_layers"] == []
 
 
+def test_omitted_extensions_forwards_empty_dict(fake_forge_modules):
+    generate_api, calls, _generation_calls = fake_forge_modules
+
+    generate_api.generate(
+        generate_api.GenerateRequest(composite_image=_data_url(generate_api))
+    )
+
+    assert calls[0][1]["extension_values"] == {}
+
+
+def test_extensions_are_forwarded_to_run_generation(fake_forge_modules):
+    generate_api, calls, _generation_calls = fake_forge_modules
+    extensions = {"sd-forge-nag": {"enabled": True, "scale": 9.0}}
+
+    generate_api.generate(
+        generate_api.GenerateRequest(
+            composite_image=_data_url(generate_api), extensions=extensions
+        )
+    )
+
+    assert calls[0][1]["extension_values"] == extensions
+
+
 def test_generated_png_embeds_forge_infotext(fake_forge_modules):
     generate_api, _calls, _generation_calls = fake_forge_modules
 

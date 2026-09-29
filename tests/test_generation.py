@@ -202,6 +202,87 @@ def _install_soft_inpainting_script(generation, control_values):
     return script
 
 
+def _install_fake_alwayson_script(runner, title, slot_count):
+    """Installs a bare alwayson script with `slot_count` args_to-args_from
+    slots, mirroring `_install_soft_inpainting_script`'s shape but generic
+    enough to stand in for any third-party `upaint.json`-described script
+    (e.g. sd-forge-nag's 5-slot `(enabled, scale, tau, alpha, sigma_end)`)."""
+
+    class _Control:
+        value = None
+
+    class _FakeScript:
+        args_from = 1
+        args_to = 1 + slot_count
+
+        def title(self):
+            return title
+
+        def ui(self, _is_img2img):
+            return [_Control() for _ in range(slot_count)]
+
+    script = _FakeScript()
+    runner.scripts = [script]
+    runner.alwayson_scripts = [script]
+    runner.inputs = [None, *[_Control() for _ in range(slot_count)]]
+    return script
+
+
+def _nag_manifest():
+    from pathlib import Path
+
+    from ultra_paint.extension_manifest import _load_manifest
+
+    return _load_manifest(
+        Path(__file__).resolve().parent.parent
+        / "ultra_paint/schemas/examples/sd-forge-nag.upaint.json"
+    )
+
+
+def test_extension_values_reach_img2img_script_args(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    manifest = _nag_manifest()
+    monkeypatch.setattr(generation, "list_extension_manifests", lambda: [manifest])
+    generation._default_script_args_cache = None
+    _install_fake_alwayson_script(
+        generation.modules.scripts.scripts_img2img, manifest.scriptTitle, 5
+    )
+
+    p = generation.build_img2img_processing(
+        _composite(),
+        {},
+        extension_values={
+            "sd-forge-nag": {
+                "enabled": True,
+                "scale": 9.0,
+                "tau": 3.0,
+                "alpha": 0.5,
+                "sigma_end": 0.1,
+            }
+        },
+    )
+
+    assert p.script_args[1:6] == [True, 9.0, 3.0, 0.5, 0.1]
+
+
+def test_extension_values_reach_txt2img_script_args(fake_forge_modules, monkeypatch):
+    generation, _fake_shared = fake_forge_modules
+    manifest = _nag_manifest()
+    monkeypatch.setattr(generation, "list_extension_manifests", lambda: [manifest])
+    generation._default_script_args_cache = None
+    _install_fake_alwayson_script(
+        generation.modules.scripts.scripts_txt2img, manifest.scriptTitle, 5
+    )
+
+    p = generation.build_txt2img_processing(
+        _composite(),
+        {},
+        extension_values={"sd-forge-nag": {"enabled": False}},
+    )
+
+    assert p.script_args[1:6] == [False, 5.0, 2.5, 0.25, 0.0]
+
+
 def test_no_mask_leaves_inpainting_fields_at_gen_param_defaults(fake_forge_modules):
     generation, _fake_shared = fake_forge_modules
 
