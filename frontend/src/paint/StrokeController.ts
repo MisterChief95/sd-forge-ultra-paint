@@ -1,6 +1,7 @@
 import { Point } from "pixi.js";
 import type { Application, Container } from "pixi.js";
 
+import { appSettingsStore } from "../state/appSettingsStore.svelte";
 import { generationRuntimeStore } from "../state/generationRuntimeStore.svelte";
 import { isDocumentMutationLocked } from "../state/documentInteractionLock.svelte";
 import { filterStore } from "../state/filterStore.svelte";
@@ -12,10 +13,7 @@ import type {
 } from "../state/paintToolStore.svelte";
 import type { LayerId } from "../state/schema";
 import { previewStore } from "../state/previewStore.svelte";
-
-// ponytail: fixed low-pass strength; expose as a per-brush setting if users
-// need to tune it (stylus users may want less lag than mouse users).
-const SMOOTHING_FACTOR = 0.5;
+import { mapPenPressure } from "../util/pressure";
 
 /** One interpolated sample in document-local coordinates. */
 export interface StrokePoint {
@@ -123,7 +121,9 @@ export class StrokeController {
   }
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0 || this.active !== null) return;
+    // A flipped pen reports its eraser end as button 5 / buttons bit 32.
+    const penEraser = event.pointerType === "pen" && (event.buttons & 32) !== 0;
+    if ((event.button !== 0 && !penEraser) || this.active !== null) return;
     if (this.tools.getState().activeTool === "eyedropper") return;
     if (generationRuntimeStore.generating || isDocumentMutationLocked()) return;
 
@@ -138,7 +138,8 @@ export class StrokeController {
       return;
     }
 
-    const tool = this.tools.getState().activeTool;
+    const activeTool = this.tools.getState().activeTool;
+    const tool = penEraser && activeTool === "brush" ? "eraser" : activeTool;
     const session = this.createSession(tool, layerId);
     if (!session) return;
 
@@ -176,6 +177,10 @@ export class StrokeController {
     const cancelled = event.type !== "pointerup";
     if (!cancelled) {
       this.appendEventSamples(event);
+      // Catch the smoothed path up to the lift point so heavy smoothing
+      // doesn't shorten the stroke.
+      const lift = this.toDocumentPoint(event);
+      if (lift) this.appendRawPoint(lift, 1);
       this.appendFinalPoint();
     }
     this.finishStroke(cancelled);
@@ -194,7 +199,7 @@ export class StrokeController {
     }
   }
 
-  private appendRawPoint(rawPoint: StrokePoint): void {
+  private appendRawPoint(rawPoint: StrokePoint, follow = 1 - appSettingsStore.smoothing): void {
     const active = this.active;
     if (!active) return;
 
@@ -203,8 +208,8 @@ export class StrokeController {
     // unfiltered path produces a visibly wobbly stroke edge.
     let start = active.lastRaw;
     const point: StrokePoint = {
-      x: start.x + (rawPoint.x - start.x) * SMOOTHING_FACTOR,
-      y: start.y + (rawPoint.y - start.y) * SMOOTHING_FACTOR,
+      x: start.x + (rawPoint.x - start.x) * follow,
+      y: start.y + (rawPoint.y - start.y) * follow,
       pressure: rawPoint.pressure,
     };
 
@@ -274,8 +279,24 @@ export class StrokeController {
     return {
       x: this.documentPoint.x,
       y: this.documentPoint.y,
-      pressure: event.pressure > 0 ? event.pressure : 1,
+      pressure: this.pressureOf(event),
     };
+  }
+
+  /**
+   * Mouse "pressure" is a fixed 0.5 while pressed, so it reads as full.
+   * Pens report 0 on pointerup: hold the last value instead of a full-size
+   * stamp at the tail.
+   */
+  private pressureOf(event: PointerEvent): number {
+    if (event.pointerType === "mouse") return 1;
+    if (event.pointerType !== "pen") return event.pressure > 0 ? event.pressure : 1;
+    if (event.pressure <= 0 && this.active) return this.active.lastRaw.pressure;
+    return mapPenPressure(
+      event.pressure,
+      appSettingsStore.pressureSensitivity,
+      appSettingsStore.pressureMin,
+    );
   }
 
   private refreshCursor(): void {

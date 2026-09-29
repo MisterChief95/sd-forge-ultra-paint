@@ -146,7 +146,14 @@ input: one finger paints, two fingers pan and pinch-zoom (claimed in
 `UltraPaintApp.handleTouchGesture`, which cancels the first finger's stroke via
 a synthetic `pointercancel`), the Pan tool and viewport zoom buttons cover
 one-finger/pen navigation, and a long-press on a layer row opens its menu,
-because iPadOS never fires `contextmenu`. Keep every action reachable without a
+because iPadOS never fires `contextmenu`. The same handler recognizes a quick
+two-finger tap as undo and three-finger tap as redo, rejects touches that land
+while a pen is down or was active in the last 500ms (palm rejection), and in
+the default "auto" touch mode makes a lone finger pan instead of paint once a
+pen has been used. Pen specifics: the eraser end (`buttons & 32`) erases while
+the brush is selected (`StrokeController`), the barrel button samples color,
+and pressure sensitivity/minimum and stroke smoothing are per-device settings
+in `appSettingsStore` (localStorage), not document or brush state. Keep every action reachable without a
 keyboard or right-click.
 
 Both side panels collapse from the top bar's toggles. Collapse state and panel

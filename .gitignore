@@ -199,3 +199,6 @@ frontend/playwright-report/
 frontend/.eslintcache
 /data/
 benchmarking/compare/results.html
+
+# dibs agent coordination state
+.dibs/

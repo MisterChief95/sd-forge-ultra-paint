@@ -51,6 +51,7 @@ import {
   isGraphicsContextLost,
   markGraphicsContextLost,
 } from "../state/documentInteractionLock.svelte";
+import { appSettingsStore } from "../state/appSettingsStore.svelte";
 import { toastStore } from "../state/toastStore.svelte";
 import { PixelGrid } from "../scene/PixelGrid";
 import { BrushEngine } from "../paint/BrushEngine";
@@ -110,6 +111,11 @@ const clampZoom = (scale: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOO
 
 type TouchPoint = { x: number; y: number };
 const TOUCH_GESTURE_EVENTS = ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const;
+/** Touches starting this soon after any pen event (hover included) are treated as a resting palm. */
+const PALM_REJECT_MS = 500;
+/** A multi-finger touch shorter than this, moving less than TAP_SLOP_PX, is a tap. */
+const TAP_MAX_MS = 350;
+const TAP_SLOP_PX = 12;
 
 type BrushAdjustmentMode = "size-hardness" | "opacity";
 
@@ -246,7 +252,27 @@ export class UltraPaintApp {
     documentY: number;
     spread: number;
     scale: number;
+    worldX: number;
+    worldY: number;
   } | null = null;
+
+  /** The current touch sequence, tracked to recognize two/three-finger taps. */
+  private touchTap: {
+    startTime: number;
+    fingers: number;
+    moved: boolean;
+    origins: Map<number, TouchPoint>;
+  } | null = null;
+
+  /** Touch pointers rejected as a palm (or displaced by the pen); swallowed until lifted. */
+  private readonly ignoredTouches = new Set<number>();
+
+  private penDown = false;
+
+  private lastPenTime = -Infinity;
+
+  /** Once a pen has been used, "auto" touch mode stops single fingers from painting. */
+  private penUsed = false;
 
   private brushAdjustment: ActiveBrushAdjustment | null = null;
 
@@ -553,6 +579,7 @@ export class UltraPaintApp {
     for (const type of TOUCH_GESTURE_EVENTS) {
       root.addEventListener(type, this.handleTouchGesture, true);
     }
+    canvas.addEventListener("contextmenu", this.handleContextMenu);
     canvas.addEventListener("pointerdown", this.handlePointerDown);
     canvas.addEventListener("pointermove", this.handlePointerMove);
     canvas.addEventListener("pointerleave", this.handlePointerLeave);
@@ -626,6 +653,9 @@ export class UltraPaintApp {
     this.viewportRoot = null;
     this.touchPoints.clear();
     this.touchGesture = null;
+    this.touchTap = null;
+    this.ignoredTouches.clear();
+    canvas.removeEventListener("contextmenu", this.handleContextMenu);
     canvas.removeEventListener("pointerdown", this.handlePointerDown);
     canvas.removeEventListener("pointermove", this.handlePointerMove);
     canvas.removeEventListener("pointerleave", this.handlePointerLeave);
@@ -679,12 +709,27 @@ export class UltraPaintApp {
    * One finger paints; a second finger turns the touch into pan + pinch-zoom.
    * The first finger's stroke (or lasso/transform drag) is cancelled through a
    * synthetic `pointercancel`, which every canvas controller already handles.
+   * A quick two-finger tap undoes and a three-finger tap redoes. Touches that
+   * land while a pen is down or hovering are rejected as a resting palm.
    */
   private readonly handleTouchGesture = (event: PointerEvent): void => {
+    if (event.pointerType === "pen") {
+      this.trackPen(event);
+      return;
+    }
     const app = this.app;
     const world = this.world;
     const canvas = this.viewportCanvas;
     if (!app || !world || !canvas || event.pointerType !== "touch" || !event.isTrusted) return;
+
+    if (this.ignoredTouches.has(event.pointerId)) {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      if (event.type === "pointerup" || event.type === "pointercancel") {
+        this.ignoredTouches.delete(event.pointerId);
+      }
+      return;
+    }
 
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -695,12 +740,28 @@ export class UltraPaintApp {
 
     if (event.type === "pointerdown") {
       if (event.target !== canvas) return;
+      if (this.penDown || performance.now() - this.lastPenTime < PALM_REJECT_MS) {
+        this.ignoredTouches.add(event.pointerId);
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        return;
+      }
       // A primary pointer starts a fresh touch sequence: drop anything stale.
       if (event.isPrimary) {
         this.touchPoints.clear();
         this.touchGesture = null;
+        this.touchTap = {
+          startTime: performance.now(),
+          fingers: 0,
+          moved: false,
+          origins: new Map(),
+        };
       }
       this.touchPoints.set(event.pointerId, point);
+      if (this.touchTap) {
+        this.touchTap.origins.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        this.touchTap.fingers = Math.max(this.touchTap.fingers, this.touchPoints.size);
+      }
       if (this.touchGesture) {
         event.stopImmediatePropagation();
         event.preventDefault();
@@ -726,11 +787,22 @@ export class UltraPaintApp {
         documentY: ((a.y + b.y) / 2 - world.y) / scale,
         spread: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
         scale,
+        worldX: world.x,
+        worldY: world.y,
       };
       return;
     }
 
     if (!this.touchPoints.has(event.pointerId)) return;
+    const tap = this.touchTap;
+    const origin = tap?.origins.get(event.pointerId);
+    if (
+      tap &&
+      origin &&
+      Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > TAP_SLOP_PX
+    ) {
+      tap.moved = true;
+    }
     if (event.type === "pointermove") {
       this.touchPoints.set(event.pointerId, point);
     } else {
@@ -741,7 +813,22 @@ export class UltraPaintApp {
     event.stopImmediatePropagation();
     event.preventDefault();
     if (event.type !== "pointermove") {
-      if (this.touchPoints.size === 0) this.touchGesture = null;
+      if (this.touchPoints.size > 0) return;
+      this.touchGesture = null;
+      this.touchTap = null;
+      if (
+        tap &&
+        !tap.moved &&
+        event.type === "pointerup" &&
+        performance.now() - tap.startTime < TAP_MAX_MS
+      ) {
+        // Drop the sub-slop zoom the fingers caused before treating it as a tap.
+        world.scale.set(gesture.scale);
+        world.position.set(gesture.worldX, gesture.worldY);
+        this.updateTiledVisibleRegions();
+        if (tap.fingers === 2) this.undo();
+        else this.redo();
+      }
       return;
     }
     const [a, b] = [...this.touchPoints.values()];
@@ -755,20 +842,63 @@ export class UltraPaintApp {
     this.updateTiledVisibleRegions();
   };
 
+  /** Note pen activity for palm rejection; a pen touching down displaces any finger in progress. */
+  private trackPen(event: PointerEvent): void {
+    this.lastPenTime = performance.now();
+    this.penUsed = true;
+    if (event.type === "pointerup" || event.type === "pointercancel") {
+      this.penDown = false;
+      return;
+    }
+    if (event.type !== "pointerdown") return;
+    this.penDown = true;
+    const canvas = this.viewportCanvas;
+    for (const pointerId of this.touchPoints.keys()) {
+      canvas?.dispatchEvent(
+        new PointerEvent("pointercancel", { pointerId, pointerType: "touch", bubbles: true }),
+      );
+      this.ignoredTouches.add(pointerId);
+    }
+    this.touchPoints.clear();
+    this.touchGesture = null;
+    this.touchTap = null;
+  }
+
+  /** Whether a lone finger pans instead of painting with the brush/eraser. */
+  private fingerPans(): boolean {
+    const tool = this.toolStore.activeTool;
+    if (tool !== "brush" && tool !== "eraser") return false;
+    const mode = appSettingsStore.touchMode;
+    return mode === "pan" || (mode === "auto" && this.penUsed);
+  }
+
+  /** The pen barrel button samples color (see handlePointerDown), not the browser menu. */
+  private readonly handleContextMenu = (event: MouseEvent): void => {
+    if ((event as PointerEvent).pointerType === "pen") event.preventDefault();
+  };
+
   private readonly handlePointerDown = (event: PointerEvent): void => {
     const canvas = this.viewportCanvas;
     if (!canvas) return;
     if (event.button === 0 || event.button === 1) {
       canvas.focus({ preventScroll: true });
     }
-    if (event.button === 0 && this.toolStore.activeTool === "eyedropper") {
+    if (
+      (event.button === 0 && this.toolStore.activeTool === "eyedropper") ||
+      (event.button === 2 && event.pointerType === "pen")
+    ) {
+      event.preventDefault();
       this.sampleEyedropperColor(event);
       return;
     }
     if (event.button === 0 && this.beginBrushAdjustment(event)) return;
     // The Pan tool lets one finger or a pen pan too (a lone touch otherwise
     // paints, and DevTools touch emulation has no second finger to pinch with).
-    const spacePan = event.button === 0 && (this.spaceHeld || this.toolStore.activeTool === "pan");
+    const spacePan =
+      event.button === 0 &&
+      (this.spaceHeld ||
+        this.toolStore.activeTool === "pan" ||
+        (event.pointerType === "touch" && this.fingerPans()));
     if (event.button !== 1 && !spacePan) return;
     if (spacePan) event.stopImmediatePropagation();
     event.preventDefault();
