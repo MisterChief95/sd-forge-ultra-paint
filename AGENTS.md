@@ -33,7 +33,12 @@ ultra_paint/                     Importable Python implementation
   config.py                       paths, DOM prefix, defaults, version
   *_api.py                        request/response models and route handlers
   generation.py                   Forge processing construction and generation
+  gen_params.py                   typed, Forge-free generation parameter contract
   controlnet_units.py              optional ControlNet argument assembly
+  extension_manifest.py           discovery/validation of third-party upaint.json
+  extension_args.py               always-on script argument mapping
+  schemas/                        extension manifest schema and worked example
+  outpaint_fill.py                transparent-region mask and optional LaMA fill
   model_profile.py                model/native-resolution detection
   resolution_step.py              Forge resolution-step lookup
   mask_ring.py                     inpaint ring-mask math
@@ -48,6 +53,7 @@ frontend/                         Vite SPA source and frontend tooling
   src/state/                       document schema and rune-backed stores
   src/scene/                       Pixi scene graph, overlays, compositor
   src/paint/                       brush, eraser, and stroke pipeline
+  src/canvas/                      sparse tile storage, edits, views, extraction
   src/ui/                          feature UI components
   src/ui/generation/               generation UI, API clients, controller
   src/ui/lib/                      reusable Svelte controls and the Icon set
@@ -59,6 +65,8 @@ frontend/                         Vite SPA source and frontend tooling
 
 tests/                             focused Python pytest modules
 frontend/tests/                    Playwright fixtures and browser tests
+data/                              runtime autosave/settings and optional tags.csv;
+                                   generated/user-supplied, gitignored
 README.md                          user-facing setup and architecture overview
 pyproject.toml                     ruff and pytest config (tooling only)
 ```
@@ -83,8 +91,11 @@ GenerationPanel
 ```
 
 The production Vite base path (`/ultra_paint/app/`) must continue to match the
-FastAPI `StaticFiles` mount. The dev proxy covers `/ultra_paint/api`; do not
-silently change either prefix.
+FastAPI `StaticFiles` mount. Static data is served at `/ultra_paint/data`.
+The dev proxy covers both `/ultra_paint/api` and `/ultra_paint/data`, using
+`ULTRA_PAINT_BACKEND` (default `http://127.0.0.1:7860`); do not silently change
+these prefixes. The normal dev server writes to that backend's real persistence
+slots; only the Playwright server isolates them.
 
 ## Backend architecture
 
@@ -98,6 +109,12 @@ Current route groups are:
 - `POST /ultra_paint/api/generate`
 - `GET /ultra_paint/api/options` and `GET /ultra_paint/api/loras`
 - `POST /ultra_paint/api/save` and `POST /ultra_paint/api/interrupt`
+- `GET`/`PUT /ultra_paint/api/settings`
+- `POST /ultra_paint/api/autosave`, `GET /ultra_paint/api/autosave/current`,
+  and `GET /ultra_paint/api/autosave/checkpoints/{checkpoint_id}/manifest`
+  or `/{asset_path:path}`
+- `GET`/`PUT`/`DELETE /ultra_paint/api/styles` (Forge's shared style database)
+- `GET /ultra_paint/api/extensions` (third-party control manifests)
 - ControlNet catalog/detect routes under `/ultra_paint/api/controlnet/*`
 
 Generation is the Forge boundary. `generate_api.py` validates and decodes
@@ -113,7 +130,34 @@ settings there first. `GET /options` reports `backend` plus `features`
 (`controlnet`, `soft_inpainting`, `loras`); the frontend hides UI for a feature
 reported `false` and treats a missing flag as available.
 
-Preserve these backend rules:
+The generate request keeps `control_layers` and `extensions` outside
+`gen_params`, and accepts `img2img`, `txt2img`, or `upscale` as its mode.
+Each request runs one image. A fully transparent composite forces txt2img.
+For image passes containing both fully transparent and opaque pixels,
+`outpaint_fill.py` derives a hard transparent-region mask, unions it with any
+painted mask, and seeds those pixels using optional LaMA or the OpenCV fallback.
+Do not pre-blur that mask: Forge applies the mask blur.
+
+### Third-party extension controls
+
+Enabled Forge extensions can supply `upaint.json` in their own root.
+`extension_manifest.py` discovers and validates these files;
+`extension_args.py` maps submitted values into an existing always-on script.
+The contract lives in `ultra_paint/schemas/upaint.schema.json`, with a worked
+NAG example in `ultra_paint/schemas/examples/`.
+
+- `scriptTitle` must exactly match the registered script's `title()`.
+- `inputs` follow the script's `ui()` return order. With `canEnable: true`,
+  slot 0 is the enabled boolean and is omitted from `inputs`; otherwise every
+  slot maps directly to an input.
+- Supported input types are `number`, `text`, `boolean`, and `select`.
+- Missing/invalid manifests and unavailable scripts degrade gracefully.
+  Preserve unfilled script slots and their Forge defaults.
+
+The frontend renders these controls in the Extensions generation section.
+Upscale jobs currently send neither control layers nor extension values.
+
+### Backend invariants
 
 - Keep `shared.state` progress and interrupt cleanup paired, including error
   paths.
@@ -125,6 +169,22 @@ Preserve these backend rules:
   Torch, or GPU initialization.
 - Add focused pytest coverage in `tests/`; mock Forge modules with fixtures
   instead of requiring a running WebUI.
+
+### Persistence boundaries
+
+- `state/projectCodec.ts` encodes/decodes the portable document; `projectArchive.ts`
+  wraps it as a downloadable `.uproj` ZIP with a manifest and tile PNGs.
+  Projects carry document state and pixels, not generation settings or undo history.
+- `app/autosave.ts` uses that same codec with multipart uploads to
+  `ultra_paint/autosave_api.py`. It restores before scene/history setup and writes
+  to one shared server slot at `data/autosave/`, not per-browser storage.
+- `settings_api.py` persists generation controls to `data/generation-settings.json`.
+  Missing settings start empty; saves create the parent directory.
+- `appSettingsStore` and `uiLayoutStore` persist device/UI preferences in
+  localStorage. Prompt styles use Forge's own style database via `styles_api.py`.
+- Keep size/path/schema validation, atomic backend checkpoint/settings writes,
+  and decode-before-replace project loading. A failed load must not destroy the
+  current document.
 
 ## Frontend architecture
 
@@ -169,6 +229,18 @@ Both side panels collapse from the top bar's toggles. Collapse state and panel
 widths persist in `uiLayoutStore`; a collapsed panel stays mounted (`hidden`)
 so `GenerationPanel` keeps its prompt/controller state and shortcuts.
 
+The generation controller snapshots pixels, masks, settings, and guidance on
+submission and drains a FIFO queue. Results enter `previewStore`; applying a
+preview creates a new raster layer. `documentInteractionLock.svelte.ts` is the
+shared mutation guard for a selected generation preview, active filter, lost GPU
+context, or pop-out handoff. Use it for new mutation commands and shortcuts.
+
+The Lasso tool (`paint/LassoController.ts`) writes mask coverage in polygonal or
+freehand mode; it does not implement general raster selection. `FilterBar.svelte`
+previews a ControlNet preprocessor and applies accepted pixels through the app.
+Prompt tag completion reads optional `data/tags.csv`; prompt weight adjustment
+and Forge prompt styles are also implemented.
+
 UI icons come only from `ui/lib/Icon.svelte` (one 16x16 `currentColor` set).
 Do not add unicode glyphs, emoji, image files, or ad hoc inline SVGs for
 controls. Labeling rule: tools and compact toggles are icon-only with both
@@ -178,20 +250,29 @@ name stays.
 
 Ownership is deliberately separated:
 
-| Area | Owner | Rule |
-| --- | --- | --- |
-| Renderer lifecycle and imperative canvas operations | `app/UltraPaintApp.ts` | One instance per page; expose only the small imperative API UI needs. |
-| Serializable document/tool/generation/preview state | `state/*.svelte.ts` | Use the shared singleton stores; keep UI state separate from live GPU objects. |
-| Pixi layer hierarchy | `scene/LayerTree.ts` | The only code that adds/removes/reorders layer scene nodes. |
-| One layer's visual objects | `scene/LayerNode.ts` | Apply texture, transform, opacity, visibility, blend mode, and filters here. |
-| Flatten/export | `scene/Compositor.ts` | Render offscreen without coupling export to viewport pan/zoom. |
-| Brush/eraser behavior | `paint/` | Keep stroke sampling and raster edits out of Svelte components. |
-| UI and backend request handling | `ui/` and `ui/generation/` | Components update stores and call API clients/controllers; avoid direct scene mutation. |
-| GPU texture lifetime | `LayerStore` plus the owning Pixi class | Destroy temporary/snapshot textures exactly once; do not proxy Pixi objects through Svelte. |
+| Area                                                | Owner                                                   | Rule                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Renderer lifecycle and imperative canvas operations | `app/UltraPaintApp.ts`                                  | One instance per page; expose only the small imperative API UI needs.                       |
+| Serializable document/tool/generation/preview state | `state/*.svelte.ts`                                     | Use the shared singleton stores; keep UI state separate from live GPU objects.              |
+| Pixi layer hierarchy                                | `scene/LayerTree.ts`                                    | The only code that adds/removes/reorders layer scene nodes.                                 |
+| One layer's visual objects                          | `scene/LayerNode.ts`                                    | Apply tiled views, transform, opacity, visibility, blend mode, and filters here.            |
+| Sparse pixel storage and edits                      | `canvas/TiledRasterCanvas.ts` and `TileRasterOps.ts`    | Edit through transactions; retain tile deltas for undo rather than full-layer snapshots.    |
+| Flatten/export                                      | `scene/Compositor.ts`                                   | Render offscreen without coupling export to viewport pan/zoom.                              |
+| Brush/eraser behavior                               | `paint/`                                                | Keep stroke sampling and raster edits out of Svelte components.                             |
+| UI and backend request handling                     | `ui/` and `ui/generation/`                              | Components update stores and call API clients/controllers; avoid direct scene mutation.     |
+| GPU texture lifetime                                | `LayerStore`, tiled surfaces, and the owning Pixi class | Destroy temporary/snapshot textures exactly once; do not proxy Pixi objects through Svelte. |
 
 Svelte components that need instance-bound operations may use
 `getActiveUltraPaintApp()`. Keep reactive data in stores and avoid prop/context
 drilling when the existing singleton boundary already solves the problem.
+
+Raster, mask, and control layers use sparse `TiledRasterCanvas` surfaces held
+outside the serializable document. `ImageRef` contains tile metadata; retrieve
+live pixels with `LayerStore.getTiledSurface(id)`. `TiledRasterView` renders tiles
+under `LayerNode`; export remains owned by `Compositor`. Tiles can have signed
+coordinates, so use `TileGrid` for geometry instead of assuming positive bounds
+or growing a single texture. Layer removal/history can retain surfaces for undo:
+destroy them only after their final owner releases them.
 
 ## Svelte practices
 
@@ -269,14 +350,16 @@ This repository uses PixiJS v8. Follow v8 lifecycle and scene-graph rules:
 One version, semver (`MAJOR.MINOR.PATCH`), kept identical in two places:
 `VERSION` in `ultra_paint/config.py` and `version` in `frontend/package.json`
 (also update `package-lock.json`, e.g. `npm version <x.y.z> --no-git-tag-version`
-in `frontend/`). Bump both in the same commit and tag it `vX.Y.Z`.
+in `frontend/`). Vite reads the Python version into `__ULTRA_PAINT_VERSION__`
+for the frontend and project archives. For a release, bump both in the same
+commit and tag it `vX.Y.Z`; routine documentation changes do not require a release.
 
 Planned release build (not automated yet): a tag-triggered workflow runs
 `npm ci && npm run build` in `frontend/`, then zips the extension with the
 prebuilt `frontend/dist/` included and dev-only files (`frontend/src`,
 `node_modules`, `tests/`, `.github/`, `.git*`) excluded, so end users need no
-Node toolchain. `frontend/dist/` stays gitignored in the repo; it exists only in
-release artifacts. Keep new runtime files inside `scripts/`, `ultra_paint/`,
+Node toolchain. `frontend/dist/` stays gitignored; generate it for local use and
+include it in release artifacts. Keep new runtime files inside `scripts/`, `ultra_paint/`,
 `javascript/`, `style.css`, and `frontend/dist/` so packaging stays a simple
 include list.
 
@@ -302,7 +385,8 @@ ruff check .
 ruff format --check .
 ```
 
-CI (`.github/workflows/lint.yml`) runs eslint, prettier, and ruff. Optional
+CI (`.github/workflows/lint.yml`) runs eslint, prettier, and ruff; it does not
+currently run typecheck, builds, pytest, or Playwright. Optional
 auto-format on commit: `pip install pre-commit && pre-commit install`.
 
 `npm run test:e2e` starts its own Vite server (port 5179) with the API proxy

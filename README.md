@@ -1,159 +1,252 @@
-# Forge Neo UltraPaint
+# Ultra Paint for Forge Classic
 
-<p align="center">
-  <img src="https://img.shields.io/badge/powered%20by-Codex-080808" alt="Powered by Codex" />
-  &nbsp;&nbsp;
-  <img src="https://img.shields.io/badge/powered%20by-Claude-da7756" alt="Powered by Claude" />
-</p>
+Ultra Paint adds a layer-based painting and generation workspace to
+`sd-webui-forge-classic`. Paint, import images, build masks and ControlNet guides,
+then generate directly through Forge's existing models and processing pipeline.
 
-Ultra Paint is a work-in-progress extension that adds a layer-based painting tab to Forge Neo,
-similar to InvokeAI's canvas. Uses PixiJS v8 for GPU-accelerated multi-layer paint surfaces -
-paint, mask and ControlNet layers - wired directly into Forge's existing generation pipelines.
-
-<img width="1740" height="919" alt="image" src="https://github.com/user-attachments/assets/e564ad75-18ff-4c07-a8a9-4f6f83ea202b" />
-
-**Status: Phase 3 (in progress).** The tab is a standalone Svelte 5 + PixiJS v8 SPA,
-served by the extension's own FastAPI routes and mounted into the Gradio page via an
-`<iframe>`. Layer painting, undo/redo, an InvokeAI-style boundary box, mask layers,
-auto-scale-to-native-resolution, and real img2img/inpaint generation are all
-implemented and build-verified.
-
-## Features
-
-- **Layer-based canvas**: raster, group, and mask layers with blend modes, opacity,
-  drag-to-reorder, rename, and a context menu — rendered on a PixiJS v8 scene graph.
-- **Paint tools**: brush and eraser with radius/hardness/opacity, consistent
-  per-stroke opacity build-up, and dynamically growing brush textures (raster layers
-  grow on demand as a stroke crosses their edge, up to an 8192×8192 cap).
-- **Mask layers**: paint a mask directly on the canvas with a live hatch-pattern
-  preview; flattened and sent to Forge's inpainting pipeline at generate time.
-- **Boundary box**: an interactive, draggable/resizable operating region (like
-  InvokeAI's canvas bounds) that scopes Fill, Generate export, and new blank layers.
-- **Generation panel**: model and text encoder/VAE selection, prompt/negative prompt,
-  sampler/scheduler (pulled live from Forge), steps/CFG/denoise, a frontend FIFO queue,
-  in-button progress with a live preview image, and current/remaining/all cancellation
-  through Forge's interrupt mechanism.
-- **Workspace layout**: a vertical tool rail beside the canvas, a top bar that shows
-  the active tool's options plus Save Image and a Project menu, and generation/layer
-  side panels that collapse from the top bar (collapse state and widths persist).
-- **Pen and touch**: pen eraser end, barrel-button color pick, adjustable pressure
-  sensitivity/minimum and stroke smoothing, palm rejection, pinch-zoom, and
-  two/three-finger tap undo/redo (Settings chooses whether one finger paints or pans).
-- **Undo/redo**: bounded history covering pixel edits and layer/document state
-  changes.
-- **Portable projects**: save/open (top bar → Project) the complete editable document
-  as a client-side `.uproj` archive, including sparse tile pixels, masks, transforms, groups, and
-  ControlNet layer settings.
-- **Crash/reload autosave**: quietly checkpoints that same editable document to a
-  single backend slot and restores it before the canvas scene and undo history start.
-  It saves immediately when the tab is hidden, warns after repeated upload failures, and stops
-  (freezing the canvas behind a reload prompt) if the browser loses the GPU context.
-- **Viewport controls**: zoom reset, fit-to-boundary-box, and a pixel-grid toggle
-  with zoom-tiered spacing.
-- **Layer transforms**: move, center-rotate, corner-scale (free or Shift-constrained),
-  and mirror one selected layer through an undoable, 32px/8px-snapping canvas gizmo
-  without rewriting tiled pixels.
-
-## Roadmap (WIP)
-
-### Complete ✅
-
-- Brush engine with hardness and opacity
-- Pressure sensitivity-enabled Brush and Eraser
-- Layer masks
-- Inpainting
-  - Forge-native Soft Inpainting
-  - Coherence Pass
-- ControlNet Integration
-  - Layer-based
-  - Canvas-wide Inpaint ControlNets
-
-### In-Progress 🏗️
-
-- Tag autocompletion in prompt boxes
-- Tag weighting adjustment via keyboard
-
-### Planned ✏️
-
-- Pre-built single-page app bundle that gets installed on extension load
-- Outpainting with Lama/Patch match
-- Registering other extensions in Generation Options
-
-## Roadmap
-
-Phases 1 through 2.75 (painting tools, the Svelte/iframe shell, the boundary box,
-Playwright e2e coverage) are complete. Phase 3 (masking/inpainting, auto-scale to
-native resolution) has substantially landed alongside generation-panel persistence,
-model/LoRA controls, the generation queue, and prompt-tag autocomplete (Phase 1 of
-that sub-feature). Ahead:
-
-- **Phase 4 — Multi-layer ControlNet**: assign any layer to a ControlNet unit slot.
-- **Phase 5 — Groups, transforms, selection, shape tools**: the first single-layer
-  transform gizmo has landed; multi-selection pivots, marquee/lasso selection,
-  and basic vector shapes remain.
-- Known gaps: a clean clone has no `data/tags.csv` or `data/generation-settings.json`
-  (`/data/` is gitignored) so autocomplete and settings persistence start empty until
-  first configured; generations are pinned to one image per Generate click; no run
-  so far has exercised a real Forge server, so "build/typecheck-verified" work
-  throughout the project still awaits live confirmation.
+The workspace runs in an iframe inside the **Ultra Paint** tab. **Pop Out** opens
+it in a full-window browser tab connected to the same Forge server.
 
 ## Installation
 
-Drop this directory into `extensions/` of a `sd-webui-forge-classic` install, then
-build the frontend once (see below) and restart the WebUI. The "Ultra Paint" tab
-appears alongside txt2img/img2img.
+This source checkout requires a frontend build. There is no automatic bundle
+download or build on extension startup.
 
-## Layout
+1. Place this repository at
+   `sd-webui-forge-classic/extensions/sd-forge-ultra-paint/`.
+2. Install Node.js and npm for the build. Node.js 22 is used by this repository's CI.
+3. From the extension directory, run:
 
-| Path                  | Purpose                                                                                                        |
-| --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `scripts/`            | Forge callback registrations (tab shell, static mount, and each API route)                                     |
-| `ultra_paint/`        | Importable Python package — config, generation pipeline, API request/response models, model/resolution lookups |
-| `javascript/`         | Auto-injected JS that mounts the SPA's `<iframe>` into the Gradio tab                                          |
-| `frontend/`           | Svelte 5 + PixiJS v8 + Vite SPA source, built to `frontend/dist/` (see below)                                  |
-| `tests/`              | Python tests (pytest) for the API routes and generation pipeline                                               |
-| `frontend/tests/e2e/` | Playwright end-to-end tests against a real browser                                                             |
+   ```bash
+   cd frontend
+   npm ci
+   npm run build
+   ```
 
-### Scripts and routes
+4. Restart Forge and open the **Ultra Paint** tab.
 
-| File                                   | Registers                                                                                       |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `scripts/ultra_paint_tab.py`           | `on_ui_tabs` — a near-empty `gr.HTML` wrapper that the injected JS turns into an iframe         |
-| `scripts/ultra_paint_api.py`           | `StaticFiles` mount of `frontend/dist/` at `/ultra_paint/app` + `GET /ultra_paint/api/progress` |
-| `scripts/ultra_paint_generate_api.py`  | `POST /ultra_paint/api/generate`                                                                |
-| `scripts/ultra_paint_options_api.py`   | `GET /ultra_paint/api/options` (samplers, schedulers, native resolution, resolution step)       |
-| `scripts/ultra_paint_options_api.py`   | `GET`/`PUT /ultra_paint/api/settings` (Generation panel persistence)                            |
-| `scripts/ultra_paint_interrupt_api.py` | `POST /ultra_paint/api/interrupt`                                                               |
-| `scripts/ultra_paint_save_api.py`      | `POST /ultra_paint/api/save`                                                                    |
-| `scripts/ultra_paint_autosave_api.py`  | `POST /ultra_paint/api/autosave` plus checkpoint restore routes                                |
+The build creates `frontend/dist/`, which Forge serves at `/ultra_paint/app/`.
+Node.js is needed to build the frontend, but not to run a built extension.
+After updating the source, rebuild the frontend and restart Forge.
+
+This extension targets Forge Classic. Compatibility with other WebUI forks is
+not established by this repository. It uses Forge's Python environment; do not
+install it as a separate Python package. Ultra Paint's own routes do not require
+Forge's `--api` flag.
+
+## What you can do
+
+- **Paint in layers:** raster, group, mask, and ControlNet layers; opacity, blend
+  modes, visibility, locking, preserve-alpha painting, reordering, and merging.
+  Pixel layers use sparse tiles that allocate as you paint.
+- **Use brush and eraser tools:** size, hardness, opacity, pen pressure, smoothing,
+  an eyedropper, and primary/secondary colors. Fill applies to a raster layer
+  within the boundary box.
+- **Build inpaint masks:** paint coverage with a hatch preview or use polygonal
+  and freehand lasso tools on a mask layer. Clear or invert masks and fit the
+  boundary box to mask coverage.
+- **Position layers:** move, rotate, scale, and mirror one selected layer with
+  undoable transforms.
+- **Generate and refine:** txt2img, img2img, inpainting, automatic outpainting,
+  soft inpainting when available, and ring or gradient coherence passes.
+- **Control generation:** model and VAE/text encoder selection, LoRAs, prompts,
+  styles, sampler/scheduler, seeds, resolution scaling, and a FIFO job queue with
+  progress, live previews, and cancellation.
+- **Guide with ControlNet:** paint or import control layers, choose their models
+  and guidance settings, or use canvas-wide inpaint ControlNet. The layer Filter
+  command previews a ControlNet preprocessor before applying its result.
+- **Upscale:** upscale the boundary region with a size multiplier, denoising,
+  an upscaler choice, and optional sampling overrides.
+- **Keep an editable project:** download/open `.uproj` files and restore the
+  latest backend autosave after a reload.
+
+The generation and layer panels resize and collapse. On narrower screens they
+open as drawers over the canvas. Panel layout and generation section order
+persist between sessions.
+
+## Basic workflow
+
+1. Paint on a raster layer, or import/paste an image. Use the layer panel to add
+   raster, mask, group, or ControlNet layers.
+2. Set the **Boundary Box** to the region you want to work on. It defines the
+   region exported for generation, upscale, and Save Image.
+3. Choose your model, prompts, and sampling settings in the generation panel.
+   An empty region uses txt2img; existing image content uses img2img. Paint a
+   mask to regenerate selected areas.
+4. Click **Generate**. Additional clicks queue jobs using the canvas and settings
+   captured at submission time. Each job produces one image.
+5. Review the generated previews. Toggle a preview to compare it with the canvas,
+   apply it as a new layer, save the selected preview, or discard it. Document
+   edits stay locked while a preview is selected or a layer filter is active.
+6. Use **Save Image** for a flattened output, or **Project → Save Project** to
+   keep editing later.
+
+To outpaint, extend the boundary box into transparent space beside opaque image
+content and generate. The backend masks fully transparent pixels and seeds them
+with a content-aware fill. That mask is combined with any painted mask, so both
+regions can be regenerated in the same pass.
+
+## Saving and recovery
+
+| Action                        | What it saves                                                                            | Where it goes                                             |
+| ----------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **Save Image** in the top bar | Flattened visible raster content inside the boundary box                                 | Forge's configured Save output directory and image format |
+| **Save selected preview**     | The selected generated image                                                             | Forge's configured Save output directory and image format |
+| **Project → Save Project**    | Editable document, tile pixels, masks, groups, transforms, and ControlNet layer settings | A downloaded `.uproj` archive                             |
+| **Project → Open Project**    | Replaces the current document with a saved project                                       | Loaded in the browser                                     |
+| Autosave                      | Latest editable document checkpoint                                                      | `data/autosave/` on the Forge server                      |
+
+Autosave restores before the canvas scene and undo history start. It also saves
+when the workspace becomes hidden. It is a **single slot shared by clients of
+this extension**, not a project library or a version history; keep `.uproj`
+downloads for projects you want to retain. Undo history and generation settings
+are not part of a project archive.
+
+Generation panel settings are stored separately in
+`data/generation-settings.json`; the file and directory are created on save.
+Device preferences such as pressure tuning, smoothing, and touch mode, plus panel
+layout, are stored in the browser's localStorage. Prompt styles use Forge's own
+style database, so editing them also changes the styles available in Forge.
+
+**Pop Out** saves the document and generation settings before handing off and
+freezes the embedded copy. **Bring Back Here**, or closing the popped-out tab,
+returns the iframe to the saved workspace. If the browser loses its graphics
+context, the canvas freezes behind a reload prompt; recovery uses the last
+successful autosave.
+
+## Pen, touch, and shortcuts
+
+Pen input supports pressure, the eraser end, and barrel-button color sampling.
+The brush options include pressure controls and a pressure/smoothing popover.
+Settings provides device preferences and touch mode.
+
+Two fingers pan and pinch-zoom; a quick two-finger tap undoes, and a three-finger
+tap redoes. In the default **Auto** touch mode, one finger paints until a pen has
+been used, then pans. Touches during or shortly after pen activity are ignored
+for palm rejection. Long-press a layer row to open its menu.
+
+| Shortcut                               | Action                                                      |
+| -------------------------------------- | ----------------------------------------------------------- |
+| `B` / `E` / `V` / `R`                  | Brush / eraser / layer transform / boundary box             |
+| Hold `Alt`                             | Temporarily sample a color                                  |
+| Hold `Space` or drag with middle mouse | Pan                                                         |
+| `[` / `]`                              | Decrease / increase brush size                              |
+| `X`                                    | Swap brush colors                                           |
+| `F` / `0` / `G`                        | Fit boundary box / reset zoom / toggle grid                 |
+| `Shift+F`                              | Fill selected raster layer                                  |
+| `Ctrl/Cmd+Z`                           | Undo                                                        |
+| `Ctrl/Cmd+Shift+Z` or `Ctrl/Cmd+Y`     | Redo                                                        |
+| `Ctrl/Cmd+Enter`                       | Generate, including from a prompt field                     |
+| `Escape`                               | Cancel an active lasso, otherwise cancel current generation |
+| `Enter` with Lasso active              | Close the lasso loop                                        |
+| `Ctrl+Up` / `Ctrl+Down` in a prompt    | Increase / decrease prompt weight                           |
+
+Canvas shortcuts are suppressed while typing in text fields, except Generate.
+Tooltips show shortcuts, and toolbar controls provide keyboard-free access.
+
+## Optional integrations
+
+### ControlNet and soft inpainting
+
+ControlNet features require a compatible ControlNet installation and its models.
+Soft inpainting requires its Forge script. The backend reports availability and
+the frontend hides unavailable feature controls. These integrations are optional
+for ordinary painting and generation.
+
+### Outpaint fill
+
+Outpainting uses `simple-lama-inpainting` if it is available in Forge's Python
+environment. Otherwise, or if LaMA fails, it falls back to OpenCV inpainting.
+LaMA retries on CPU after a GPU out-of-memory error. No extra installation is
+required to use the fallback.
+
+### Prompt tag completion
+
+Place a tag CSV at `data/tags.csv` in the extension directory and enable tag
+autocomplete in Settings. It uses TAC-format rows:
+
+```csv
+blue_hair,0,12345,"azure_hair,blue-haired"
+```
+
+The columns are tag name, category, count, and a quoted comma-separated alias
+list. Suggestions start after two characters; use arrow keys to navigate and
+Enter or Tab to insert. Without the CSV, prompts still work normally.
+
+### Third-party generation controls
+
+Enabled Forge extensions can expose controls in Ultra Paint's **Extensions**
+section by supplying an `upaint.json` file in their extension root. Controls map
+to an existing always-on Forge script; they do not register a new script.
+
+See the [manifest schema](ultra_paint/schemas/upaint.schema.json), the
+[NAG example](ultra_paint/schemas/examples/sd-forge-nag.upaint.json), and the
+[integration rules in AGENTS.md](AGENTS.md#third-party-extension-controls).
+
+## Current limits and troubleshooting
+
+- **Missing or blank tab:** confirm `frontend/dist/index.html` exists, rebuild,
+  and restart Forge. Startup logs warn when the build directory is missing.
+- **Backend unavailable:** painting runs in the browser, but generation, Save
+  Image, styles, settings persistence, and autosave need the Forge server.
+- **Video models:** Wan/video generation is rejected; choose an image model.
+- **Upscale guidance:** upscale jobs currently omit ControlNet layers and
+  third-party extension values.
+- **Lasso and transforms:** lasso edits mask coverage; it is not a general raster
+  selection tool. The transform gizmo acts on one layer at a time.
+- **Large workspaces:** tiled storage avoids one growing full-layer texture, but
+  GPU memory and project/autosave upload limits still apply. Boundary box
+  dimensions are capped at 8192 pixels per side.
 
 ## Development
 
+The frontend is a Svelte 5 + PixiJS v8 Vite SPA. Python route shims in `scripts/`
+load through Forge callbacks; reusable backend code lives in `ultra_paint/`.
+See [AGENTS.md](AGENTS.md) for architecture, ownership, and contribution rules.
+
 ### Frontend
 
+From `frontend/`:
+
 ```bash
-cd frontend
-npm install       # once
-npm run dev        # Vite dev server with HMR
-npm run build       # production build -> frontend/dist/
-npm run typecheck    # svelte-check
-npm run test:e2e      # Playwright e2e tests
+npm ci
+npm run dev
 ```
 
-`frontend/dist/` is gitignored and not committed — it must be built at least once
-before the extension will serve a working tab; no Node toolchain is required at
-Forge-server runtime otherwise.
+Open the Vite URL with `/ultra_paint/app/`. The dev server proxies
+`/ultra_paint/api` and `/ultra_paint/data` to `http://127.0.0.1:7860` by default.
+Set `ULTRA_PAINT_BACKEND` before starting it to use another Forge origin. This
+development workspace uses the real backend's settings and autosave slot.
+
+```bash
+npm run typecheck
+npm run lint
+npm run format:check
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+Playwright starts a separate Vite server on port 5179, points the proxy at a dead
+origin, and uses mocked API routes. Browser tests do not exercise Forge or GPU
+generation. `frontend/dist/` is generated and gitignored.
 
 ### Backend
 
-No build step. Restart the WebUI (or use the Extensions tab's reload) to pick up
-Python changes. Python tests live in `tests/` and run with `pytest`.
+Restart Forge after Python changes. For local checks, use a Python environment
+with pytest, Ruff, and the dependencies imported by the tests:
 
-## Architecture
+```bash
+python -m pytest
+ruff check .
+ruff format --check .
+```
 
-See [`AGENTS.md`](AGENTS.md) for the architecture reference, file layout, and
-conventions — the right place to start before making changes.
+The pytest suite mocks Forge modules rather than requiring a running WebUI.
+CI currently runs ESLint, Prettier, and Ruff; typecheck, builds, pytest, and browser
+checks are separate local validation steps. Report live Forge validation
+separately from static and mocked-browser checks.
 
 ## License
 
-AGPL-3.0, matching the parent repository.
+[AGPL-3.0](LICENSE).
