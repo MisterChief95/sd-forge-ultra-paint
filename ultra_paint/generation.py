@@ -536,7 +536,10 @@ def build_img2img_processing(
             control_layers = [
                 {
                     "image": composite_image,
-                    "mask_image": mask,
+                    # Inpaint ControlNets are trained on binary masks; a feathered
+                    # one makes them tint the ring. Forge keeps the soft mask for
+                    # its own blend, so only this unit gets the thresholded copy.
+                    "mask_image": _binarize_mask(mask),
                     "model": inpaint_controlnet_model,
                     # "None" (capital) is the no-op preprocessor's actual registry
                     # key (lib_controlnet.global_state.supported_preprocessors) --
@@ -823,6 +826,12 @@ def run_generation(
         print(processed.js())  # noqa: T201
 
     return processed
+
+
+def _binarize_mask(mask: Image.Image) -> Image.Image:
+    """0/255 copy of `mask` (alpha channel if it has one), split at 50%."""
+    gray = mask.getchannel("A") if "A" in mask.getbands() else mask.convert("L")
+    return gray.point(lambda value: 255 if value >= 128 else 0)
 
 
 def _transparent_inpaint_patch(

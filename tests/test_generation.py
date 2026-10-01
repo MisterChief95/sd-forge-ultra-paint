@@ -915,8 +915,17 @@ def test_inpaint_controlnet_is_prepended_with_composite_and_mask(
     assert synthetic["preprocessor"] == "None"
     assert synthetic["weight"] == 1.5
     assert synthetic["image"] is composite
-    assert synthetic["mask_image"] is p.mask
     assert synthetic["mask_image"].mode == "L"
+    # Soft mask stays on Forge's own p.mask; the ControlNet unit gets a 0/255 copy.
+    assert set(synthetic["mask_image"].getdata()) <= {0, 255}
+    assert synthetic["mask_image"].getextrema() == (255, 255)  # alpha 128 -> on
+
+
+def test_binarize_mask_splits_at_half(fake_forge_modules):
+    generation, _fake_shared = fake_forge_modules
+    soft = Image.new("L", (4, 1))
+    soft.putdata([0, 127, 128, 255])
+    assert list(generation._binarize_mask(soft).getdata()) == [0, 0, 255, 255]
 
 
 def test_none_composite_image_raises(fake_forge_modules):
